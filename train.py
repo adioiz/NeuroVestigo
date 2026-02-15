@@ -62,8 +62,13 @@ def cmd_train(args):
         aug_config.normalize_std = [0.229, 0.224, 0.225]
     # else: normalize_mean/std remain None → auto-loaded from manifest
 
-    # Configure loss (disable clDice if requested to save memory)
-    loss_config = LossConfig(use_cldice=not args.no_cldice)
+    # Configure loss (disable clDice/supervoxel if requested to save memory/time)
+    # --no-topology disables BOTH topology losses at once
+    loss_config = LossConfig(
+        use_cldice=not (args.no_cldice or args.no_topology),
+        use_supervoxel=not (args.no_supervoxel or args.no_topology),
+        loss_supervoxel_weight=args.supervoxel_weight,
+    )
 
     config = TrainingConfig(
         num_epochs=args.epochs,
@@ -136,6 +141,22 @@ def main():
         "--no-cldice",
         action="store_true",
         help="Disable clDice loss to save memory on MPS/CPU",
+    )
+    p_train.add_argument(
+        "--supervoxel-weight",
+        type=float,
+        default=1.0,
+        help="Weight for supervoxel connectivity loss (default: 1.0)",
+    )
+    p_train.add_argument(
+        "--no-supervoxel",
+        action="store_true",
+        help="Disable supervoxel loss",
+    )
+    p_train.add_argument(
+        "--no-topology",
+        action="store_true",
+        help="Disable BOTH clDice and supervoxel losses (faster training on CPU/MPS)",
     )
 
     args = parser.parse_args()

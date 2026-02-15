@@ -546,13 +546,90 @@ This is activated by `pred_obj_scores=True`. The model learns to predict whether
 
 **Why this is critical for our use case:** In our 72-frame videos, the neuron may not be visible in all frames. Without this loss, the model always predicts "object present" and hallucinates neurons on empty frames. With this loss, it learns to output low confidence when the neuron isn't there.
 
-### 8.5 Combined Loss
+### 8.5 clDice Loss (weight = 1.0)
+
+**Purpose:** Preserve skeleton topology of tubular structures.
+
+clDice (centerline Dice) computes Dice on the *skeletonized* masks:
 
 ```
-L_total = 20.0 * L_focal + 1.0 * L_dice + 1.0 * L_iou + 1.0 * L_class
+Tprec = |skel(pred) ∩ target| / |skel(pred)|   (skeleton precision)
+Tsens = |skel(target) ∩ pred| / |skel(target)| (skeleton sensitivity)
+clDice = 2 × Tprec × Tsens / (Tprec + Tsens)
 ```
 
-This is referred to as `core_loss` in Meta's codebase.
+**Why for neurons:** Breaking a thin neuron branch removes its centerline skeleton. Standard Dice barely notices (few pixels lost), but clDice heavily penalizes it because the skeleton is destroyed.
+
+**Memory note:** clDice requires soft skeletonization on GPU, which can be memory-intensive. Use `--no-cldice` if you encounter OOM errors on MPS.
+
+### 8.6 Supervoxel Loss (weight = 1.0) — NEW!
+
+**Purpose:** Directly penalize split/merge errors in connectivity.
+
+**The insight:** clDice focuses on skeleton overlap, but doesn't explicitly detect when a single connected structure becomes two disconnected components (split error). Supervoxel loss identifies "critical supervoxels" — connected components whose addition/removal changes the topology.
+
+**Mathematical formulation:**
+
+```
+L = (1−α)L₀(y,ŷ) + αβ∑L₀(neg_critical) + α(1−β)∑L₀(pos_critical)
+```
+
+Where:
+- L₀ is the base loss (BCE)
+- α controls topology-aware vs standard loss balance (default: 0.5)
+- β balances negatively vs positively critical components (default: 0.5)
+
+**Two types of critical components:**
+1. **Negatively critical (false negatives):** Missing pixels that cause splits — e.g., a 1-pixel gap breaking a neuron branch
+2. **Positively critical (false positives):** Extra pixels that cause merges — e.g., a false bridge connecting two neurons
+
+**Algorithm (O(n) complexity):**
+1. Binarize predictions at threshold 0.5
+2. Compute false positive/negative masks
+3. For each connected component in error regions:
+   - Use BFS to check if removing it changes connectivity
+   - If yes → mark as critical → apply higher loss weight
+
+**Why this helps neurons:** A 1-pixel gap may seem minor (standard losses barely notice), but if it splits a neuron into two components, supervoxel loss heavily penalizes it.
+
+**Memory efficiency:** Unlike clDice (GPU soft skeletonization), supervoxel uses CPU-based BFS with O(n) complexity. It adds minimal overhead (~5-10% training time).
+
+**Command line usage:**
+```bash
+# Default (enabled with weight 1.0)
+python train.py train --epochs 30
+
+# Increase weight for more connectivity emphasis
+python train.py train --supervoxel-weight 2.0
+
+# Disable only supervoxel
+python train.py train --no-supervoxel
+
+# Disable BOTH clDice and supervoxel (fast CPU/MPS training)
+python train.py train --no-topology
+```
+
+**Reference:** Grim et al., "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function", AAAI 2025
+
+### 8.7 Combined Loss
+
+```
+L_total = 5.0 * L_focal + 2.0 * L_dice + 1.0 * L_cldice + 1.0 * L_supervoxel + 1.0 * L_iou + 1.0 * L_class
+```
+
+This is referred to as `core_loss` in the codebase.
+
+**Topology-preserving losses (clDice + Supervoxel):** Together, these two losses provide comprehensive topology protection:
+- **clDice:** "Does the predicted skeleton match the ground truth skeleton?"
+- **Supervoxel:** "Does the predicted connectivity match the ground truth connectivity?"
+
+A prediction that passes clDice (good skeleton overlap) but fails supervoxel (split errors) will still be penalized. This combination is especially effective for thin, branching neuron structures.
+
+**Fast training mode:** If training on CPU/MPS is too slow, disable both topology losses:
+```bash
+python train.py train --no-topology
+```
+This is equivalent to `--no-cldice --no-supervoxel` but more convenient.
 
 ---
 
@@ -931,7 +1008,7 @@ In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click 
 | `src/training/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
 | `src/training/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()` |
 | `src/training/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
-| `src/training/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `MultiStepMultiMasksAndIous` |
+| `src/training/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCLDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
 | `src/training/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |
 | `src/training/augmentations.py` | Video augmentation pipeline | `VideoAugmentation`, `VideoValidationTransform` |
 | `src/training/train.py` | Training loop + model wrapper | `SAM2TrainingWrapper`, `train()`, `build_training_model()` |
@@ -946,4 +1023,6 @@ In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click 
 - Ravi, N. et al. "SAM 2: Segment Anything in Images and Videos." Meta AI, 2024.
 - Lin, T.Y. et al. "Focal Loss for Dense Object Detection." ICCV 2017.
 - Milletari, F. et al. "V-Net: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation." 3DV 2016. (Dice loss)
+- Shit, S. et al. "clDice - A Novel Topology-Preserving Loss Function for Tubular Structure Segmentation." CVPR 2021.
+- Grim, M. et al. "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function." AAAI 2025.
 - Loshchilov, I. & Hutter, F. "Decoupled Weight Decay Regularization." ICLR 2019. (AdamW)

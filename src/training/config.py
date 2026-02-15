@@ -58,17 +58,20 @@ class OptimizerConfig:
 @dataclass
 class LossConfig:
     # Loss weights - balanced for better generalization
-    loss_mask_weight: float = 5.0  # Reduced from 20.0 to balance with Dice/IoU
+    loss_mask_weight: float = 5.0  # Focal loss (reduced from 20.0 to balance with Dice/IoU)
     loss_dice_weight: float = 2.0  # Standard Dice for shape matching
-    loss_cldice_weight: float = 1.0  # clDice for topology/connectivity (NEW!)
+    loss_cldice_weight: float = 1.0  # clDice for skeleton topology
+    loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
     # clDice params
-    use_cldice: bool = True  # Enable topology-preserving loss
+    use_cldice: bool = True  # Enable skeleton topology-preserving loss
     cldice_num_iter: int = 5  # Iterations for soft skeletonization (reduced from 10 for MPS memory)
+    # Supervoxel params
+    use_supervoxel: bool = True  # Enable connectivity-preserving loss
 
 
 @dataclass
@@ -124,6 +127,7 @@ class TrainingConfig:
             "loss_mask": self.loss.loss_mask_weight,
             "loss_dice": self.loss.loss_dice_weight,
             "loss_cldice": self.loss.loss_cldice_weight,
+            "loss_supervoxel": self.loss.loss_supervoxel_weight,
             "loss_iou": self.loss.loss_iou_weight,
             "loss_class": self.loss.loss_class_weight,
         }

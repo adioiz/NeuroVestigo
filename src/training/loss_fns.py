@@ -7,17 +7,25 @@ Loss Components:
     - FocalLoss: Handles class imbalance (background >> neuron pixels)
     - DiceLoss: Optimizes for shape/overlap (IoU-like)
     - SoftCLDiceLoss: Topology-preserving loss for tubular structures (neurons)
+    - SupervoxelLoss2D: Connectivity-preserving loss for split/merge errors
     - MultiStepMultiMasksAndIous: Combines all losses with configurable weights
 
 References:
     - clDice: Shit et al., "clDice - A Novel Topology-Preserving Loss Function
       for Tubular Structure Segmentation", CVPR 2021
       https://arxiv.org/abs/2003.07311
+    - Supervoxel Loss: Grim et al., "Efficient Connectivity-Preserving Instance
+      Segmentation with Supervoxel-Based Loss Function", AAAI 2025
+      https://arxiv.org/abs/2501.01022
 """
+
+from collections import deque
+from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class FocalLoss(nn.Module):
@@ -377,30 +385,334 @@ class SoftDiceCLDiceLoss(nn.Module):
         return (1.0 - self.alpha) * dice_loss + self.alpha * cldice_loss
 
 
+# =============================================================================
+# Supervoxel Loss - Connectivity-Preserving Loss for Instance Segmentation
+# =============================================================================
+# Reference: Grim et al., "Efficient Connectivity-Preserving Instance
+# Segmentation with Supervoxel-Based Loss Function", AAAI 2025
+# https://arxiv.org/abs/2501.01022
+# Implementation adapted from: https://github.com/AllenNeuralDynamics/supervoxel-loss
+# =============================================================================
+
+
+def _get_neighbors_2d(y: int, x: int, h: int, w: int) -> list:
+    """Get 4-connected neighbors of a pixel."""
+    neighbors = []
+    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        ny, nx = y + dy, x + dx
+        if 0 <= ny < h and 0 <= nx < w:
+            neighbors.append((ny, nx))
+    return neighbors
+
+
+def _bfs_component(
+    mask: np.ndarray,
+    start_y: int,
+    start_x: int,
+    visited: np.ndarray
+) -> set:
+    """Extract connected component using BFS.
+
+    Args:
+        mask: Binary mask (H, W)
+        start_y, start_x: Starting pixel coordinates
+        visited: Array tracking visited pixels
+
+    Returns:
+        Set of (y, x) coordinates in the component
+    """
+    h, w = mask.shape
+    component = set()
+    queue = deque([(start_y, start_x)])
+    visited[start_y, start_x] = True
+
+    while queue:
+        y, x = queue.popleft()
+        component.add((y, x))
+
+        for ny, nx in _get_neighbors_2d(y, x, h, w):
+            if mask[ny, nx] > 0 and not visited[ny, nx]:
+                visited[ny, nx] = True
+                queue.append((ny, nx))
+
+    return component
+
+
+def _count_components(mask: np.ndarray) -> int:
+    """Count number of connected components in binary mask."""
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    count = 0
+
+    for y in range(h):
+        for x in range(w):
+            if mask[y, x] > 0 and not visited[y, x]:
+                _bfs_component(mask, y, x, visited)
+                count += 1
+
+    return count
+
+
+def _detect_critical_components_2d(
+    pred_binary: np.ndarray,
+    target_binary: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Detect critical supervoxels that affect topology.
+
+    A supervoxel (connected component) is critical if adding or removing it
+    changes the number of connected components in the segmentation.
+
+    Two types:
+    1. Negatively critical (in false negatives): If added, would merge
+       disconnected ground truth components → their removal caused a split error
+    2. Positively critical (in false positives): If removed, would separate
+       incorrectly merged prediction components → they cause a merge error
+
+    Args:
+        pred_binary: Binary prediction mask (H, W)
+        target_binary: Binary ground truth mask (H, W)
+
+    Returns:
+        neg_critical_mask: Mask of negatively critical false negative pixels
+        pos_critical_mask: Mask of positively critical false positive pixels
+    """
+    h, w = pred_binary.shape
+
+    # Compute error masks
+    false_neg = (target_binary > 0) & (pred_binary == 0)  # Should be 1, predicted 0
+    false_pos = (pred_binary > 0) & (target_binary == 0)  # Should be 0, predicted 1
+
+    neg_critical_mask = np.zeros((h, w), dtype=np.float32)
+    pos_critical_mask = np.zeros((h, w), dtype=np.float32)
+
+    # ===== Negatively Critical Components (False Negatives) =====
+    # If adding this FN component to prediction would reduce # of GT components visible
+    # in prediction, then it's a "bridge" component whose absence causes split errors
+    visited_fn = np.zeros_like(false_neg, dtype=bool)
+
+    for y in range(h):
+        for x in range(w):
+            if false_neg[y, x] and not visited_fn[y, x]:
+                # Extract this FN component
+                component = _bfs_component(false_neg, y, x, visited_fn)
+
+                # Check if adding this component would change connectivity
+                # by checking neighbors of the component in the prediction
+                neighbor_labels = set()
+                pred_with_component = pred_binary.copy()
+
+                for cy, cx in component:
+                    pred_with_component[cy, cx] = 1
+                    for ny, nx in _get_neighbors_2d(cy, cx, h, w):
+                        if pred_binary[ny, nx] > 0:
+                            neighbor_labels.add((ny, nx))
+
+                # If component touches 2+ distinct predicted regions, it's critical
+                if len(neighbor_labels) >= 2:
+                    # Check if these neighbors are from different components
+                    pred_visited = np.zeros_like(pred_binary, dtype=bool)
+                    distinct_neighbors = 0
+                    for ny, nx in neighbor_labels:
+                        if not pred_visited[ny, nx]:
+                            _bfs_component(pred_binary, ny, nx, pred_visited)
+                            distinct_neighbors += 1
+
+                    if distinct_neighbors >= 2:
+                        # This FN component bridges multiple prediction components
+                        for cy, cx in component:
+                            neg_critical_mask[cy, cx] = 1.0
+
+    # ===== Positively Critical Components (False Positives) =====
+    # If removing this FP component would increase # of components in prediction,
+    # it's merging things that shouldn't be merged
+    visited_fp = np.zeros_like(false_pos, dtype=bool)
+
+    for y in range(h):
+        for x in range(w):
+            if false_pos[y, x] and not visited_fp[y, x]:
+                # Extract this FP component
+                component = _bfs_component(false_pos, y, x, visited_fp)
+
+                # Create prediction without this component
+                pred_without_component = pred_binary.copy()
+                for cy, cx in component:
+                    pred_without_component[cy, cx] = 0
+
+                # Check if neighbors in remaining prediction are still connected
+                neighbor_pixels = []
+                for cy, cx in component:
+                    for ny, nx in _get_neighbors_2d(cy, cx, h, w):
+                        if pred_without_component[ny, nx] > 0:
+                            neighbor_pixels.append((ny, nx))
+
+                if len(neighbor_pixels) >= 2:
+                    # Check if removing component disconnects neighbors
+                    visited_check = np.zeros_like(pred_without_component, dtype=bool)
+                    ny, nx = neighbor_pixels[0]
+                    reachable = _bfs_component(pred_without_component, ny, nx, visited_check)
+
+                    # If any neighbor is not reachable, component was critical
+                    all_connected = all((y, x) in reachable for y, x in neighbor_pixels)
+
+                    if not all_connected:
+                        for cy, cx in component:
+                            pos_critical_mask[cy, cx] = 1.0
+
+    return neg_critical_mask, pos_critical_mask
+
+
+class SupervoxelLoss2D(nn.Module):
+    """Supervoxel-based connectivity-preserving loss.
+
+    This loss identifies "critical supervoxels" - connected components whose
+    addition/removal changes the number of connected components (topology)
+    in the segmentation. These regions receive higher loss weight.
+
+    The key insight is that small pixel errors in critical regions (like a
+    1-pixel gap that splits a neuron) have huge topological impact, but
+    standard losses weight them the same as any other pixel error.
+
+    Two types of critical components:
+    1. Negatively critical (false negatives): Missing pixels that cause splits
+    2. Positively critical (false positives): Extra pixels that cause merges
+
+    Loss formulation:
+        L = (1-α)L₀(y,ŷ) + αβ∑L₀(yc,ŷc) + α(1-β)∑L₀(yc,ŷc)
+
+    Where:
+        - L₀ is the base loss (BCE)
+        - α controls topology-aware vs standard loss balance
+        - β balances negatively vs positively critical components
+        - yc are pixels in critical supervoxels
+
+    Computational complexity: O(n) using BFS, much lighter than clDice.
+
+    Reference:
+        Grim et al., "Efficient Connectivity-Preserving Instance Segmentation
+        with Supervoxel-Based Loss Function", AAAI 2025
+
+    Args:
+        alpha: Weight for topology-aware terms vs standard loss (0-1). Default 0.5.
+        beta: Balance between negatively and positively critical. Default 0.5.
+        threshold: Threshold for binarizing predictions. Default 0.5.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.5,
+        beta: float = 0.5,
+        threshold: float = 0.5,
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.threshold = threshold
+        self.base_loss = nn.BCEWithLogitsLoss(reduction='none')
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute supervoxel connectivity loss.
+
+        Args:
+            pred: Predicted logits, any shape (will process per-sample)
+            target: Binary ground truth, same shape as pred
+
+        Returns:
+            Scalar supervoxel loss value
+        """
+        # Ensure we have batch dimension
+        original_shape = pred.shape
+        pred_flat = pred.view(-1, pred.shape[-2], pred.shape[-1])  # (N, H, W)
+        target_flat = target.view(-1, target.shape[-2], target.shape[-1])
+
+        batch_size = pred_flat.shape[0]
+        device = pred.device
+
+        # Compute base BCE loss for all pixels
+        base_loss_per_pixel = self.base_loss(pred_flat, target_flat.float())
+
+        # Binarize predictions
+        pred_binary_batch = (torch.sigmoid(pred_flat) > self.threshold).cpu().numpy()
+        target_binary_batch = (target_flat > 0.5).cpu().numpy()
+
+        total_loss = torch.tensor(0.0, device=device)
+
+        for i in range(batch_size):
+            pred_binary = pred_binary_batch[i]
+            target_binary = target_binary_batch[i]
+
+            # Skip if either mask is empty
+            if pred_binary.sum() == 0 or target_binary.sum() == 0:
+                # Just use standard loss for this sample
+                total_loss = total_loss + base_loss_per_pixel[i].mean()
+                continue
+
+            # Detect critical components (CPU operation)
+            neg_critical, pos_critical = _detect_critical_components_2d(
+                pred_binary.astype(np.uint8),
+                target_binary.astype(np.uint8)
+            )
+
+            # Convert to tensors
+            neg_critical_t = torch.from_numpy(neg_critical).to(device)
+            pos_critical_t = torch.from_numpy(pos_critical).to(device)
+
+            # Compute weighted loss
+            # Standard loss (non-critical regions)
+            non_critical_mask = 1.0 - torch.clamp(neg_critical_t + pos_critical_t, 0, 1)
+            standard_loss = (base_loss_per_pixel[i] * non_critical_mask).sum()
+
+            # Critical region losses (higher weight)
+            neg_critical_loss = (base_loss_per_pixel[i] * neg_critical_t).sum()
+            pos_critical_loss = (base_loss_per_pixel[i] * pos_critical_t).sum()
+
+            # Count pixels for normalization
+            n_total = pred_flat.shape[-2] * pred_flat.shape[-1]
+            n_non_critical = non_critical_mask.sum().item() + 1e-6
+            n_neg_critical = neg_critical_t.sum().item() + 1e-6
+            n_pos_critical = pos_critical_t.sum().item() + 1e-6
+
+            # Normalize each component
+            standard_loss_norm = standard_loss / n_non_critical
+            neg_critical_loss_norm = neg_critical_loss / n_neg_critical
+            pos_critical_loss_norm = pos_critical_loss / n_pos_critical
+
+            # Combined loss with alpha/beta weighting
+            sample_loss = (
+                (1 - self.alpha) * standard_loss_norm +
+                self.alpha * self.beta * neg_critical_loss_norm +
+                self.alpha * (1 - self.beta) * pos_critical_loss_norm
+            )
+
+            total_loss = total_loss + sample_loss
+
+        return total_loss / batch_size
+
+
 class MultiStepMultiMasksAndIous(nn.Module):
     """Combined loss function for SAM 2 training.
 
     This loss combines multiple objectives:
     1. Focal loss (loss_mask): Handles class imbalance
     2. Dice loss (loss_dice): Optimizes shape/overlap
-    3. clDice loss (loss_cldice): Preserves topology/connectivity (NEW!)
-    4. IoU loss (loss_iou): Trains IoU prediction head
-    5. Object score loss (loss_class): Trains object presence prediction
+    3. clDice loss (loss_cldice): Preserves topology via skeleton matching
+    4. Supervoxel loss (loss_supervoxel): Preserves connectivity via critical regions
+    5. IoU loss (loss_iou): Trains IoU prediction head
+    6. Object score loss (loss_class): Trains object presence prediction
 
-    The clDice loss is especially important for neuron segmentation because
-    neurons are tubular structures where connectivity matters more than
-    raw pixel overlap.
+    Both clDice and Supervoxel losses are important for neuron segmentation:
+    - clDice: Ensures predicted skeleton matches ground truth skeleton
+    - Supervoxel: Penalizes errors that cause split/merge topology changes
 
     The losses are weighted and summed into a single "core_loss" for backprop.
 
     Args:
         weight_dict: Dictionary mapping loss names to their weights.
-            Default includes loss_cldice for topology preservation.
         focal_alpha: Alpha parameter for focal loss. Default 0.25.
         focal_gamma: Gamma parameter for focal loss. Default 2.0.
         pred_obj_scores: Whether to compute object score loss. Default True.
         use_cldice: Whether to use clDice loss. Default True.
-        cldice_num_iter: Iterations for soft skeletonization. Default 10.
+        cldice_num_iter: Iterations for soft skeletonization. Default 5.
+        use_supervoxel: Whether to use supervoxel loss. Default True.
     """
 
     def __init__(
@@ -410,13 +722,15 @@ class MultiStepMultiMasksAndIous(nn.Module):
         focal_gamma: float = 2.0,
         pred_obj_scores: bool = True,
         use_cldice: bool = True,
-        cldice_num_iter: int = 10,
+        cldice_num_iter: int = 5,
+        use_supervoxel: bool = True,
     ):
         super().__init__()
         self.weight_dict = weight_dict or {
-            "loss_mask": 5.0,      # Focal loss (reduced from 20.0)
-            "loss_dice": 2.0,      # Standard Dice
-            "loss_cldice": 1.0,    # clDice for topology (NEW!)
+            "loss_mask": 5.0,        # Focal loss
+            "loss_dice": 2.0,        # Standard Dice
+            "loss_cldice": 1.0,      # clDice for skeleton topology
+            "loss_supervoxel": 1.0,  # Supervoxel for connectivity
             "loss_iou": 1.0,
             "loss_class": 1.0,
         }
@@ -425,6 +739,9 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.use_cldice = use_cldice
         if use_cldice:
             self.cldice = SoftCLDiceLoss(num_iter=cldice_num_iter)
+        self.use_supervoxel = use_supervoxel
+        if use_supervoxel:
+            self.supervoxel = SupervoxelLoss2D(alpha=0.5, beta=0.5)
         self.pred_obj_scores = pred_obj_scores
 
     def forward(self, outputs: dict, targets: torch.Tensor) -> dict:
@@ -442,7 +759,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 - "core_loss": Weighted sum of all losses (for backprop)
                 - "loss_mask": Focal loss value
                 - "loss_dice": Dice loss value
-                - "loss_cldice": clDice loss value (topology-preserving)
+                - "loss_cldice": clDice loss value (skeleton topology)
+                - "loss_supervoxel": Supervoxel loss value (connectivity)
                 - "loss_iou": IoU prediction loss (or 0 if not available)
                 - "loss_class": Object score loss (or 0 if not available)
         """
@@ -452,10 +770,15 @@ class MultiStepMultiMasksAndIous(nn.Module):
         loss_mask = self.focal(pred_masks, targets)
         loss_dice = self.dice(pred_masks, targets)
 
-        # clDice loss for topology preservation (important for neurons!)
+        # clDice loss for skeleton topology preservation
         loss_cldice = torch.tensor(0.0, device=pred_masks.device)
         if self.use_cldice:
             loss_cldice = self.cldice(pred_masks, targets)
+
+        # Supervoxel loss for connectivity preservation
+        loss_supervoxel = torch.tensor(0.0, device=pred_masks.device)
+        if self.use_supervoxel:
+            loss_supervoxel = self.supervoxel(pred_masks, targets)
 
         # IoU prediction loss: train the model to predict its own accuracy
         loss_iou = torch.tensor(0.0, device=pred_masks.device)
@@ -482,6 +805,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             self.weight_dict.get("loss_mask", 5.0) * loss_mask +
             self.weight_dict.get("loss_dice", 2.0) * loss_dice +
             self.weight_dict.get("loss_cldice", 1.0) * loss_cldice +
+            self.weight_dict.get("loss_supervoxel", 1.0) * loss_supervoxel +
             self.weight_dict.get("loss_iou", 1.0) * loss_iou +
             self.weight_dict.get("loss_class", 1.0) * loss_class
         )
@@ -491,6 +815,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             "loss_mask": loss_mask,
             "loss_dice": loss_dice,
             "loss_cldice": loss_cldice,
+            "loss_supervoxel": loss_supervoxel,
             "loss_iou": loss_iou,
             "loss_class": loss_class,
         }

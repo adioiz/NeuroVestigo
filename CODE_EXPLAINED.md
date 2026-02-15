@@ -665,6 +665,93 @@ class DiceLoss(nn.Module):
 Dice = 2 × |A ∩ B| / (|A| + |B|)
 ```
 
+## Class: `SoftCLDiceLoss` (Topology-Preserving)
+
+clDice focuses on skeleton matching - ensuring the centerlines of predicted structures match the ground truth.
+
+**Formula:**
+```
+Tprec = |skel(pred) ∩ target| / |skel(pred)|   (skeleton precision)
+Tsens = |skel(target) ∩ pred| / |skel(target)| (skeleton sensitivity)
+clDice = 2 × Tprec × Tsens / (Tprec + Tsens)
+```
+
+**Why this matters for neurons:**
+- Neuron branches are thin tubular structures
+- Their skeleton represents the centerline
+- Breaking a branch removes its skeleton → low sensitivity
+- Adding spurious branches → low precision
+
+---
+
+## Class: `SupervoxelLoss2D` (Connectivity-Preserving)
+
+**NEW!** Supervoxel loss specifically targets split/merge errors that clDice may miss.
+
+```python
+class SupervoxelLoss2D(nn.Module):
+    """Connectivity-preserving loss that penalizes topology changes."""
+
+    def __init__(self, alpha=0.5, beta=0.5, threshold=0.5):
+        self.alpha = alpha    # Balance: topology vs standard loss
+        self.beta = beta      # Balance: split vs merge errors
+
+    def forward(self, pred, target):
+        # 1. Binarize predictions
+        pred_binary = (sigmoid(pred) > threshold)
+
+        # 2. Find error regions
+        false_neg = target & ~pred_binary  # Missing pixels (split errors)
+        false_pos = pred_binary & ~target  # Extra pixels (merge errors)
+
+        # 3. Detect CRITICAL components using BFS
+        neg_critical, pos_critical = detect_critical_components(pred_binary, target)
+
+        # 4. Apply higher loss to critical regions
+        loss = (1-α)·base_loss + α·β·loss(neg_critical) + α·(1-β)·loss(pos_critical)
+```
+
+**Mathematical formulation:**
+```
+L = (1−α)L₀(y,ŷ) + αβ∑L₀(yc,ŷc) + α(1−β)∑L₀(yc,ŷc)
+```
+
+Where:
+- L₀ is the base loss (BCE)
+- α controls topology-aware vs standard loss balance (default: 0.5)
+- β balances negatively vs positively critical components (default: 0.5)
+- yc are pixels in critical supervoxels
+
+**Two types of critical components:**
+
+1. **Negatively Critical (False Negatives):**
+   - Missing pixels that cause **split errors**
+   - If added to prediction, would connect previously disconnected regions
+   - Example: A 1-pixel gap in a neuron branch
+
+2. **Positively Critical (False Positives):**
+   - Extra pixels that cause **merge errors**
+   - If removed, would split incorrectly merged regions
+   - Example: A false bridge connecting two separate neurons
+
+**Algorithm (O(n) complexity via BFS):**
+```
+For each connected component in error regions:
+    1. Check if adding/removing it changes connectivity
+    2. If yes → mark as critical → apply higher loss weight
+```
+
+**Why this complements clDice:**
+- clDice: "Does the skeleton match?" (centerline overlap)
+- Supervoxel: "Does connectivity match?" (topology preservation)
+
+A 1-pixel gap may not significantly affect clDice (skeleton mostly intact), but Supervoxel loss heavily penalizes it because it causes a split.
+
+**Reference:**
+Grim et al., "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function", AAAI 2025
+
+---
+
 ## Class: `MultiStepMultiMasksAndIous`
 
 ```python
@@ -675,20 +762,39 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_masks = outputs["pred_masks"]
 
         # Compute individual losses
-        loss_mask = self.focal(pred_masks, targets)    # Pixel accuracy
-        loss_dice = self.dice(pred_masks, targets)     # Shape quality
+        loss_mask = self.focal(pred_masks, targets)        # Pixel accuracy
+        loss_dice = self.dice(pred_masks, targets)         # Shape quality
+        loss_cldice = self.cldice(pred_masks, targets)     # Skeleton topology
+        loss_supervoxel = self.supervoxel(pred_masks, targets)  # Connectivity
         loss_iou = ...  # IoU prediction accuracy
         loss_class = ...  # Object presence
 
         # Weighted sum
         core_loss = (
-            20.0 * loss_mask +
-            1.0 * loss_dice +
+            5.0 * loss_mask +        # Focal loss
+            2.0 * loss_dice +        # Dice loss
+            1.0 * loss_cldice +      # clDice for skeleton
+            1.0 * loss_supervoxel +  # Supervoxel for connectivity
             1.0 * loss_iou +
             1.0 * loss_class
         )
 
         return {"core_loss": core_loss, ...}
+```
+
+**Combined loss formula:**
+```
+L_total = 5×L_focal + 2×L_dice + 1×L_cldice + 1×L_supervoxel + 1×L_iou + 1×L_class
+```
+
+**Fast training mode (CPU/MPS):**
+```bash
+# Disable both topology losses for faster training
+python train.py train --no-topology
+```
+This sets both `use_cldice=False` and `use_supervoxel=False`, reducing the loss to:
+```
+L_total = 5×L_focal + 2×L_dice + 1×L_iou + 1×L_class
 ```
 
 ---

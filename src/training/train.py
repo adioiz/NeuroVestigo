@@ -341,7 +341,7 @@ def build_training_model(config: TrainingConfig, device: str):
     print(f"\n  Total parameters: {total_params:,}")
     print(f"  Trainable parameters: {trainable_params:,} ({100*trainable_params/total_params:.1f}%)")
 
-    # Build loss function with clDice for topology preservation
+    # Build loss function with topology-preserving losses
     loss_fn = MultiStepMultiMasksAndIous(
         weight_dict=config.loss_weight_dict,
         focal_alpha=config.loss.focal_alpha,
@@ -349,9 +349,12 @@ def build_training_model(config: TrainingConfig, device: str):
         pred_obj_scores=True,
         use_cldice=config.loss.use_cldice,
         cldice_num_iter=config.loss.cldice_num_iter,
+        use_supervoxel=config.loss.use_supervoxel,
     )
     if config.loss.use_cldice:
-        print(f"  Using clDice loss for topology preservation (weight={config.loss.loss_cldice_weight})")
+        print(f"  Using clDice loss for skeleton topology (weight={config.loss.loss_cldice_weight})")
+    if config.loss.use_supervoxel:
+        print(f"  Using supervoxel loss for connectivity (weight={config.loss.loss_supervoxel_weight})")
 
     training_model = training_model.to(device)
     return training_model, loss_fn

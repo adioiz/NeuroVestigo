@@ -11,7 +11,8 @@ This repository provides a training pipeline to fine-tune SAM2 (Segment Anything
 ## Features
 
 - **LoRA fine-tuning**: Efficient training (~0.5% of parameters)
-- **clDice loss**: Topology-preserving loss for tubular structures
+- **clDice loss**: Skeleton topology-preserving loss for tubular structures
+- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors (NEW!)
 - **Strong augmentations**: Elastic deformations, blur, noise
 - **Early stopping**: Automatic stopping when metrics plateau
 - **MPS support**: Works on Apple Silicon
@@ -162,6 +163,9 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 | `--val-every` | 2 | Validation frequency (epochs) |
 | `--val-samples` | 0 | Max validation batches (0=all, >0=faster) |
 | `--no-cldice` | False | Disable clDice loss to save memory |
+| `--supervoxel-weight` | 1.0 | Supervoxel connectivity loss weight |
+| `--no-supervoxel` | False | Disable supervoxel loss |
+| `--no-topology` | False | Disable BOTH clDice and supervoxel (fast CPU/MPS training) |
 
 ## Key Metrics
 
@@ -173,12 +177,15 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 
 ## Troubleshooting
 
-### Out of Memory (OOM)
+### Out of Memory (OOM) or Slow Training
 ```bash
 # Reduce batch size
 python train.py train --batch-size 1
 
-# Or disable clDice (most effective for MPS)
+# Disable ALL topology losses (fastest for CPU/MPS)
+python train.py train --no-topology
+
+# Or disable only clDice
 python train.py train --no-cldice
 
 # Or reduce frames per clip
@@ -188,7 +195,12 @@ python train.py train --num-frames 4
 ### Broken Neuron Branches
 If thin structures break:
 1. Enable clDice (don't use `--no-cldice`)
-2. Increase clDice weight in `src/training/config.py`: `loss_cldice_weight = 2.0`
+2. Enable supervoxel loss (default: enabled)
+3. Increase weights for connectivity losses:
+   ```bash
+   python train.py train --supervoxel-weight 2.0
+   ```
+   Or edit `src/training/config.py`: `loss_cldice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
 
 ### Validation Too Slow
 ```bash
@@ -219,7 +231,7 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
         ├── evaluate.py      # Validation metrics
         ├── neuron_dataset.py # PyTorch Dataset
         ├── augmentations.py # Video augmentation
-        ├── loss_fns.py      # Loss functions (Focal, Dice, clDice)
+        ├── loss_fns.py      # Loss functions (Focal, Dice, clDice, Supervoxel)
         ├── prepare_data.py  # TIF to PNG conversion
         └── data_utils.py    # Data containers
 ```
@@ -241,4 +253,5 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 
 - [SAM 2: Segment Anything in Images and Videos](https://github.com/facebookresearch/sam2)
 - [clDice: A Novel Topology-Preserving Loss Function](https://arxiv.org/abs/2003.07311) (Shit et al., CVPR 2021)
+- [Supervoxel Loss: Connectivity-Preserving Segmentation](https://arxiv.org/abs/2501.01022) (Grim et al., AAAI 2025)
 - [LoRA: Low-Rank Adaptation](https://arxiv.org/abs/2106.09685)
