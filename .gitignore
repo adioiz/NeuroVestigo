@@ -1,0 +1,37 @@
+# Training outputs
+checkpoints/
+training_data/
+*.pt
+*.pth
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs
+*.csv
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Symlinks to neurons-labeling repo
+labeled_masks
+labeled_coordinates

@@ -1,0 +1,57 @@
+[
+  {
+    "name": "A31_C2",
+    "image_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/A31_C2.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A31_C2_masks.tif"
+  },
+{
+    "name": "A42_C1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A42 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A42_C1_masks.tif"
+  },
+  {
+    "name": "A42_C2",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A42 C2.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A42_C2_masks.tif"
+  },
+  {
+    "name": "A51_C1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A51 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A51_C1_masks.tif"
+  },
+  {
+    "name": "A52_C1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A52 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A52_C1_masks.tif"
+  },
+  {
+    "name": "A52_C2",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A52 C2.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A52_C2_masks.tif"
+  },
+  {
+    "name": "A62_C1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A62 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A62_C1_masks.tif"
+  },
+  {
+    "name": "A62_C2",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A62 C2.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A62_C2_masks.tif"
+  },
+  {
+    "name": "A91_C1_1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A91 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A91_C1_masks_1.tif"
+  },
+  {
+    "name": "A91_C1_2",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/left/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A91 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A91_C1_masks_2.tif"
+  },
+  {
+    "name": "A11_C1",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 180723/right/distance in pixel 300, known distance 200,pixel aspect ratio 1, unit of length micron, 1.5 pixel to micron/צפיפות/tif/A11 C1.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/A11_C1_masks.tif"
+  }
+]
