@@ -399,7 +399,7 @@ training_data/
       ...
     A42_C1/
       ...
-  manifest.json    # Video metadata + normalization stats
+  stats.json       # Video metadata + normalization stats
 ```
 
 ---
@@ -481,9 +481,9 @@ This centers the data around zero with unit variance, matching what the network 
 
 ## 8. Loss Function: Multi-Objective Training
 
-We implement our own `MultiStepMultiMasksAndIous` loss in `src/training/loss_fns.py`, which combines four loss terms. This mirrors the loss used to train SAM 2 on the SA-V dataset, but is implemented locally since Meta's training code is not included in the pip-installable SAM2 package.
+We implement our own `MultiStepMultiMasksAndIous` loss in `src/loss_fns.py`, which combines six loss terms. This mirrors the loss used to train SAM 2 on the SA-V dataset, but is implemented locally since Meta's training code is not included in the pip-installable SAM2 package.
 
-### 8.1 Focal Loss (weight = 20.0)
+### 8.1 Focal Loss (weight = 5.0)
 
 **Purpose:** Pixel-level mask prediction quality.
 
@@ -507,9 +507,9 @@ Parameters:
 - **alpha = 0.25**: Balances foreground/background. Since neurons occupy <5% of pixels, alpha gives slightly more weight to non-neuron pixels to prevent false positives.
 - **gamma = 2.0**: The focusing parameter. When a pixel is correctly classified with high confidence (p_t close to 1), (1-p_t)^2 becomes very small, effectively ignoring that pixel. Training focuses on hard, uncertain pixels (the neuron boundary).
 
-**Why weight 20.0:** Mask quality is the primary objective. The high weight ensures pixel-level accuracy is the dominant training signal.
+**Why weight 5.0:** Mask quality is the primary objective. The high weight ensures pixel-level accuracy is the dominant training signal.
 
-### 8.2 Dice Loss (weight = 1.0)
+### 8.2 Dice Loss (weight = 2.0)
 
 **Purpose:** Region-level overlap quality.
 
@@ -597,16 +597,16 @@ Where:
 **Command line usage:**
 ```bash
 # Default (enabled with weight 1.0)
-python train.py train --epochs 30
+python cli.py train --epochs 30
 
 # Increase weight for more connectivity emphasis
-python train.py train --supervoxel-weight 2.0
+python cli.py train --supervoxel-weight 2.0
 
 # Disable only supervoxel
-python train.py train --no-supervoxel
+python cli.py train --no-supervoxel
 
 # Disable BOTH clDice and supervoxel (fast CPU/MPS training)
-python train.py train --no-topology
+python cli.py train --no-topology
 ```
 
 **Reference:** Grim et al., "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function", AAAI 2025
@@ -627,7 +627,7 @@ A prediction that passes clDice (good skeleton overlap) but fails supervoxel (sp
 
 **Fast training mode:** If training on CPU/MPS is too slow, disable both topology losses:
 ```bash
-python train.py train --no-topology
+python cli.py train --no-topology
 ```
 This is equivalent to `--no-cldice --no-supervoxel` but more convenient.
 
@@ -753,7 +753,7 @@ batch (BatchedVideoDatapoint) -> model (SAM2TrainingWrapper)
   4. Return dict with 'pred_masks': [B, T, N_obj, H, W]
 ```
 
-Note: We use `SAM2TrainingWrapper` (defined in `src/training/train.py`) which wraps the standard SAM2 model from the pip package. This is necessary because Meta's internal `SAM2Train` class is not included in the public pip package.
+Note: We use `SAM2TrainingWrapper` (defined in `src/trainer.py`) which wraps the standard SAM2 model from the pip package. This is necessary because Meta's internal `SAM2Train` class is not included in the public pip package.
 
 ### 10.3 Loss Computation
 
@@ -763,8 +763,8 @@ outputs -> loss_fn (MultiStepMultiMasksAndIous)
     pred_masks = outputs[t]['pred_masks_high_res']
     gt_masks = batch.masks[t]
 
-    L_focal += focal_loss(pred_masks, gt_masks) * 20.0
-    L_dice += dice_loss(pred_masks, gt_masks) * 1.0
+    L_focal += focal_loss(pred_masks, gt_masks) * 5.0
+    L_dice += dice_loss(pred_masks, gt_masks) * 2.0
     L_iou += iou_loss(pred_iou, actual_iou) * 1.0
     L_class += bce_loss(pred_obj_score, obj_present) * 1.0
 
@@ -932,7 +932,7 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | | weight_decay | 0.1 | Prevents LoRA weight explosion |
 | | max_grad_norm | 0.1 | Aggressive clipping for stability |
 | | warmup | 3 epochs | Smooth start for frozen-backbone fine-tuning |
-| **Loss** | focal weight | 20.0 | Pixel accuracy is primary objective |
+| **Loss** | focal weight | 5.0 | Pixel accuracy is primary objective |
 | | dice weight | 1.0 | Region shape quality |
 | | iou weight | 1.0 | Confidence calibration |
 | | class weight | 1.0 | Anti-hallucination |
@@ -969,7 +969,7 @@ Create `data_manifest.json` listing your TIF pairs:
 ### Step 2: Prepare training data
 
 ```bash
-python3 train.py prepare --manifest data_manifest.json --output-dir training_data
+python3 cli.py prepare --manifest data_manifest.json --output-dir training_data
 ```
 
 This converts TIF stacks to PNG frames, computes normalization statistics, and saves everything to `training_data/`.
@@ -978,13 +978,13 @@ This converts TIF stacks to PNG frames, computes normalization statistics, and s
 
 ```bash
 # Default settings (recommended first run):
-python3 train.py train --data-dir training_data
+python3 cli.py train --data-dir training_data
 
 # Custom settings:
-python3 train.py train --epochs 80 --lora-rank 16 --data-dir training_data
+python3 cli.py train --epochs 80 --lora-rank 16 --data-dir training_data
 
 # Force ImageNet normalization (not recommended):
-python3 train.py train --use-imagenet-stats
+python3 cli.py train --use-imagenet-stats
 ```
 
 ### Step 4: Use in napari
@@ -1003,16 +1003,16 @@ In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click 
 
 | File | Purpose | Key Functions |
 |------|---------|---------------|
-| `train.py` | CLI entry point | `cmd_prepare()`, `cmd_train()` |
-| `src/training/config.py` | All hyperparameters as dataclasses | `TrainingConfig`, `LoRAConfig` |
-| `src/training/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
-| `src/training/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()` |
-| `src/training/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
-| `src/training/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCLDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
-| `src/training/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |
-| `src/training/augmentations.py` | Video augmentation pipeline | `VideoAugmentation`, `VideoValidationTransform` |
-| `src/training/train.py` | Training loop + model wrapper | `SAM2TrainingWrapper`, `train()`, `build_training_model()` |
-| `src/training/evaluate.py` | Validation metrics | `compute_iou()`, `compute_dice()`, `validate_epoch()` |
+| `cli.py` | CLI entry point | `cmd_prepare()`, `cmd_train()` |
+| `src/config.py` | All hyperparameters as dataclasses | `TrainingConfig`, `LoRAConfig` |
+| `src/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
+| `src/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()` |
+| `src/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
+| `src/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCLDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
+| `src/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |
+| `src/augmentations.py` | Video augmentation pipeline | `VideoAugmentation`, `VideoValidationTransform` |
+| `src/trainer.py` | Training loop + model wrapper | `SAM2TrainingWrapper`, `train()`, `build_training_model()` |
+| `src/evaluate.py` | Validation metrics | `compute_iou()`, `compute_dice()`, `validate_epoch()` |
 | `src/gui.py` | Napari GUI with SAM2 integration | `_load_sam2_predictor()`, `_run_sam2()` |
 
 ---

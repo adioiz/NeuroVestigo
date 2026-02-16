@@ -24,23 +24,23 @@ from torch.utils.data import DataLoader
 
 from sam2.build_sam import build_sam2, _hf_download
 
-from src.training.config import TrainingConfig
-from src.training.lora import (
+from src.config import TrainingConfig
+from src.lora import (
     apply_lora,
     get_trainable_parameters,
     save_lora_weights,
     SAM2_LORA_TARGETS,
 )
-from src.training.neuron_dataset import (
+from src.neuron_dataset import (
     NeuronVideoDataset,
     neuron_collate_fn,
     get_video_names,
     train_val_split,
 )
-from src.training.augmentations import VideoAugmentation, VideoValidationTransform
-from src.training.evaluate import validate_epoch
-from src.training.loss_fns import MultiStepMultiMasksAndIous
-from src.training.data_utils import BatchedVideoDatapoint
+from src.augmentations import VideoAugmentation, VideoValidationTransform
+from src.evaluate import validate_epoch
+from src.loss_fns import MultiStepMultiMasksAndIous
+from src.data_utils import BatchedVideoDatapoint
 
 
 def detect_device() -> str:
@@ -407,8 +407,8 @@ def _load_normalization_stats(config: TrainingConfig):
     Resolve normalization stats for training.
 
     If config.augmentation.normalize_mean/std are already set, use them.
-    Otherwise, try to load dataset-specific stats from manifest.json.
-    Falls back to ImageNet stats if manifest is not found.
+    Otherwise, try to load dataset-specific stats from stats.json.
+    Falls back to ImageNet stats if stats file is not found.
     """
     mean = config.augmentation.normalize_mean
     std = config.augmentation.normalize_std
@@ -416,16 +416,16 @@ def _load_normalization_stats(config: TrainingConfig):
     if mean is not None and std is not None:
         return mean, std
 
-    # Try loading from manifest
-    manifest_path = Path(config.data.training_data_dir) / "manifest.json"
-    if manifest_path.exists():
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        norm = manifest.get("normalization", {})
+    # Try loading from stats.json
+    stats_path = Path(config.data.training_data_dir) / "stats.json"
+    if stats_path.exists():
+        with open(stats_path) as f:
+            stats = json.load(f)
+        norm = stats.get("normalization", {})
         ds_mean = norm.get("dataset_mean")
         ds_std = norm.get("dataset_std")
         if ds_mean and ds_std:
-            print(f"  Using dataset normalization stats from {manifest_path}")
+            print(f"  Using dataset normalization stats from {stats_path}")
             print(f"    mean={ds_mean}, std={ds_std}")
             return ds_mean, ds_std
 

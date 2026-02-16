@@ -6,7 +6,7 @@ This document explains **every file, every function, and every important line** 
 
 # Table of Contents
 
-1. [train.py (Entry Point)](#file-1-trainpy---entry-point)
+1. [cli.py (Entry Point)](#file-1-trainpy---entry-point)
 2. [config.py (Configuration)](#file-2-configpy---configuration)
 3. [lora.py (LoRA Implementation)](#file-3-lorapy---lora-implementation)
 4. [data_utils.py (Data Containers)](#file-4-data_utilspy---data-containers)
@@ -14,12 +14,12 @@ This document explains **every file, every function, and every important line** 
 6. [prepare_data.py (Data Conversion)](#file-5-prepare_datapy---data-conversion)
 7. [neuron_dataset.py (PyTorch Dataset)](#file-6-neuron_datasetpy---pytorch-dataset)
 8. [augmentations.py (Data Augmentation)](#file-7-augmentationspy---data-augmentation)
-9. [train.py (Training Loop)](#file-8-srctrainingtrainpy---training-loop)
+9. [trainer.py (Training Loop)](#file-8-srctrainerpy---training-loop)
 10. [evaluate.py (Metrics)](#file-9-evaluatepy---metrics)
 
 ---
 
-# File 1: `train.py` - Entry Point
+# File 1: `cli.py` - Entry Point
 
 This is the command-line interface (CLI) that you run.
 
@@ -42,7 +42,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 ```python
 def cmd_prepare(args):
     """Prepare training data from TIF stacks."""
-    from src.training.prepare_data import prepare_dataset
+    from src.prepare_data import prepare_dataset
 
     with open(args.manifest) as f:
         manifest = json.load(f)
@@ -57,8 +57,8 @@ def cmd_prepare(args):
 **Purpose:** Converts your TIF files to PNG format for training.
 
 **Line by line:**
-- `from src.training.prepare_data import prepare_dataset` — Imports the conversion function (lazy import, only when needed)
-- `with open(args.manifest) as f:` — Opens your manifest.json file
+- `from src.prepare_data import prepare_dataset` — Imports the conversion function (lazy import, only when needed)
+- `with open(args.manifest) as f:` — Opens your data_manifest.json file
 - `manifest = json.load(f)` — Parses JSON into a Python list of dicts
 - `prepare_dataset(...)` — Calls the conversion function
 
@@ -68,10 +68,10 @@ def cmd_prepare(args):
 
 ```python
 def cmd_train(args):
-    from src.training.config import (
+    from src.config import (
         TrainingConfig, LoRAConfig, DataConfig, OptimizerConfig, AugmentationConfig,
     )
-    from src.training.train import train
+    from src.trainer import train
 
     aug_config = AugmentationConfig()
     if args.use_imagenet_stats:
@@ -100,7 +100,7 @@ if args.use_imagenet_stats:
 **Logic:**
 - If you pass `--use-imagenet-stats`, we use ImageNet normalization
 - Otherwise, `normalize_mean/std` stay as `None`
-- Later, `train.py` sees `None` and auto-loads your dataset's actual mean/std from manifest.json
+- Later, `cli.py` sees `None` and auto-loads your dataset's actual mean/std from stats.json
 - **Why this matters:** Your microscopy images are dark and grayscale. ImageNet stats are for bright, colorful photos. Using wrong stats hurts training.
 
 ---
@@ -270,8 +270,10 @@ This prevents training instability.
 ```python
 @dataclass
 class LossConfig:
-    loss_mask_weight: float = 20.0   # Focal loss weight
-    loss_dice_weight: float = 1.0    # Dice loss weight
+    loss_mask_weight: float = 5.0    # Focal loss weight
+    loss_dice_weight: float = 2.0    # Dice loss weight
+    loss_cldice_weight: float = 1.0  # clDice for skeleton topology
+    loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity
     loss_iou_weight: float = 1.0     # IoU prediction loss
     loss_class_weight: float = 1.0   # Object presence loss
     focal_alpha: float = 0.25
@@ -280,11 +282,13 @@ class LossConfig:
 
 **Combined loss:**
 ```
-L_total = 20·L_focal + 1·L_dice + 1·L_iou + 1·L_class
+L_total = 5·L_focal + 2·L_dice + 1·L_cldice + 1·L_supervoxel + 1·L_iou + 1·L_class
 ```
 
-**Why weight 20 for focal loss?**
-Pixel accuracy is the primary objective. Meta uses weight 20 in their SAM 2 training configs.
+**Why these weights?**
+- **Focal (5.0)**: Pixel accuracy is the primary objective, but reduced from 20 to balance with topology losses
+- **Dice (2.0)**: Region-level overlap is important for shape matching
+- **clDice + Supervoxel (1.0 each)**: Topology preservation for thin neuron branches
 
 **Focal loss parameters:**
 - `alpha = 0.25`: Balances foreground/background
@@ -790,7 +794,7 @@ L_total = 5×L_focal + 2×L_dice + 1×L_cldice + 1×L_supervoxel + 1×L_iou + 1�
 **Fast training mode (CPU/MPS):**
 ```bash
 # Disable both topology losses for faster training
-python train.py train --no-topology
+python cli.py train --no-topology
 ```
 This sets both `use_cldice=False` and `use_supervoxel=False`, reducing the loss to:
 ```
@@ -950,7 +954,7 @@ This file defines how training data is loaded and served to the model.
 ## Imports
 
 ```python
-from src.training.data_utils import (
+from src.data_utils import (
     BatchedVideoDatapoint, Frame, Object, VideoDatapoint, collate_fn,
 )
 ```
@@ -1291,7 +1295,7 @@ During validation, we DON'T augment:
 
 ---
 
-# File 8: `src/training/train.py` - Training Loop
+# File 8: `src/trainer.py` - Training Loop
 
 The main training script. This file includes a custom `SAM2TrainingWrapper` class because Meta's internal `SAM2Train` is not available in the pip package.
 

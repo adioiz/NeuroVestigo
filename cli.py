@@ -4,18 +4,18 @@ Top-level entry point for SAM 2 LoRA fine-tuning on neuron data.
 
 Usage:
     # Step 1: Prepare training data from TIF stacks
-    python train.py prepare --manifest data_manifest.json --output-dir training_data
+    python cli.py prepare --manifest data_manifest.json --output-dir training_data
 
     # Step 2: Train the model
-    python train.py train
+    python cli.py train
 
     # Step 2 (with custom settings):
-    python train.py train --epochs 80 --lora-rank 16 --data-dir training_data
+    python cli.py train --epochs 80 --lora-rank 16 --data-dir training_data
 
     # Step 2 (use ImageNet normalization instead of dataset stats):
-    python train.py train --use-imagenet-stats
+    python cli.py train --use-imagenet-stats
 
-Example manifest.json:
+Example data_manifest.json:
     [
         {
             "image_tif": "/Volumes/Adi-SSD/EfratData/.../A31 C2.tif",
@@ -35,7 +35,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 def cmd_prepare(args):
     """Prepare training data from TIF stacks."""
-    from src.training.prepare_data import prepare_dataset
+    from src.prepare_data import prepare_dataset
 
     with open(args.manifest) as f:
         manifest = json.load(f)
@@ -48,10 +48,10 @@ def cmd_prepare(args):
 
 def cmd_train(args):
     """Run the training loop."""
-    from src.training.config import (
+    from src.config import (
         TrainingConfig, LoRAConfig, DataConfig, OptimizerConfig, AugmentationConfig, LossConfig,
     )
-    from src.training.train import train
+    from src.trainer import train
 
     # If --use-dataset-stats is passed, leave normalize_mean/std as None
     # so that train.py auto-loads from manifest.json.

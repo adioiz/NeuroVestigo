@@ -32,9 +32,9 @@ class AugmentationConfig:
     # Intensity augmentations
     brightness: float = 0.15
     contrast: float = 0.15
-    # Normalization stats — set from manifest.json (dataset-specific) by default.
+    # Normalization stats — set from stats.json (dataset-specific) by default.
     # Falls back to ImageNet stats if not overridden.
-    # Use --use-dataset-stats to auto-load from manifest.json (recommended).
+    # Use --use-dataset-stats to auto-load from stats.json (recommended).
     normalize_mean: Optional[List[float]] = None
     normalize_std: Optional[List[float]] = None
 

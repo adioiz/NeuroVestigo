@@ -50,9 +50,9 @@ pip install git+https://github.com/facebookresearch/sam2.git
 
 ## Quick Start
 
-### Step 1: Create Manifest
+### Step 1: Create Data Manifest
 
-Create a `manifest.json` file listing your TIF stacks. Use relative paths via symlinks:
+Create a `data_manifest.json` file listing your TIF stacks. Use relative paths via symlinks:
 
 ```json
 [
@@ -81,7 +81,7 @@ Create a `manifest.json` file listing your TIF stacks. Use relative paths via sy
 Convert TIF stacks to PNG training format:
 
 ```bash
-python train.py prepare --manifest manifest.json --output-dir training_data
+python cli.py prepare --manifest data_manifest.json --output-dir training_data
 ```
 
 This creates:
@@ -108,16 +108,16 @@ training_data/
 
 ```bash
 # Basic training (recommended for GPU)
-python train.py train --epochs 30
+python cli.py train --epochs 30
 
 # With clDice for thin structures (requires more memory)
-python train.py train --epochs 30 --batch-size 2
+python cli.py train --epochs 30 --batch-size 2
 
 # For Apple Silicon (MPS) if OOM occurs
-python train.py train --epochs 30 --batch-size 1 --no-cldice
+python cli.py train --epochs 30 --batch-size 1 --no-cldice
 
 # Full customization
-python train.py train \
+python cli.py train \
     --epochs 30 \
     --batch-size 2 \
     --lora-rank 8 \
@@ -180,16 +180,16 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 ### Out of Memory (OOM) or Slow Training
 ```bash
 # Reduce batch size
-python train.py train --batch-size 1
+python cli.py train --batch-size 1
 
 # Disable ALL topology losses (fastest for CPU/MPS)
-python train.py train --no-topology
+python cli.py train --no-topology
 
 # Or disable only clDice
-python train.py train --no-cldice
+python cli.py train --no-cldice
 
 # Or reduce frames per clip
-python train.py train --num-frames 4
+python cli.py train --num-frames 4
 ```
 
 ### Broken Neuron Branches
@@ -198,42 +198,42 @@ If thin structures break:
 2. Enable supervoxel loss (default: enabled)
 3. Increase weights for connectivity losses:
    ```bash
-   python train.py train --supervoxel-weight 2.0
+   python cli.py train --supervoxel-weight 2.0
    ```
-   Or edit `src/training/config.py`: `loss_cldice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
+   Or edit `src/config.py`: `loss_cldice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
 
 ### Validation Too Slow
 ```bash
 # Limit to 10 validation batches
-python train.py train --val-samples 10
+python cli.py train --val-samples 10
 ```
 
 ## Project Structure
 
 ```
 Fine-tune-SAM2-model-for-Neurons-segmentation/
-├── train.py                 # Training CLI
+├── cli.py                   # Training CLI
+├── data_manifest.json       # Your data manifest file
 ├── requirements.txt
 ├── README.md
 ├── CODE_EXPLAINED.md        # Detailed code documentation
 ├── FINE_TUNING_GUIDE.md     # Complete training guide
-├── manifest.json            # Your manifest file
 ├── labeled_masks/           # Symlink -> ../neurons-labeling/labeled_masks
 ├── labeled_coordinates/     # Symlink -> ../neurons-labeling/labeled_coordinates
 ├── checkpoints/             # Saved model weights (source of truth)
 │   └── lora_weights.pt
 ├── training_data/           # Prepared PNG data
+│   └── stats.json           # Normalization statistics
 └── src/
-    └── training/
-        ├── config.py        # Hyperparameters
-        ├── lora.py          # LoRA implementation
-        ├── train.py         # Training loop
-        ├── evaluate.py      # Validation metrics
-        ├── neuron_dataset.py # PyTorch Dataset
-        ├── augmentations.py # Video augmentation
-        ├── loss_fns.py      # Loss functions (Focal, Dice, clDice, Supervoxel)
-        ├── prepare_data.py  # TIF to PNG conversion
-        └── data_utils.py    # Data containers
+    ├── config.py            # Hyperparameters
+    ├── lora.py              # LoRA implementation
+    ├── trainer.py           # Training loop
+    ├── evaluate.py          # Validation metrics
+    ├── neuron_dataset.py    # PyTorch Dataset
+    ├── augmentations.py     # Video augmentation
+    ├── loss_fns.py          # Loss functions (Focal, Dice, clDice, Supervoxel)
+    ├── prepare_data.py      # TIF to PNG conversion
+    └── data_utils.py        # Data containers
 ```
 
 ## Hardware Requirements

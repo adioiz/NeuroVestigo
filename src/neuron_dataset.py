@@ -14,7 +14,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.training.data_utils import (
+from src.data_utils import (
     BatchedVideoDatapoint,
     Frame,
     Object,

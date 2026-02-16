@@ -185,18 +185,18 @@ def prepare_dataset(manifest: list, output_dir: str = "training_data"):
             "frames_without_mask": total_without_mask,
         },
     }
-    manifest_path = output_dir / "manifest.json"
-    with open(manifest_path, "w") as f:
+    stats_path = output_dir / "stats.json"
+    with open(stats_path, "w") as f:
         json.dump(output_data, f, indent=2)
 
-    print(f"\nSaved manifest to {manifest_path}")
+    print(f"\nSaved stats to {stats_path}")
     print(f"Total: {len(results)} videos, {total_frames} frames")
     print(f"  Frames with mask: {total_with_mask}, without: {total_without_mask}")
     print(f"\nDataset normalization stats (0-1 scale):")
     print(f"  mean = {dataset_mean:.4f}, std = {dataset_std:.4f}")
     print(f"  (ImageNet: mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])")
-    print(f"\nThese stats are saved in manifest.json under 'normalization'.")
-    print(f"train.py will auto-load these stats (pass --use-imagenet-stats to override).")
+    print(f"\nThese stats are saved in stats.json under 'normalization'.")
+    print(f"cli.py will auto-load these stats (pass --use-imagenet-stats to override).")
 
 
 def main():
