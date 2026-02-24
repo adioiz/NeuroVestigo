@@ -1,18 +1,18 @@
 # SAM2 Neuron Fine-Tuning
 
-LoRA fine-tuning pipeline for SAM2 on neuron microscopy data.
+LoRA+ fine-tuning pipeline for SAM2 on neuron microscopy data.
 
 ## Overview
 
-This repository provides a training pipeline to fine-tune SAM2 (Segment Anything Model 2) for neuron segmentation using LoRA (Low-Rank Adaptation). Fine-tuning improves segmentation accuracy for your specific microscopy domain.
+This repository provides a training pipeline to fine-tune SAM2 (Segment Anything Model 2) for neuron segmentation using LoRA+ (Low-Rank Adaptation with asymmetric learning rates). Fine-tuning improves segmentation accuracy for your specific microscopy domain.
 
 **For labeling/annotation**, use the companion [neurons-labeling](../neurons-labeling/) repository.
 
 ## Features
 
-- **LoRA fine-tuning**: Efficient training (~0.5% of parameters)
-- **clDice loss**: Skeleton topology-preserving loss for tubular structures
-- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors (NEW!)
+- **LoRA+ fine-tuning**: Efficient training (~0.5% of parameters) with asymmetric A/B learning rates
+- **cbDice loss**: Skeleton topology-preserving loss with boundary weighting for tubular structures
+- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors
 - **Strong augmentations**: Elastic deformations, blur, noise
 - **Early stopping**: Automatic stopping when metrics plateau
 - **MPS support**: Works on Apple Silicon
@@ -110,11 +110,11 @@ training_data/
 # Basic training (recommended for GPU)
 python cli.py train --epochs 30
 
-# With clDice for thin structures (requires more memory)
+# With cbDice for thin structures (requires more memory)
 python cli.py train --epochs 30 --batch-size 2
 
 # For Apple Silicon (MPS) if OOM occurs
-python cli.py train --epochs 30 --batch-size 1 --no-cldice
+python cli.py train --epochs 30 --batch-size 1 --no-cbdice
 
 # Full customization
 python cli.py train \
@@ -155,17 +155,18 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 | `--batch-size` | 2 | Batch size (1 if OOM) |
 | `--lora-rank` | 8 | LoRA rank (8-16 typical) |
 | `--lora-alpha` | 16.0 | LoRA alpha (usually 2x rank) |
-| `--lora-lr` | 1e-4 | LoRA learning rate |
+| `--lora-lr` | 1e-4 | LoRA A matrix learning rate |
+| `--lora-b-lr-ratio` | 16.0 | LoRA+ B/A learning rate ratio |
 | `--base-lr` | 1e-5 | Learning rate for non-LoRA params |
 | `--warmup-epochs` | 1 | Warmup epochs before cosine decay |
 | `--num-frames` | 8 | Frames per training clip |
 | `--patience` | 10 | Early stopping patience |
 | `--val-every` | 2 | Validation frequency (epochs) |
 | `--val-samples` | 0 | Max validation batches (0=all, >0=faster) |
-| `--no-cldice` | False | Disable clDice loss to save memory |
+| `--no-cbdice` | False | Disable cbDice loss to save memory |
 | `--supervoxel-weight` | 1.0 | Supervoxel connectivity loss weight |
 | `--no-supervoxel` | False | Disable supervoxel loss |
-| `--no-topology` | False | Disable BOTH clDice and supervoxel (fast CPU/MPS training) |
+| `--no-topology` | False | Disable BOTH cbDice and supervoxel (fast CPU/MPS training) |
 
 ## Key Metrics
 
@@ -185,8 +186,8 @@ python cli.py train --batch-size 1
 # Disable ALL topology losses (fastest for CPU/MPS)
 python cli.py train --no-topology
 
-# Or disable only clDice
-python cli.py train --no-cldice
+# Or disable only cbDice
+python cli.py train --no-cbdice
 
 # Or reduce frames per clip
 python cli.py train --num-frames 4
@@ -194,13 +195,13 @@ python cli.py train --num-frames 4
 
 ### Broken Neuron Branches
 If thin structures break:
-1. Enable clDice (don't use `--no-cldice`)
+1. Enable cbDice (don't use `--no-cbdice`)
 2. Enable supervoxel loss (default: enabled)
 3. Increase weights for connectivity losses:
    ```bash
    python cli.py train --supervoxel-weight 2.0
    ```
-   Or edit `src/config.py`: `loss_cldice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
+   Or edit `src/config.py`: `loss_cbdice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
 
 ### Validation Too Slow
 ```bash
@@ -226,12 +227,12 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 │   └── stats.json           # Normalization statistics
 └── src/
     ├── config.py            # Hyperparameters
-    ├── lora.py              # LoRA implementation
+    ├── lora.py              # LoRA+ implementation
     ├── trainer.py           # Training loop
     ├── evaluate.py          # Validation metrics
     ├── neuron_dataset.py    # PyTorch Dataset
     ├── augmentations.py     # Video augmentation
-    ├── loss_fns.py          # Loss functions (Focal, Dice, clDice, Supervoxel)
+    ├── loss_fns.py          # Loss functions (Focal, Dice, cbDice, Supervoxel)
     ├── prepare_data.py      # TIF to PNG conversion
     └── data_utils.py        # Data containers
 ```
@@ -252,6 +253,7 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 ## References
 
 - [SAM 2: Segment Anything in Images and Videos](https://github.com/facebookresearch/sam2)
-- [clDice: A Novel Topology-Preserving Loss Function](https://arxiv.org/abs/2003.07311) (Shit et al., CVPR 2021)
+- [LoRA+: Efficient Low Rank Adaptation](https://arxiv.org/abs/2402.12354) (Hayou et al., ICML 2024)
+- [cbDice: centerline boundary Dice loss](https://github.com/PengchengShi1220/cbDice) (Shi et al., MICCAI 2024)
 - [Supervoxel Loss: Connectivity-Preserving Segmentation](https://arxiv.org/abs/2501.01022) (Grim et al., AAAI 2025)
-- [LoRA: Low-Rank Adaptation](https://arxiv.org/abs/2106.09685)
+- [LoRA: Low-Rank Adaptation](https://arxiv.org/abs/2106.09685) (Hu et al., ICLR 2022)

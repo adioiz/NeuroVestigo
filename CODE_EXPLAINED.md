@@ -138,11 +138,13 @@ LoRA alpha 16 — scaling factor. Combined with rank: scale = alpha/rank = 16/8 
 
 ```python
 p_train.add_argument("--lora-lr", type=float, default=1e-4)
-p_train.add_argument("--base-lr", type=float, default=5e-6)
+p_train.add_argument("--lora-b-lr-ratio", type=float, default=16.0)
+p_train.add_argument("--base-lr", type=float, default=1e-5)
 ```
-**Two learning rates:**
-- `lora-lr = 1e-4 = 0.0001` — for LoRA parameters (higher, they start at zero)
-- `base-lr = 5e-6 = 0.000005` — for embeddings (lower, they're already pretrained)
+**Three learning rates (LoRA+):**
+- `lora-lr = 1e-4` — for LoRA A matrices (down-projection, Kaiming init)
+- `lora-b-lr-ratio = 16.0` — B matrices get `lora-lr × 16 = 1.6e-3` (B starts at zeros, needs higher LR)
+- `base-lr = 1e-5` — for embeddings (lower, they're already pretrained)
 
 ---
 
@@ -237,28 +239,29 @@ class AugmentationConfig:
 ```python
 @dataclass
 class OptimizerConfig:
-    base_lr: float = 5e-6     # For embeddings (pretrained)
-    lora_lr: float = 1e-4     # For LoRA (new)
+    base_lr: float = 1e-5     # For embeddings (pretrained)
+    lora_lr: float = 1e-4     # For LoRA A matrices (down-projection)
+    lora_b_lr_ratio: float = 16.0  # LoRA+ ratio: lr_B = lora_lr × ratio
     weight_decay: float = 0.1
-    max_grad_norm: float = 0.1
-    warmup_epochs: int = 3
+    max_grad_norm: float = 1.0
+    warmup_epochs: int = 1
     use_cosine_schedule: bool = True
 ```
 
-**Why two learning rates?**
+**Why three learning rates (LoRA+)?**
 
-LoRA parameters start at ~0 (B matrix is initialized to zeros). They need larger steps to have any effect.
+LoRA+ (Hayou et al., ICML 2024) uses asymmetric learning rates for A and B matrices:
 
-Embedding parameters are already pretrained with useful values. Large steps would destroy them.
+- **A matrices (lr=1e-4):** Down-projection, initialized with Kaiming uniform. Produces reasonable gradients from the start.
+- **B matrices (lr=1.6e-3, 16× higher):** Up-projection, initialized to zeros. Because B starts at zero, gradients for B are much smaller than for A — they need a higher learning rate to catch up. This is the key insight of LoRA+.
+- **Embeddings (lr=1e-5):** Already pretrained with useful values. Large steps would destroy them.
 
-**Ratio:** `lora_lr / base_lr = 1e-4 / 5e-6 = 20×`
-
-**Why `max_grad_norm = 0.1`?**
+**Why `max_grad_norm = 1.0`?**
 
 Gradient clipping. If gradients get too large (exploding gradients), we scale them down:
 ```
-if ||gradients|| > 0.1:
-    gradients = gradients × (0.1 / ||gradients||)
+if ||gradients|| > 1.0:
+    gradients = gradients × (1.0 / ||gradients||)
 ```
 
 This prevents training instability.
@@ -272,7 +275,7 @@ This prevents training instability.
 class LossConfig:
     loss_mask_weight: float = 5.0    # Focal loss weight
     loss_dice_weight: float = 2.0    # Dice loss weight
-    loss_cldice_weight: float = 1.0  # clDice for skeleton topology
+    loss_cbdice_weight: float = 1.0  # cbDice for skeleton topology (with boundary weighting)
     loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity
     loss_iou_weight: float = 1.0     # IoU prediction loss
     loss_class_weight: float = 1.0   # Object presence loss
@@ -282,13 +285,13 @@ class LossConfig:
 
 **Combined loss:**
 ```
-L_total = 5·L_focal + 2·L_dice + 1·L_cldice + 1·L_supervoxel + 1·L_iou + 1·L_class
+L_total = 5·L_focal + 2·L_dice + 1·L_cbDice + 1·L_supervoxel + 1·L_iou + 1·L_class
 ```
 
 **Why these weights?**
 - **Focal (5.0)**: Pixel accuracy is the primary objective, but reduced from 20 to balance with topology losses
 - **Dice (2.0)**: Region-level overlap is important for shape matching
-- **clDice + Supervoxel (1.0 each)**: Topology preservation for thin neuron branches
+- **cbDice + Supervoxel (1.0 each)**: Topology preservation for thin neuron branches
 
 **Focal loss parameters:**
 - `alpha = 0.25`: Balances foreground/background
@@ -669,28 +672,30 @@ class DiceLoss(nn.Module):
 Dice = 2 × |A ∩ B| / (|A| + |B|)
 ```
 
-## Class: `SoftCLDiceLoss` (Topology-Preserving)
+## Class: `SoftCBDiceLoss` (Topology-Preserving with Boundary Weighting)
 
-clDice focuses on skeleton matching - ensuring the centerlines of predicted structures match the ground truth.
+cbDice (Shi et al., MICCAI 2024) extends clDice (Shit et al., CVPR 2021) by adding distance-transform-based boundary weighting. The key improvement: thinner structures get higher weight via inverse-radius weighting from the Euclidean distance transform (EDT).
 
 **Formula:**
 ```
-Tprec = |skel(pred) ∩ target| / |skel(pred)|   (skeleton precision)
-Tsens = |skel(target) ∩ pred| / |skel(target)| (skeleton sensitivity)
-clDice = 2 × Tprec × Tsens / (Tprec + Tsens)
+cbTprec = |W_t · skel(pred) · target| / |W_t · skel(pred)|   (weighted skeleton precision)
+cbTsens = |W_p · skel(target) · pred| / |W_p · skel(target)| (weighted skeleton sensitivity)
+cbDice = 2 × cbTprec × cbTsens / (cbTprec + cbTsens)
 ```
 
+Where W_t and W_p are inverse-radius distance transform weights. For a structure with local radius r, the weight is 1/(r+1) — thin dendrites (r≈1) get weight ≈0.5, thick soma (r≈10) gets weight ≈0.09.
+
 **Why this matters for neurons:**
-- Neuron branches are thin tubular structures
+- Neuron branches are thin tubular structures with varying radius
 - Their skeleton represents the centerline
-- Breaking a branch removes its skeleton → low sensitivity
-- Adding spurious branches → low precision
+- Breaking a thin branch gets heavily penalized (both skeleton loss AND high weight from small radius)
+- cbDice automatically upweights errors on thin branches that standard clDice would treat equally
 
 ---
 
 ## Class: `SupervoxelLoss2D` (Connectivity-Preserving)
 
-**NEW!** Supervoxel loss specifically targets split/merge errors that clDice may miss.
+**NEW!** Supervoxel loss specifically targets split/merge errors that cbDice may miss.
 
 ```python
 class SupervoxelLoss2D(nn.Module):
@@ -745,11 +750,11 @@ For each connected component in error regions:
     2. If yes → mark as critical → apply higher loss weight
 ```
 
-**Why this complements clDice:**
-- clDice: "Does the skeleton match?" (centerline overlap)
+**Why this complements cbDice:**
+- cbDice: "Does the skeleton match?" (weighted centerline overlap)
 - Supervoxel: "Does connectivity match?" (topology preservation)
 
-A 1-pixel gap may not significantly affect clDice (skeleton mostly intact), but Supervoxel loss heavily penalizes it because it causes a split.
+A 1-pixel gap may not significantly affect cbDice (skeleton mostly intact), but Supervoxel loss heavily penalizes it because it causes a split.
 
 **Reference:**
 Grim et al., "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function", AAAI 2025
@@ -768,7 +773,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # Compute individual losses
         loss_mask = self.focal(pred_masks, targets)        # Pixel accuracy
         loss_dice = self.dice(pred_masks, targets)         # Shape quality
-        loss_cldice = self.cldice(pred_masks, targets)     # Skeleton topology
+        loss_cbdice = self.cbdice(pred_masks, targets)     # Skeleton topology (with boundary weighting)
         loss_supervoxel = self.supervoxel(pred_masks, targets)  # Connectivity
         loss_iou = ...  # IoU prediction accuracy
         loss_class = ...  # Object presence
@@ -777,7 +782,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         core_loss = (
             5.0 * loss_mask +        # Focal loss
             2.0 * loss_dice +        # Dice loss
-            1.0 * loss_cldice +      # clDice for skeleton
+            1.0 * loss_cbdice +      # cbDice for skeleton
             1.0 * loss_supervoxel +  # Supervoxel for connectivity
             1.0 * loss_iou +
             1.0 * loss_class
@@ -788,7 +793,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
 
 **Combined loss formula:**
 ```
-L_total = 5×L_focal + 2×L_dice + 1×L_cldice + 1×L_supervoxel + 1×L_iou + 1×L_class
+L_total = 5×L_focal + 2×L_dice + 1×L_cbDice + 1×L_supervoxel + 1×L_iou + 1×L_class
 ```
 
 **Fast training mode (CPU/MPS):**
@@ -796,7 +801,7 @@ L_total = 5×L_focal + 2×L_dice + 1×L_cldice + 1×L_supervoxel + 1×L_iou + 1�
 # Disable both topology losses for faster training
 python cli.py train --no-topology
 ```
-This sets both `use_cldice=False` and `use_supervoxel=False`, reducing the loss to:
+This sets both `use_cbdice=False` and `use_supervoxel=False`, reducing the loss to:
 ```
 L_total = 5×L_focal + 2×L_dice + 1×L_iou + 1×L_class
 ```
@@ -1458,33 +1463,42 @@ This is crucial for preventing hallucination on empty frames.
 
 ---
 
-## Function: `build_optimizer()`
+## Function: `build_optimizer()` — LoRA+ Asymmetric Learning Rates
 
 ```python
 def build_optimizer(model: nn.Module, config: TrainingConfig):
-    param_groups = get_trainable_parameters(model)  # {"lora": [...], "other": [...]}
+    param_groups = get_trainable_parameters(model)
+    # Returns: {"lora_a": [...], "lora_b": [...], "other": [...]}
+
+    lora_b_lr = config.optimizer.lora_lr * config.optimizer.lora_b_lr_ratio
 
     optimizer = torch.optim.AdamW([
         {
-            "params": param_groups["lora"],
+            "params": param_groups["lora_a"],
             "lr": config.optimizer.lora_lr,           # 1e-4
             "weight_decay": config.optimizer.weight_decay,  # 0.1
         },
         {
+            "params": param_groups["lora_b"],
+            "lr": lora_b_lr,                          # 1.6e-3 (16× higher)
+            "weight_decay": config.optimizer.weight_decay,  # 0.1
+        },
+        {
             "params": param_groups["other"],
-            "lr": config.optimizer.base_lr,           # 5e-6
+            "lr": config.optimizer.base_lr,           # 1e-5
             "weight_decay": 0.0,                      # No decay for embeddings!
         },
     ])
     return optimizer
 ```
 
-**Two parameter groups with different settings:**
+**Three parameter groups with LoRA+ (Hayou et al., ICML 2024):**
 
 | Group | LR | Weight Decay | Reason |
 |-------|-----|--------------|--------|
-| LoRA | 1e-4 | 0.1 | Start at ~0, need large steps; decay prevents explosion |
-| Embeddings | 5e-6 | 0.0 | Already pretrained, need small steps; no decay to preserve info |
+| LoRA A | 1e-4 | 0.1 | Down-projection, Kaiming init, reasonable gradients |
+| LoRA B | 1.6e-3 | 0.1 | Up-projection, zeros init, needs 16× higher LR (LoRA+) |
+| Embeddings | 1e-5 | 0.0 | Already pretrained, need small steps; no decay to preserve info |
 
 ---
 
@@ -1513,16 +1527,16 @@ def build_scheduler(optimizer, config, steps_per_epoch):
 ```
 LR
 │
-│       Warmup (3 epochs)
-│      ╱
-│     ╱   Cosine annealing
-│    ╱ ╲
-│   ╱    ╲
-│  ╱       ╲
-│ ╱          ╲____
-│╱                 ╲
+│  Warmup (1 epoch)
+│ ╱
+│╱   Cosine annealing
+│ ╲
+│   ╲
+│     ╲
+│       ╲____
+│             ╲
 └─────────────────────── epochs
-  0   3            57  60
+  0 1            55  60
 ```
 
 **Warmup formula:**
@@ -1605,7 +1619,7 @@ Use float16/bfloat16 for forward pass (faster, less memory) but float32 for sens
 6. `loss = losses["core_loss"]` — Get combined loss
 7. `optimizer.zero_grad()` — Clear old gradients
 8. `loss.backward()` — Compute gradients (backpropagation)
-9. `clip_grad_norm_(..., 0.1)` — Prevent exploding gradients
+9. `clip_grad_norm_(..., 1.0)` — Prevent exploding gradients
 10. `optimizer.step()` — Update weights
 11. `scheduler.step()` — Update learning rate
 
@@ -1778,8 +1792,8 @@ After reading this document, you should be able to explain:
 4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip)
-7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + IoU pred + Object score
-8. **Two learning rates:** LoRA (1e-4) vs embeddings (5e-6)
+7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology) + Supervoxel (connectivity) + IoU pred + Object score
+8. **Three learning rates (LoRA+):** LoRA A (1e-4) vs LoRA B (1.6e-3, 16× higher) vs embeddings (1e-5)
 9. **Cosine schedule:** Warmup then smooth decay
 10. **Evaluation:** IoU and Dice metrics, save best validation checkpoint
 

@@ -347,12 +347,12 @@ def build_training_model(config: TrainingConfig, device: str):
         focal_alpha=config.loss.focal_alpha,
         focal_gamma=config.loss.focal_gamma,
         pred_obj_scores=True,
-        use_cldice=config.loss.use_cldice,
-        cldice_num_iter=config.loss.cldice_num_iter,
+        use_cbdice=config.loss.use_cbdice,
+        cbdice_num_iter=config.loss.cbdice_num_iter,
         use_supervoxel=config.loss.use_supervoxel,
     )
-    if config.loss.use_cldice:
-        print(f"  Using clDice loss for skeleton topology (weight={config.loss.loss_cldice_weight})")
+    if config.loss.use_cbdice:
+        print(f"  Using cbDice loss for skeleton topology (weight={config.loss.loss_cbdice_weight})")
     if config.loss.use_supervoxel:
         print(f"  Using supervoxel loss for connectivity (weight={config.loss.loss_supervoxel_weight})")
 
@@ -361,14 +361,28 @@ def build_training_model(config: TrainingConfig, device: str):
 
 
 def build_optimizer(model: nn.Module, config: TrainingConfig):
-    """Build AdamW optimizer with separate LR for LoRA and other params."""
+    """Build AdamW optimizer with LoRA+ asymmetric A/B learning rates.
+
+    LoRA+ (Hayou et al., ICML 2024) uses different learning rates for A and B:
+    - A (down-projection): standard lora_lr
+    - B (up-projection): lora_lr × lora_b_lr_ratio (default 16×)
+
+    B starts at zeros and needs a higher LR to overcome gradient imbalance.
+    """
     param_groups = get_trainable_parameters(model)
+
+    lora_b_lr = config.optimizer.lora_lr * config.optimizer.lora_b_lr_ratio
 
     optimizer = torch.optim.AdamW(
         [
             {
-                "params": param_groups["lora"],
+                "params": param_groups["lora_a"],
                 "lr": config.optimizer.lora_lr,
+                "weight_decay": config.optimizer.weight_decay,
+            },
+            {
+                "params": param_groups["lora_b"],
+                "lr": lora_b_lr,
                 "weight_decay": config.optimizer.weight_decay,
             },
             {
@@ -378,6 +392,10 @@ def build_optimizer(model: nn.Module, config: TrainingConfig):
             },
         ],
     )
+
+    print(f"  LoRA+ optimizer: A lr={config.optimizer.lora_lr:.1e}, "
+          f"B lr={lora_b_lr:.1e} (ratio={config.optimizer.lora_b_lr_ratio}), "
+          f"embeddings lr={config.optimizer.base_lr:.1e}")
     return optimizer
 
 

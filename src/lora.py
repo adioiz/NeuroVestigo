@@ -1,10 +1,14 @@
 """
-LoRA (Low-Rank Adaptation) for SAM 2 fine-tuning.
+LoRA+ (Low-Rank Adaptation with asymmetric learning rates) for SAM 2 fine-tuning.
 
 Wraps nn.Linear layers with low-rank adapters so that:
     output = original_linear(x) + (scale) * B @ A @ x
 
 Only the A and B matrices are trainable, keeping the original weights frozen.
+
+LoRA+ improvement (Hayou et al., ICML 2024): Uses different learning rates
+for A and B matrices. B starts at zeros and needs a higher LR (ratio ~16x)
+to overcome gradient imbalance, yielding faster convergence at zero extra cost.
 """
 
 import re
@@ -147,13 +151,19 @@ def get_lora_parameters(model: nn.Module) -> List[nn.Parameter]:
 
 def get_trainable_parameters(model: nn.Module) -> Dict[str, List[nn.Parameter]]:
     """
-    Get all trainable parameters grouped by type.
+    Get all trainable parameters grouped by type (LoRA+ compatible).
+
+    LoRA+ (Hayou et al., ICML 2024) uses different learning rates for the
+    A (down-projection) and B (up-projection) matrices. B starts at zeros
+    and needs a higher LR to overcome the gradient imbalance.
 
     Returns dict with keys:
-        'lora': LoRA adapter parameters
+        'lora_a': LoRA A (down-projection) parameters — standard LR
+        'lora_b': LoRA B (up-projection) parameters — higher LR (LoRA+)
         'other': Other unfrozen parameters (embeddings, small projections)
     """
-    lora_params = []
+    lora_a_params = []
+    lora_b_params = []
     other_params = []
 
     lora_module_names = set()
@@ -167,11 +177,16 @@ def get_trainable_parameters(model: nn.Module) -> Dict[str, List[nn.Parameter]]:
         # Check if this param belongs to a LoRA module
         is_lora = any(name.startswith(ln) for ln in lora_module_names)
         if is_lora:
-            lora_params.append(param)
+            if ".lora_A." in name:
+                lora_a_params.append(param)
+            elif ".lora_B." in name:
+                lora_b_params.append(param)
+            else:
+                other_params.append(param)  # Shouldn't happen, but safe
         else:
             other_params.append(param)
 
-    return {"lora": lora_params, "other": other_params}
+    return {"lora_a": lora_a_params, "lora_b": lora_b_params, "other": other_params}
 
 
 def _normalize_key(key: str) -> str:

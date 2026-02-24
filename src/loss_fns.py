@@ -6,13 +6,17 @@ replacing the Meta-internal training.loss_fns module.
 Loss Components:
     - FocalLoss: Handles class imbalance (background >> neuron pixels)
     - DiceLoss: Optimizes for shape/overlap (IoU-like)
-    - SoftCLDiceLoss: Topology-preserving loss for tubular structures (neurons)
+    - SoftCBDiceLoss: Topology-preserving loss with boundary weighting (neurons)
     - SupervoxelLoss2D: Connectivity-preserving loss for split/merge errors
     - MultiStepMultiMasksAndIous: Combines all losses with configurable weights
 
 References:
-    - clDice: Shit et al., "clDice - A Novel Topology-Preserving Loss Function
-      for Tubular Structure Segmentation", CVPR 2021
+    - cbDice: Shi et al., "centerline boundary Dice loss for vascular
+      segmentation", MICCAI 2024 (extends clDice with distance-transform
+      boundary weighting)
+      https://github.com/PengchengShi1220/cbDice
+    - clDice (predecessor): Shit et al., "clDice - A Novel Topology-Preserving
+      Loss Function for Tubular Structure Segmentation", CVPR 2021
       https://arxiv.org/abs/2003.07311
     - Supervoxel Loss: Grim et al., "Efficient Connectivity-Preserving Instance
       Segmentation with Supervoxel-Based Loss Function", AAAI 2025
@@ -137,11 +141,18 @@ class DiceLoss(nn.Module):
 
 
 # =============================================================================
-# clDice Loss - Topology-Preserving Loss for Tubular Structures
+# cbDice Loss - Topology-Preserving Loss with Boundary Weighting
 # =============================================================================
-# Reference: Shit et al., "clDice - A Novel Topology-Preserving Loss Function
-# for Tubular Structure Segmentation", CVPR 2021
-# Implementation adapted from: https://github.com/jocpae/clDice
+# cbDice (Shi et al., MICCAI 2024) extends clDice (Shit et al., CVPR 2021)
+# with distance-transform-based boundary weighting. Thinner structures get
+# higher weight via inverse-radius weighting from the EDT.
+#
+# Morphological helpers (soft_erode, soft_dilate, soft_open, soft_skel) are
+# shared between clDice and cbDice.
+#
+# References:
+#   cbDice: https://github.com/PengchengShi1220/cbDice
+#   clDice: https://github.com/jocpae/clDice
 # =============================================================================
 
 
@@ -248,38 +259,82 @@ def soft_skel(img: torch.Tensor, num_iter: int = 5) -> torch.Tensor:
     return skeleton
 
 
-class SoftCLDiceLoss(nn.Module):
-    """Centerline Dice (clDice) Loss for topology-preserving segmentation.
+def _compute_distance_weights(binary_mask: torch.Tensor) -> torch.Tensor:
+    """Compute inverse-radius distance weights for cbDice.
 
-    Standard Dice loss treats all pixels equally, which means breaking a
-    thin connection (few pixels) has minimal impact on the loss. This is
-    problematic for tubular structures like neurons, where connectivity
-    is crucial.
+    Uses Euclidean distance transform (EDT) to compute weights that give
+    higher importance to thinner structures (smaller local radius). This is
+    the key addition of cbDice over clDice.
 
-    clDice addresses this by computing Dice on the skeletonized masks:
-    - Skeleton of prediction vs. ground truth mask
-    - Skeleton of ground truth vs. predicted mask
-
-    This heavily penalizes predictions that break the centerline topology.
-
-    Formula:
-        Tprec = |skel(pred) ∩ target| / |skel(pred)|  (precision on skeleton)
-        Tsens = |skel(target) ∩ pred| / |skel(target)|  (sensitivity on skeleton)
-        clDice = 2 * Tprec * Tsens / (Tprec + Tsens)
-
-    Why this works for neurons:
-    - Neuron branches are thin tubular structures
-    - Their skeleton is the centerline/medial axis
-    - Breaking a branch removes its skeleton → low Tsens
-    - Adding spurious branches → low Tprec
+    For a neuron branch with radius r, the EDT value at the centerline is r.
+    We invert this: weight = 1/(r+1), so thin branches (r≈1) get weight ≈0.5
+    while thick soma regions (r≈10) get weight ≈0.09.
 
     Args:
-        num_iter: Iterations for soft skeletonization. Default 10.
+        binary_mask: [B, 1, H, W] binary mask (values 0 or 1)
+
+    Returns:
+        weights: [B, 1, H, W] distance-based weights (0 for background)
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    mask_np = binary_mask.detach().cpu().numpy()
+    B, C, H, W = mask_np.shape
+    weights = np.zeros_like(mask_np, dtype=np.float32)
+
+    for b in range(B):
+        for c in range(C):
+            m = mask_np[b, c]
+            if m.sum() > 0:
+                dt = distance_transform_edt(m)
+                # Inverse radius weighting: thinner structures get higher weight
+                # Add 1 to avoid division by zero, then invert
+                dt_inv = 1.0 / (dt + 1.0)
+                # Normalize so weights sum to number of foreground pixels
+                fg_count = m.sum()
+                if fg_count > 0:
+                    dt_inv = dt_inv * fg_count / (dt_inv[m > 0].sum() + 1e-8)
+                weights[b, c] = dt_inv * m  # Zero out background
+
+    return torch.from_numpy(weights).to(binary_mask.device)
+
+
+class SoftCBDiceLoss(nn.Module):
+    """Centerline Boundary Dice (cbDice) Loss for topology-preserving segmentation.
+
+    cbDice extends clDice (Shit et al., CVPR 2021) by adding distance-transform-
+    based boundary weighting via the Euclidean distance transform (EDT). This
+    gives higher weight to thinner structures, better preserving thin neuron
+    branches that standard clDice may underweight.
+
+    The key improvement over clDice:
+    - clDice: All skeleton pixels are weighted equally
+    - cbDice: Skeleton pixels in thin structures (small local radius) receive
+      higher weight via inverse-radius weighting from the EDT
+
+    Formula:
+        cbTprec = |W_t · skel(pred) · target| / |W_t · skel(pred)|
+        cbTsens = |W_p · skel(target) · pred| / |W_p · skel(target)|
+        cbDice = 2 · cbTprec · cbTsens / (cbTprec + cbTsens)
+
+    Where W_t and W_p are inverse-radius distance transform weights computed
+    from the target and prediction masks respectively.
+
+    Why this works better for neurons:
+    - Neuron branches are thin tubular structures with varying radius
+    - Thin dendrites (radius ≈ 1-2 pixels) are harder to segment and more
+      important biologically than the thick soma
+    - cbDice automatically upweights errors on thin branches
+    - Breaking a thin branch gets heavily penalized (both skeleton loss AND
+      high weight from small radius)
+
+    Args:
+        num_iter: Iterations for soft skeletonization. Default 5.
         smooth: Smoothing factor to prevent division by zero. Default 1.0.
 
     Reference:
-        Shit et al., "clDice - A Novel Topology-Preserving Loss Function
-        for Tubular Structure Segmentation", CVPR 2021
+        Shi et al., "centerline boundary Dice loss for vascular segmentation",
+        MICCAI 2024. https://github.com/PengchengShi1220/cbDice
     """
 
     def __init__(self, num_iter: int = 5, smooth: float = 1.0):
@@ -288,14 +343,14 @@ class SoftCLDiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Compute clDice loss.
+        """Compute cbDice loss.
 
         Args:
             pred: Predicted logits, shape [B, ...] or [..., H, W]
             target: Binary ground truth, same shape as pred.
 
         Returns:
-            Scalar clDice loss value (1 - clDice).
+            Scalar cbDice loss value (1 - cbDice).
         """
         # Convert logits to probabilities
         pred_prob = torch.sigmoid(pred)
@@ -323,43 +378,51 @@ class SoftCLDiceLoss(nn.Module):
         with torch.no_grad():
             skel_target = soft_skel(target.float(), self.num_iter)
 
-        # Topology precision: how much of predicted skeleton overlaps with target
-        # High when predicted centerlines are in the right places
-        tprec_num = (skel_pred * target).sum() + self.smooth
-        tprec_den = skel_pred.sum() + self.smooth
+        # Compute distance-transform weights (cbDice addition over clDice)
+        with torch.no_grad():
+            # Weights from target mask (for precision: weighting skel_pred)
+            weights_target = _compute_distance_weights(target)
+            # Weights from prediction mask (for sensitivity: weighting skel_target)
+            pred_binary = (pred_prob > 0.5).float()
+            weights_pred = _compute_distance_weights(pred_binary)
+
+        # Weighted topology precision: how much of predicted skeleton overlaps
+        # with target, weighted by inverse radius (thin structures count more)
+        tprec_num = (weights_target * skel_pred * target).sum() + self.smooth
+        tprec_den = (weights_target * skel_pred).sum() + self.smooth
         tprec = tprec_num / tprec_den
 
-        # Topology sensitivity: how much of target skeleton overlaps with prediction
-        # High when true centerlines are captured by prediction
-        tsens_num = (skel_target * pred_prob).sum() + self.smooth
-        tsens_den = skel_target.sum() + self.smooth
+        # Weighted topology sensitivity: how much of target skeleton overlaps
+        # with prediction, weighted by inverse radius
+        tsens_num = (weights_pred * skel_target * pred_prob).sum() + self.smooth
+        tsens_den = (weights_pred * skel_target).sum() + self.smooth
         tsens = tsens_num / tsens_den
 
-        # clDice: harmonic mean of precision and sensitivity
-        cl_dice = 2.0 * tprec * tsens / (tprec + tsens + 1e-8)
+        # cbDice: harmonic mean of weighted precision and sensitivity
+        cb_dice = 2.0 * tprec * tsens / (tprec + tsens + 1e-8)
 
         # Clean up intermediate tensors
-        del skel_pred, skel_target
+        del skel_pred, skel_target, weights_target, weights_pred
 
-        return 1.0 - cl_dice
+        return 1.0 - cb_dice
 
 
-class SoftDiceCLDiceLoss(nn.Module):
-    """Combined Dice + clDice loss for tubular structure segmentation.
+class SoftDiceCBDiceLoss(nn.Module):
+    """Combined Dice + cbDice loss for tubular structure segmentation.
 
     This combines:
     - Standard Dice: Optimizes volumetric overlap
-    - clDice: Preserves topology/connectivity
+    - cbDice: Preserves topology/connectivity with boundary weighting
 
     The alpha parameter controls the balance:
     - alpha=0: Pure Dice loss (no topology awareness)
-    - alpha=1: Pure clDice loss (only topology)
+    - alpha=1: Pure cbDice loss (only topology)
     - alpha=0.5: Equal weight (recommended starting point)
 
     For neurons, we recommend alpha=0.3-0.5 to balance shape and connectivity.
 
     Args:
-        alpha: Weight for clDice. (1-alpha) for Dice. Default 0.5.
+        alpha: Weight for cbDice. (1-alpha) for Dice. Default 0.5.
         num_iter: Iterations for soft skeletonization. Default 10.
         smooth: Smoothing factor. Default 1.0.
     """
@@ -368,21 +431,21 @@ class SoftDiceCLDiceLoss(nn.Module):
         super().__init__()
         self.alpha = alpha
         self.dice = DiceLoss(smooth=smooth)
-        self.cldice = SoftCLDiceLoss(num_iter=num_iter, smooth=smooth)
+        self.cbdice = SoftCBDiceLoss(num_iter=num_iter, smooth=smooth)
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Compute combined Dice + clDice loss.
+        """Compute combined Dice + cbDice loss.
 
         Args:
             pred: Predicted logits.
             target: Binary ground truth.
 
         Returns:
-            Weighted combination: (1-alpha)*Dice + alpha*clDice
+            Weighted combination: (1-alpha)*Dice + alpha*cbDice
         """
         dice_loss = self.dice(pred, target)
-        cldice_loss = self.cldice(pred, target)
-        return (1.0 - self.alpha) * dice_loss + self.alpha * cldice_loss
+        cbdice_loss = self.cbdice(pred, target)
+        return (1.0 - self.alpha) * dice_loss + self.alpha * cbdice_loss
 
 
 # =============================================================================
@@ -694,13 +757,15 @@ class MultiStepMultiMasksAndIous(nn.Module):
     This loss combines multiple objectives:
     1. Focal loss (loss_mask): Handles class imbalance
     2. Dice loss (loss_dice): Optimizes shape/overlap
-    3. clDice loss (loss_cldice): Preserves topology via skeleton matching
+    3. cbDice loss (loss_cbdice): Preserves topology via skeleton matching with
+       boundary weighting
     4. Supervoxel loss (loss_supervoxel): Preserves connectivity via critical regions
     5. IoU loss (loss_iou): Trains IoU prediction head
     6. Object score loss (loss_class): Trains object presence prediction
 
-    Both clDice and Supervoxel losses are important for neuron segmentation:
-    - clDice: Ensures predicted skeleton matches ground truth skeleton
+    Both cbDice and Supervoxel losses are important for neuron segmentation:
+    - cbDice: Ensures predicted skeleton matches ground truth skeleton, with
+      higher weight on thin structures (via inverse-radius EDT weighting)
     - Supervoxel: Penalizes errors that cause split/merge topology changes
 
     The losses are weighted and summed into a single "core_loss" for backprop.
@@ -710,8 +775,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
         focal_alpha: Alpha parameter for focal loss. Default 0.25.
         focal_gamma: Gamma parameter for focal loss. Default 2.0.
         pred_obj_scores: Whether to compute object score loss. Default True.
-        use_cldice: Whether to use clDice loss. Default True.
-        cldice_num_iter: Iterations for soft skeletonization. Default 5.
+        use_cbdice: Whether to use cbDice loss. Default True.
+        cbdice_num_iter: Iterations for soft skeletonization. Default 5.
         use_supervoxel: Whether to use supervoxel loss. Default True.
     """
 
@@ -721,24 +786,24 @@ class MultiStepMultiMasksAndIous(nn.Module):
         focal_alpha: float = 0.25,
         focal_gamma: float = 2.0,
         pred_obj_scores: bool = True,
-        use_cldice: bool = True,
-        cldice_num_iter: int = 5,
+        use_cbdice: bool = True,
+        cbdice_num_iter: int = 5,
         use_supervoxel: bool = True,
     ):
         super().__init__()
         self.weight_dict = weight_dict or {
             "loss_mask": 5.0,        # Focal loss
             "loss_dice": 2.0,        # Standard Dice
-            "loss_cldice": 1.0,      # clDice for skeleton topology
+            "loss_cbdice": 1.0,      # cbDice for skeleton topology
             "loss_supervoxel": 1.0,  # Supervoxel for connectivity
             "loss_iou": 1.0,
             "loss_class": 1.0,
         }
         self.focal = FocalLoss(alpha=focal_alpha, gamma=focal_gamma)
         self.dice = DiceLoss()
-        self.use_cldice = use_cldice
-        if use_cldice:
-            self.cldice = SoftCLDiceLoss(num_iter=cldice_num_iter)
+        self.use_cbdice = use_cbdice
+        if use_cbdice:
+            self.cbdice = SoftCBDiceLoss(num_iter=cbdice_num_iter)
         self.use_supervoxel = use_supervoxel
         if use_supervoxel:
             self.supervoxel = SupervoxelLoss2D(alpha=0.5, beta=0.5)
@@ -759,7 +824,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
                 - "core_loss": Weighted sum of all losses (for backprop)
                 - "loss_mask": Focal loss value
                 - "loss_dice": Dice loss value
-                - "loss_cldice": clDice loss value (skeleton topology)
+                - "loss_cbdice": cbDice loss value (skeleton topology)
                 - "loss_supervoxel": Supervoxel loss value (connectivity)
                 - "loss_iou": IoU prediction loss (or 0 if not available)
                 - "loss_class": Object score loss (or 0 if not available)
@@ -770,10 +835,10 @@ class MultiStepMultiMasksAndIous(nn.Module):
         loss_mask = self.focal(pred_masks, targets)
         loss_dice = self.dice(pred_masks, targets)
 
-        # clDice loss for skeleton topology preservation
-        loss_cldice = torch.tensor(0.0, device=pred_masks.device)
-        if self.use_cldice:
-            loss_cldice = self.cldice(pred_masks, targets)
+        # cbDice loss for skeleton topology preservation (with boundary weighting)
+        loss_cbdice = torch.tensor(0.0, device=pred_masks.device)
+        if self.use_cbdice:
+            loss_cbdice = self.cbdice(pred_masks, targets)
 
         # Supervoxel loss for connectivity preservation
         loss_supervoxel = torch.tensor(0.0, device=pred_masks.device)
@@ -804,7 +869,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         core_loss = (
             self.weight_dict.get("loss_mask", 5.0) * loss_mask +
             self.weight_dict.get("loss_dice", 2.0) * loss_dice +
-            self.weight_dict.get("loss_cldice", 1.0) * loss_cldice +
+            self.weight_dict.get("loss_cbdice", 1.0) * loss_cbdice +
             self.weight_dict.get("loss_supervoxel", 1.0) * loss_supervoxel +
             self.weight_dict.get("loss_iou", 1.0) * loss_iou +
             self.weight_dict.get("loss_class", 1.0) * loss_class
@@ -814,7 +879,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             "core_loss": core_loss,
             "loss_mask": loss_mask,
             "loss_dice": loss_dice,
-            "loss_cldice": loss_cldice,
+            "loss_cbdice": loss_cbdice,
             "loss_supervoxel": loss_supervoxel,
             "loss_iou": loss_iou,
             "loss_class": loss_class,

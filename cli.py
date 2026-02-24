@@ -62,10 +62,10 @@ def cmd_train(args):
         aug_config.normalize_std = [0.229, 0.224, 0.225]
     # else: normalize_mean/std remain None → auto-loaded from manifest
 
-    # Configure loss (disable clDice/supervoxel if requested to save memory/time)
+    # Configure loss (disable cbDice/supervoxel if requested to save memory/time)
     # --no-topology disables BOTH topology losses at once
     loss_config = LossConfig(
-        use_cldice=not (args.no_cldice or args.no_topology),
+        use_cbdice=not (args.no_cbdice or args.no_topology),
         use_supervoxel=not (args.no_supervoxel or args.no_topology),
         loss_supervoxel_weight=args.supervoxel_weight,
     )
@@ -79,6 +79,7 @@ def cmd_train(args):
         ),
         optimizer=OptimizerConfig(
             lora_lr=args.lora_lr,
+            lora_b_lr_ratio=args.lora_b_lr_ratio,
             base_lr=args.base_lr,
             warmup_epochs=args.warmup_epochs,
         ),
@@ -96,7 +97,7 @@ def cmd_train(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SAM 2 LoRA Fine-Tuning for Neuron Segmentation"
+        description="SAM 2 LoRA+ Fine-Tuning for Neuron Segmentation"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -123,7 +124,8 @@ def main():
     p_train.add_argument("--batch-size", type=int, default=2, help="Batch size (default: 2, was 1)")
     p_train.add_argument("--lora-rank", type=int, default=8)
     p_train.add_argument("--lora-alpha", type=float, default=16.0)
-    p_train.add_argument("--lora-lr", type=float, default=1e-4, help="LoRA learning rate (default: 1e-4)")
+    p_train.add_argument("--lora-lr", type=float, default=1e-4, help="LoRA A matrix learning rate (default: 1e-4)")
+    p_train.add_argument("--lora-b-lr-ratio", type=float, default=16.0, help="LoRA+ B/A learning rate ratio (default: 16.0)")
     p_train.add_argument("--base-lr", type=float, default=1e-5, help="Base learning rate for non-LoRA params")
     p_train.add_argument("--warmup-epochs", type=int, default=1, help="Number of warmup epochs (default: 1)")
     p_train.add_argument("--num-frames", type=int, default=8)
@@ -138,9 +140,9 @@ def main():
         help="Use ImageNet normalization instead of dataset-specific stats (default: auto-load from manifest)",
     )
     p_train.add_argument(
-        "--no-cldice",
+        "--no-cbdice",
         action="store_true",
-        help="Disable clDice loss to save memory on MPS/CPU",
+        help="Disable cbDice loss to save memory on MPS/CPU",
     )
     p_train.add_argument(
         "--supervoxel-weight",
@@ -156,7 +158,7 @@ def main():
     p_train.add_argument(
         "--no-topology",
         action="store_true",
-        help="Disable BOTH clDice and supervoxel losses (faster training on CPU/MPS)",
+        help="Disable BOTH cbDice and supervoxel losses (faster training on CPU/MPS)",
     )
 
     args = parser.parse_args()

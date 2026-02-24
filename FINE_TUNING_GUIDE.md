@@ -546,27 +546,29 @@ This is activated by `pred_obj_scores=True`. The model learns to predict whether
 
 **Why this is critical for our use case:** In our 72-frame videos, the neuron may not be visible in all frames. Without this loss, the model always predicts "object present" and hallucinates neurons on empty frames. With this loss, it learns to output low confidence when the neuron isn't there.
 
-### 8.5 clDice Loss (weight = 1.0)
+### 8.5 cbDice Loss (weight = 1.0)
 
-**Purpose:** Preserve skeleton topology of tubular structures.
+**Purpose:** Preserve skeleton topology of tubular structures with boundary weighting.
 
-clDice (centerline Dice) computes Dice on the *skeletonized* masks:
+cbDice (centerline boundary Dice, Shi et al., MICCAI 2024) extends clDice (Shit et al., CVPR 2021) by adding distance-transform-based boundary weighting. It computes Dice on *skeletonized* masks with inverse-radius weights from the Euclidean distance transform (EDT):
 
 ```
-Tprec = |skel(pred) ∩ target| / |skel(pred)|   (skeleton precision)
-Tsens = |skel(target) ∩ pred| / |skel(target)| (skeleton sensitivity)
-clDice = 2 × Tprec × Tsens / (Tprec + Tsens)
+cbTprec = |W_t · skel(pred) · target| / |W_t · skel(pred)|   (weighted skeleton precision)
+cbTsens = |W_p · skel(target) · pred| / |W_p · skel(target)| (weighted skeleton sensitivity)
+cbDice = 2 × cbTprec × cbTsens / (cbTprec + cbTsens)
 ```
 
-**Why for neurons:** Breaking a thin neuron branch removes its centerline skeleton. Standard Dice barely notices (few pixels lost), but clDice heavily penalizes it because the skeleton is destroyed.
+Where W_t and W_p are inverse-radius distance transform weights: for a structure with local radius r, weight = 1/(r+1). Thin dendrites (r≈1) get weight ≈0.5, thick soma (r≈10) gets weight ≈0.09.
 
-**Memory note:** clDice requires soft skeletonization on GPU, which can be memory-intensive. Use `--no-cldice` if you encounter OOM errors on MPS.
+**Why for neurons:** Breaking a thin neuron branch removes its centerline skeleton. Standard Dice barely notices (few pixels lost), but cbDice heavily penalizes it because the skeleton is destroyed AND the thin structure receives high weight from the EDT. This is the key improvement over clDice: thinner structures are automatically upweighted.
+
+**Memory note:** cbDice requires soft skeletonization on GPU plus EDT computation on CPU. Use `--no-cbdice` if you encounter OOM errors on MPS.
 
 ### 8.6 Supervoxel Loss (weight = 1.0) — NEW!
 
 **Purpose:** Directly penalize split/merge errors in connectivity.
 
-**The insight:** clDice focuses on skeleton overlap, but doesn't explicitly detect when a single connected structure becomes two disconnected components (split error). Supervoxel loss identifies "critical supervoxels" — connected components whose addition/removal changes the topology.
+**The insight:** cbDice focuses on skeleton overlap with boundary weighting, but doesn't explicitly detect when a single connected structure becomes two disconnected components (split error). Supervoxel loss identifies "critical supervoxels" — connected components whose addition/removal changes the topology.
 
 **Mathematical formulation:**
 
@@ -592,7 +594,7 @@ Where:
 
 **Why this helps neurons:** A 1-pixel gap may seem minor (standard losses barely notice), but if it splits a neuron into two components, supervoxel loss heavily penalizes it.
 
-**Memory efficiency:** Unlike clDice (GPU soft skeletonization), supervoxel uses CPU-based BFS with O(n) complexity. It adds minimal overhead (~5-10% training time).
+**Memory efficiency:** Unlike cbDice (GPU soft skeletonization + CPU EDT), supervoxel uses CPU-based BFS with O(n) complexity. It adds minimal overhead (~5-10% training time).
 
 **Command line usage:**
 ```bash
@@ -605,7 +607,7 @@ python cli.py train --supervoxel-weight 2.0
 # Disable only supervoxel
 python cli.py train --no-supervoxel
 
-# Disable BOTH clDice and supervoxel (fast CPU/MPS training)
+# Disable BOTH cbDice and supervoxel (fast CPU/MPS training)
 python cli.py train --no-topology
 ```
 
@@ -614,22 +616,22 @@ python cli.py train --no-topology
 ### 8.7 Combined Loss
 
 ```
-L_total = 5.0 * L_focal + 2.0 * L_dice + 1.0 * L_cldice + 1.0 * L_supervoxel + 1.0 * L_iou + 1.0 * L_class
+L_total = 5.0 * L_focal + 2.0 * L_dice + 1.0 * L_cbDice + 1.0 * L_supervoxel + 1.0 * L_iou + 1.0 * L_class
 ```
 
 This is referred to as `core_loss` in the codebase.
 
-**Topology-preserving losses (clDice + Supervoxel):** Together, these two losses provide comprehensive topology protection:
-- **clDice:** "Does the predicted skeleton match the ground truth skeleton?"
+**Topology-preserving losses (cbDice + Supervoxel):** Together, these two losses provide comprehensive topology protection:
+- **cbDice:** "Does the predicted skeleton match the ground truth skeleton?" (with higher weight on thin structures via inverse-radius EDT)
 - **Supervoxel:** "Does the predicted connectivity match the ground truth connectivity?"
 
-A prediction that passes clDice (good skeleton overlap) but fails supervoxel (split errors) will still be penalized. This combination is especially effective for thin, branching neuron structures.
+A prediction that passes cbDice (good skeleton overlap) but fails supervoxel (split errors) will still be penalized. This combination is especially effective for thin, branching neuron structures.
 
 **Fast training mode:** If training on CPU/MPS is too slow, disable both topology losses:
 ```bash
 python cli.py train --no-topology
 ```
-This is equivalent to `--no-cldice --no-supervoxel` but more convenient.
+This is equivalent to `--no-cbdice --no-supervoxel` but more convenient.
 
 ---
 
@@ -652,31 +654,38 @@ theta_t = theta_{t-1} - lr * (m_hat / (sqrt(v_hat) + eps) + wd * theta_{t-1})
 
 **Why AdamW over SGD:** Transformers are notoriously sensitive to learning rate and benefit from adaptive learning rates. AdamW's per-parameter adaptive rates handle the heterogeneous gradient scales across attention projections, feed-forward layers, and embeddings.
 
-### 9.2 Two Learning Rate Groups
+### 9.2 Three Learning Rate Groups (LoRA+)
+
+We use LoRA+ (Hayou et al., ICML 2024), which uses asymmetric learning rates for the A and B matrices:
 
 ```python
+lora_b_lr = config.optimizer.lora_lr * config.optimizer.lora_b_lr_ratio  # 1e-4 × 16 = 1.6e-3
+
 optimizer = AdamW([
-    {"params": lora_params,      "lr": 1e-4, "weight_decay": 0.1},
-    {"params": embedding_params, "lr": 5e-6, "weight_decay": 0.0},
+    {"params": lora_a_params,    "lr": 1e-4,  "weight_decay": 0.1},  # A matrices
+    {"params": lora_b_params,    "lr": 1.6e-3, "weight_decay": 0.1},  # B matrices (16× higher)
+    {"params": embedding_params, "lr": 1e-5,  "weight_decay": 0.0},  # Embeddings
 ])
 ```
 
-**LoRA parameters (lr=1e-4):** These are initialized near zero (B is zeros) and need to move significantly to have any effect. A higher learning rate lets them adapt quickly.
+**LoRA A parameters (lr=1e-4):** Down-projection matrices, initialized with Kaiming uniform. They produce reasonable gradients from the start.
 
-**Embedding parameters (lr=5e-6, 20x lower):** These are pretrained and already contain useful information. We want gentle, conservative updates -- large steps could destroy their pretrained values.
+**LoRA B parameters (lr=1.6e-3, 16× higher):** Up-projection matrices, initialized to zeros. Because B starts at zero, gradients for B are much smaller than for A — they need a higher learning rate to overcome this gradient imbalance. This is the key insight of LoRA+: zero extra cost, faster convergence.
+
+**Embedding parameters (lr=1e-5):** These are pretrained and already contain useful information. We want gentle, conservative updates -- large steps could destroy their pretrained values.
 
 **No weight decay for embeddings:** These are small vectors that encode specific information (e.g., temporal position). Weight decay would push them toward zero, which would erase that information. LoRA weights get weight_decay=0.1 to prevent them from growing too large.
 
 ### 9.3 Learning Rate Schedule
 
-**Warmup phase** (3 epochs):
+**Warmup phase** (1 epoch):
 ```
 lr(t) = lr_base * (t / warmup_steps)
 ```
 
 Linear ramp from 0 to lr_base. This prevents large, destabilizing gradient updates at the start when the model hasn't settled into the new loss landscape.
 
-**Cosine annealing phase** (epochs 4 to 60):
+**Cosine annealing phase** (epochs 2 to 60):
 ```
 progress = (t - warmup_steps) / (total_steps - warmup_steps)
 lr(t) = lr_base * 0.5 * (1 + cos(pi * progress))
@@ -692,16 +701,16 @@ The learning rate smoothly decreases following a cosine curve:
 ### 9.4 Gradient Clipping
 
 ```python
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 ```
 
-If the L2 norm of all gradients exceeds 0.1, all gradients are scaled down proportionally:
+If the L2 norm of all gradients exceeds 1.0, all gradients are scaled down proportionally:
 ```
 if ||g|| > max_norm:
     g = g * (max_norm / ||g||)
 ```
 
-**Why 0.1 (aggressive):** LoRA fine-tuning with a frozen backbone can produce unexpectedly large gradients when the frozen features don't align well with the new task. Aggressive clipping prevents these spikes from corrupting the learned adaptation. Meta uses similar values in their SAM 2 training configs.
+**Why 1.0:** Gradient clipping prevents rare large gradient spikes from destabilizing training while allowing normal gradient flow.
 
 ### 9.5 Mixed Precision (AMP)
 
@@ -777,7 +786,7 @@ outputs -> loss_fn (MultiStepMultiMasksAndIous)
 1. optimizer.zero_grad()           -- Clear old gradients
 2. scaler.scale(loss).backward()   -- Compute gradients (with AMP scaling)
 3. scaler.unscale_(optimizer)      -- Unscale for gradient clipping
-4. clip_grad_norm_(params, 0.1)    -- Clip large gradients
+4. clip_grad_norm_(params, 1.0)    -- Clip large gradients
 5. scaler.step(optimizer)          -- Update weights
 6. scaler.update()                 -- Adjust AMP scale factor
 7. scheduler.step()                -- Update learning rate
@@ -785,7 +794,7 @@ outputs -> loss_fn (MultiStepMultiMasksAndIous)
 
 ### 10.5 Validation
 
-Every 5 epochs:
+Every 2 epochs:
 ```
 1. model.eval(), torch.no_grad()
 2. For each validation batch:
@@ -927,13 +936,14 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | | shear | +/-20 deg | Simulates tissue deformation |
 | | brightness | +/-15% | Simulates illumination variation |
 | | contrast | +/-15% | Simulates microscope settings |
-| **Optimizer** | lora_lr | 1e-4 | Standard for LoRA adaptation |
-| | base_lr | 5e-6 | Conservative for pretrained embeddings |
+| **Optimizer** | lora_lr (A) | 1e-4 | Standard for LoRA A matrices |
+| | lora_b_lr_ratio | 16.0 | LoRA+ ratio: B lr = A lr × 16 (= 1.6e-3) |
+| | base_lr | 1e-5 | Conservative for pretrained embeddings |
 | | weight_decay | 0.1 | Prevents LoRA weight explosion |
-| | max_grad_norm | 0.1 | Aggressive clipping for stability |
-| | warmup | 3 epochs | Smooth start for frozen-backbone fine-tuning |
+| | max_grad_norm | 1.0 | Gradient clipping for stability |
+| | warmup | 1 epoch | Smooth start for frozen-backbone fine-tuning |
 | **Loss** | focal weight | 5.0 | Pixel accuracy is primary objective |
-| | dice weight | 1.0 | Region shape quality |
+| | dice weight | 2.0 | Region shape quality |
 | | iou weight | 1.0 | Confidence calibration |
 | | class weight | 1.0 | Anti-hallucination |
 | | focal alpha | 0.25 | Balances class imbalance |
@@ -1008,7 +1018,7 @@ In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click 
 | `src/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
 | `src/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()` |
 | `src/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
-| `src/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCLDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
+| `src/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCBDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
 | `src/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |
 | `src/augmentations.py` | Video augmentation pipeline | `VideoAugmentation`, `VideoValidationTransform` |
 | `src/trainer.py` | Training loop + model wrapper | `SAM2TrainingWrapper`, `train()`, `build_training_model()` |
@@ -1020,9 +1030,11 @@ In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click 
 ## References
 
 - Hu, E.J. et al. "LoRA: Low-Rank Adaptation of Large Language Models." ICLR 2022.
+- Hayou, S. et al. "LoRA+: Efficient Low Rank Adaptation of Large Models." ICML 2024.
 - Ravi, N. et al. "SAM 2: Segment Anything in Images and Videos." Meta AI, 2024.
 - Lin, T.Y. et al. "Focal Loss for Dense Object Detection." ICCV 2017.
 - Milletari, F. et al. "V-Net: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation." 3DV 2016. (Dice loss)
-- Shit, S. et al. "clDice - A Novel Topology-Preserving Loss Function for Tubular Structure Segmentation." CVPR 2021.
+- Shi, P. et al. "centerline boundary Dice loss for vascular segmentation." MICCAI 2024. (cbDice)
+- Shit, S. et al. "clDice - A Novel Topology-Preserving Loss Function for Tubular Structure Segmentation." CVPR 2021. (predecessor to cbDice)
 - Grim, M. et al. "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function." AAAI 2025.
 - Loshchilov, I. & Hutter, F. "Decoupled Weight Decay Regularization." ICLR 2019. (AdamW)
