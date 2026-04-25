@@ -552,6 +552,7 @@ def build_training_model(config: TrainingConfig, device: str):
         use_cbdice=config.loss.use_cbdice,
         cbdice_num_iter=config.loss.cbdice_num_iter,
         use_supervoxel=config.loss.use_supervoxel,
+        topology_resolution=config.loss.topology_resolution,
     )
     if config.loss.use_cbdice:
         print(f"  Using cbDice loss for skeleton topology (weight={config.loss.loss_cbdice_weight})")

@@ -23,13 +23,14 @@ References:
       https://arxiv.org/abs/2501.01022
 """
 
-from collections import deque
 from typing import Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from scipy.ndimage import label as ndimage_label
+from scipy.ndimage import binary_dilation as ndi_binary_dilation
 
 
 class FocalLoss(nn.Module):
@@ -337,10 +338,11 @@ class SoftCBDiceLoss(nn.Module):
         MICCAI 2024. https://github.com/PengchengShi1220/cbDice
     """
 
-    def __init__(self, num_iter: int = 5, smooth: float = 1.0):
+    def __init__(self, num_iter: int = 5, smooth: float = 1.0, topology_resolution: int = 256):
         super().__init__()
         self.num_iter = num_iter
         self.smooth = smooth
+        self.topology_resolution = topology_resolution
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute cbDice loss.
@@ -370,6 +372,21 @@ class SoftCBDiceLoss(nn.Module):
             B, T, N, H, W = original_shape
             pred_prob = pred_prob.view(B * T * N, 1, H, W)
             target = target.view(B * T * N, 1, H, W)
+
+        # Downsample for efficient topology computation.
+        # Topology (skeleton connectivity) is a coarse property — 256×256
+        # captures the same structure as 1024×1024 but 16× faster.
+        H_cur, W_cur = pred_prob.shape[-2:]
+        topo_res = self.topology_resolution
+        if H_cur > topo_res or W_cur > topo_res:
+            pred_prob = F.interpolate(
+                pred_prob, size=(topo_res, topo_res),
+                mode='bilinear', align_corners=False,
+            )
+            target = F.interpolate(
+                target.float(), size=(topo_res, topo_res),
+                mode='nearest',
+            )
 
         # Compute soft skeleton for prediction (needs gradients)
         skel_pred = soft_skel(pred_prob, self.num_iter)
@@ -458,69 +475,14 @@ class SoftDiceCBDiceLoss(nn.Module):
 # =============================================================================
 
 
-def _get_neighbors_2d(y: int, x: int, h: int, w: int) -> list:
-    """Get 4-connected neighbors of a pixel."""
-    neighbors = []
-    for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        ny, nx = y + dy, x + dx
-        if 0 <= ny < h and 0 <= nx < w:
-            neighbors.append((ny, nx))
-    return neighbors
-
-
-def _bfs_component(
-    mask: np.ndarray,
-    start_y: int,
-    start_x: int,
-    visited: np.ndarray
-) -> set:
-    """Extract connected component using BFS.
-
-    Args:
-        mask: Binary mask (H, W)
-        start_y, start_x: Starting pixel coordinates
-        visited: Array tracking visited pixels
-
-    Returns:
-        Set of (y, x) coordinates in the component
-    """
-    h, w = mask.shape
-    component = set()
-    queue = deque([(start_y, start_x)])
-    visited[start_y, start_x] = True
-
-    while queue:
-        y, x = queue.popleft()
-        component.add((y, x))
-
-        for ny, nx in _get_neighbors_2d(y, x, h, w):
-            if mask[ny, nx] > 0 and not visited[ny, nx]:
-                visited[ny, nx] = True
-                queue.append((ny, nx))
-
-    return component
-
-
-def _count_components(mask: np.ndarray) -> int:
-    """Count number of connected components in binary mask."""
-    h, w = mask.shape
-    visited = np.zeros_like(mask, dtype=bool)
-    count = 0
-
-    for y in range(h):
-        for x in range(w):
-            if mask[y, x] > 0 and not visited[y, x]:
-                _bfs_component(mask, y, x, visited)
-                count += 1
-
-    return count
-
-
 def _detect_critical_components_2d(
     pred_binary: np.ndarray,
     target_binary: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Detect critical supervoxels that affect topology.
+
+    Uses scipy.ndimage.label (C-compiled) instead of Python BFS for
+    ~100× faster connected component analysis.
 
     A supervoxel (connected component) is critical if adding or removing it
     changes the number of connected components in the segmentation.
@@ -532,8 +494,8 @@ def _detect_critical_components_2d(
        incorrectly merged prediction components → they cause a merge error
 
     Args:
-        pred_binary: Binary prediction mask (H, W)
-        target_binary: Binary ground truth mask (H, W)
+        pred_binary: Binary prediction mask (H, W), uint8
+        target_binary: Binary ground truth mask (H, W), uint8
 
     Returns:
         neg_critical_mask: Mask of negatively critical false negative pixels
@@ -548,78 +510,59 @@ def _detect_critical_components_2d(
     neg_critical_mask = np.zeros((h, w), dtype=np.float32)
     pos_critical_mask = np.zeros((h, w), dtype=np.float32)
 
+    # 4-connectivity structuring element
+    struct_4conn = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+
+    # Label prediction components once (C-compiled, fast)
+    pred_labels, _ = ndimage_label(pred_binary, structure=struct_4conn)
+
     # ===== Negatively Critical Components (False Negatives) =====
-    # If adding this FN component to prediction would reduce # of GT components visible
-    # in prediction, then it's a "bridge" component whose absence causes split errors
-    visited_fn = np.zeros_like(false_neg, dtype=bool)
+    # For each FN connected component, check if adding it to the prediction
+    # would bridge 2+ distinct prediction components (causing a split error).
+    fn_labels, n_fn = ndimage_label(false_neg, structure=struct_4conn)
 
-    for y in range(h):
-        for x in range(w):
-            if false_neg[y, x] and not visited_fn[y, x]:
-                # Extract this FN component
-                component = _bfs_component(false_neg, y, x, visited_fn)
+    for comp_id in range(1, n_fn + 1):
+        comp_mask = (fn_labels == comp_id)
 
-                # Check if adding this component would change connectivity
-                # by checking neighbors of the component in the prediction
-                neighbor_labels = set()
-                pred_with_component = pred_binary.copy()
+        # Dilate by 1 pixel to find adjacent prediction components
+        dilated = ndi_binary_dilation(comp_mask, structure=struct_4conn)
+        neighbor_region = dilated & ~comp_mask
 
-                for cy, cx in component:
-                    pred_with_component[cy, cx] = 1
-                    for ny, nx in _get_neighbors_2d(cy, cx, h, w):
-                        if pred_binary[ny, nx] > 0:
-                            neighbor_labels.add((ny, nx))
+        # Find distinct prediction labels adjacent to this FN component
+        adjacent_labels = np.unique(pred_labels[neighbor_region])
+        adjacent_labels = adjacent_labels[adjacent_labels > 0]  # Remove background
 
-                # If component touches 2+ distinct predicted regions, it's critical
-                if len(neighbor_labels) >= 2:
-                    # Check if these neighbors are from different components
-                    pred_visited = np.zeros_like(pred_binary, dtype=bool)
-                    distinct_neighbors = 0
-                    for ny, nx in neighbor_labels:
-                        if not pred_visited[ny, nx]:
-                            _bfs_component(pred_binary, ny, nx, pred_visited)
-                            distinct_neighbors += 1
-
-                    if distinct_neighbors >= 2:
-                        # This FN component bridges multiple prediction components
-                        for cy, cx in component:
-                            neg_critical_mask[cy, cx] = 1.0
+        if len(adjacent_labels) >= 2:
+            # This FN component bridges 2+ prediction components → critical
+            neg_critical_mask[comp_mask] = 1.0
 
     # ===== Positively Critical Components (False Positives) =====
-    # If removing this FP component would increase # of components in prediction,
-    # it's merging things that shouldn't be merged
-    visited_fp = np.zeros_like(false_pos, dtype=bool)
+    # For each FP connected component, check if removing it would disconnect
+    # the prediction (i.e., it's a bridge between prediction components).
+    fp_labels, n_fp = ndimage_label(false_pos, structure=struct_4conn)
 
-    for y in range(h):
-        for x in range(w):
-            if false_pos[y, x] and not visited_fp[y, x]:
-                # Extract this FP component
-                component = _bfs_component(false_pos, y, x, visited_fp)
+    for comp_id in range(1, n_fp + 1):
+        comp_mask = (fp_labels == comp_id)
 
-                # Create prediction without this component
-                pred_without_component = pred_binary.copy()
-                for cy, cx in component:
-                    pred_without_component[cy, cx] = 0
+        # Find prediction pixels adjacent to this FP component
+        dilated = ndi_binary_dilation(comp_mask, structure=struct_4conn)
+        neighbor_pred = dilated & ~comp_mask & (pred_binary > 0)
 
-                # Check if neighbors in remaining prediction are still connected
-                neighbor_pixels = []
-                for cy, cx in component:
-                    for ny, nx in _get_neighbors_2d(cy, cx, h, w):
-                        if pred_without_component[ny, nx] > 0:
-                            neighbor_pixels.append((ny, nx))
+        if neighbor_pred.sum() < 2:
+            continue  # Need at least 2 neighbors to potentially disconnect
 
-                if len(neighbor_pixels) >= 2:
-                    # Check if removing component disconnects neighbors
-                    visited_check = np.zeros_like(pred_without_component, dtype=bool)
-                    ny, nx = neighbor_pixels[0]
-                    reachable = _bfs_component(pred_without_component, ny, nx, visited_check)
+        # Remove this FP component and relabel prediction
+        pred_without = pred_binary.copy()
+        pred_without[comp_mask] = 0
+        labels_without, _ = ndimage_label(pred_without, structure=struct_4conn)
 
-                    # If any neighbor is not reachable, component was critical
-                    all_connected = all((y, x) in reachable for y, x in neighbor_pixels)
+        # Check if neighbors that were connected (through FP) are now split
+        neighbor_new_labels = np.unique(labels_without[neighbor_pred])
+        neighbor_new_labels = neighbor_new_labels[neighbor_new_labels > 0]
 
-                    if not all_connected:
-                        for cy, cx in component:
-                            pos_critical_mask[cy, cx] = 1.0
+        if len(neighbor_new_labels) > 1:
+            # Removing this FP disconnects the prediction → critical
+            pos_critical_mask[comp_mask] = 1.0
 
     return neg_critical_mask, pos_critical_mask
 
@@ -665,15 +608,20 @@ class SupervoxelLoss2D(nn.Module):
         alpha: float = 0.5,
         beta: float = 0.5,
         threshold: float = 0.5,
+        topology_resolution: int = 256,
     ):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
         self.threshold = threshold
+        self.topology_resolution = topology_resolution
         self.base_loss = nn.BCEWithLogitsLoss(reduction='none')
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute supervoxel connectivity loss.
+
+        Critical region detection runs at reduced resolution for speed,
+        while the actual loss gradients are computed at full resolution.
 
         Args:
             pred: Predicted logits, any shape (will process per-sample)
@@ -683,19 +631,38 @@ class SupervoxelLoss2D(nn.Module):
             Scalar supervoxel loss value
         """
         # Ensure we have batch dimension
-        original_shape = pred.shape
         pred_flat = pred.view(-1, pred.shape[-2], pred.shape[-1])  # (N, H, W)
         target_flat = target.view(-1, target.shape[-2], target.shape[-1])
 
         batch_size = pred_flat.shape[0]
         device = pred.device
+        H, W = pred_flat.shape[-2:]
 
-        # Compute base BCE loss for all pixels
+        # Compute base BCE loss at FULL resolution (for accurate gradients)
         base_loss_per_pixel = self.base_loss(pred_flat, target_flat.float())
 
         # Binarize predictions
-        pred_binary_batch = (torch.sigmoid(pred_flat) > self.threshold).cpu().numpy()
-        target_binary_batch = (target_flat > 0.5).cpu().numpy()
+        pred_sigmoid = torch.sigmoid(pred_flat)
+        pred_binary_full = (pred_sigmoid > self.threshold)
+        target_binary_full = (target_flat > 0.5)
+
+        # Downsample for topology detection (connectivity is a coarse property)
+        topo_res = self.topology_resolution
+        if H > topo_res or W > topo_res:
+            pred_binary_ds = F.interpolate(
+                pred_binary_full.unsqueeze(1).float(),
+                size=(topo_res, topo_res), mode='nearest',
+            ).squeeze(1)
+            target_binary_ds = F.interpolate(
+                target_binary_full.unsqueeze(1).float(),
+                size=(topo_res, topo_res), mode='nearest',
+            ).squeeze(1)
+        else:
+            pred_binary_ds = pred_binary_full.float()
+            target_binary_ds = target_binary_full.float()
+
+        pred_binary_batch = pred_binary_ds.cpu().numpy()
+        target_binary_batch = target_binary_ds.cpu().numpy()
 
         total_loss = torch.tensor(0.0, device=device)
 
@@ -709,7 +676,7 @@ class SupervoxelLoss2D(nn.Module):
                 total_loss = total_loss + base_loss_per_pixel[i].mean()
                 continue
 
-            # Detect critical components (CPU operation)
+            # Detect critical components at LOW resolution (fast)
             neg_critical, pos_critical = _detect_critical_components_2d(
                 pred_binary.astype(np.uint8),
                 target_binary.astype(np.uint8)
@@ -719,7 +686,18 @@ class SupervoxelLoss2D(nn.Module):
             neg_critical_t = torch.from_numpy(neg_critical).to(device)
             pos_critical_t = torch.from_numpy(pos_critical).to(device)
 
-            # Compute weighted loss
+            # Upscale critical masks to FULL resolution for loss application
+            if H > topo_res or W > topo_res:
+                neg_critical_t = F.interpolate(
+                    neg_critical_t.unsqueeze(0).unsqueeze(0),
+                    size=(H, W), mode='nearest',
+                ).squeeze(0).squeeze(0)
+                pos_critical_t = F.interpolate(
+                    pos_critical_t.unsqueeze(0).unsqueeze(0),
+                    size=(H, W), mode='nearest',
+                ).squeeze(0).squeeze(0)
+
+            # Compute weighted loss at full resolution
             # Standard loss (non-critical regions)
             non_critical_mask = 1.0 - torch.clamp(neg_critical_t + pos_critical_t, 0, 1)
             standard_loss = (base_loss_per_pixel[i] * non_critical_mask).sum()
@@ -729,7 +707,6 @@ class SupervoxelLoss2D(nn.Module):
             pos_critical_loss = (base_loss_per_pixel[i] * pos_critical_t).sum()
 
             # Count pixels for normalization
-            n_total = pred_flat.shape[-2] * pred_flat.shape[-1]
             n_non_critical = non_critical_mask.sum().item() + 1e-6
             n_neg_critical = neg_critical_t.sum().item() + 1e-6
             n_pos_critical = pos_critical_t.sum().item() + 1e-6
@@ -789,6 +766,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         use_cbdice: bool = True,
         cbdice_num_iter: int = 5,
         use_supervoxel: bool = True,
+        topology_resolution: int = 256,
     ):
         super().__init__()
         self.weight_dict = weight_dict or {
@@ -803,10 +781,16 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.dice = DiceLoss()
         self.use_cbdice = use_cbdice
         if use_cbdice:
-            self.cbdice = SoftCBDiceLoss(num_iter=cbdice_num_iter)
+            self.cbdice = SoftCBDiceLoss(
+                num_iter=cbdice_num_iter,
+                topology_resolution=topology_resolution,
+            )
         self.use_supervoxel = use_supervoxel
         if use_supervoxel:
-            self.supervoxel = SupervoxelLoss2D(alpha=0.5, beta=0.5)
+            self.supervoxel = SupervoxelLoss2D(
+                alpha=0.5, beta=0.5,
+                topology_resolution=topology_resolution,
+            )
         self.pred_obj_scores = pred_obj_scores
 
     def forward(self, outputs: dict, targets: torch.Tensor) -> dict:

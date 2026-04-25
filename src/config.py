@@ -77,6 +77,10 @@ class LossConfig:
     cbdice_num_iter: int = 5  # Iterations for soft skeletonization (reduced from 10 for MPS memory)
     # Supervoxel params
     use_supervoxel: bool = True  # Enable connectivity-preserving loss
+    # Topology resolution: resolution at which topology losses are computed
+    # (cbDice skeleton/EDT + supervoxel connectivity analysis).
+    # Lower = faster. 256 is 16× faster than 1024 with minimal quality loss.
+    topology_resolution: int = 256
 
 
 @dataclass
