@@ -11,11 +11,13 @@ This repository provides a training pipeline to fine-tune SAM2 (Segment Anything
 ## Features
 
 - **LoRA+ fine-tuning**: Efficient training (~0.5% of parameters) with asymmetric A/B learning rates
+- **Feature precomputation**: 10x faster training by caching frozen image encoder output
+- **In-memory caching**: All frames cached in RAM, eliminating disk I/O
 - **cbDice loss**: Skeleton topology-preserving loss with boundary weighting for tubular structures
 - **Supervoxel loss**: Connectivity-preserving loss for split/merge errors
-- **Strong augmentations**: Elastic deformations, blur, noise
+- **Strong augmentations**: Elastic deformations, blur, noise (full pipeline without precomputation); feature-level flips (with precomputation)
 - **Early stopping**: Automatic stopping when metrics plateau
-- **MPS support**: Works on Apple Silicon
+- **MPS & CUDA support**: Works on Apple Silicon and NVIDIA GPUs
 
 ## Repository Connection
 
@@ -107,7 +109,7 @@ training_data/
 ### Step 3: Train
 
 ```bash
-# Basic training (recommended for GPU)
+# Basic training (recommended — uses feature precomputation for 10x speedup)
 python cli.py train --epochs 30
 
 # With cbDice for thin structures (requires more memory)
@@ -124,17 +126,25 @@ python cli.py train \
     --lora-lr 1e-4 \
     --patience 10 \
     --val-every 2
+
+# Disable precomputation for full augmentation pipeline (slower but more diverse)
+python cli.py train --epochs 30 --no-precompute
 ```
 
 Training outputs:
 ```
-Epoch 1/30: 100%|██████| 50/50 [02:30<00:00]
-  train_loss: 1.234  loss_mask: 0.456  loss_dice: 0.234
+=== Precomputing Image Encoder Features ===
+  12 videos, 876 frames total
+  Processed 876/876 frames...
+  Feature precomputation done in 240.3s (6912 MB cached)
 
-Validation (epoch 2):
-  val_loss: 0.987  val_iou: 0.654  val_dice: 0.754
-
-Best model saved! IoU: 0.654
+=== Training (60 epochs, 82 steps/epoch (precomputed features)) ===
+  Using precomputed features (encoder skipped during training)
+  Epoch 1/60, Step 10/82, Loss: 1.2340, LR: 3.33e-05, 7.8s/step
+Epoch 1/60: train_loss=1.1200, time=640.2s, 7.8s/step
+  Validating...
+  val_loss=0.987, val_iou=0.543, val_dice=0.654
+  New best IoU: 0.543 - saved checkpoint
 ```
 
 ### Step 4: Use Fine-Tuned Model
@@ -168,6 +178,14 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 | `--no-supervoxel` | False | Disable supervoxel loss |
 | `--no-topology` | False | Disable BOTH cbDice and supervoxel (fast CPU/MPS training) |
 
+**Performance parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--clip-stride` | 4 | Stride between clip start frames (1=all clips, reduces overlap) |
+| `--no-precompute` | False | Disable feature precomputation (slower but full augmentation) |
+| `--no-cache` | False | Disable in-memory frame caching (saves RAM but slower) |
+
 ## Key Metrics
 
 | Metric | Good Range | Meaning |
@@ -178,7 +196,30 @@ No manual copying needed - the `neurons-labeling/checkpoints/` symlink points he
 
 ## Troubleshooting
 
-### Out of Memory (OOM) or Slow Training
+### Training Too Slow
+
+Feature precomputation is enabled by default and gives a **10x speedup**. If training is still slow:
+
+```bash
+# 1. Ensure precomputation is enabled (default)
+python cli.py train
+# Look for: "Using precomputed features (encoder skipped during training)"
+
+# 2. Increase clip stride to reduce steps per epoch
+python cli.py train --clip-stride 8
+
+# 3. Reduce frames per clip
+python cli.py train --num-frames 4
+```
+
+| Optimization | Effect |
+|-------------|--------|
+| Feature precomputation (default) | 10x faster per step |
+| `--clip-stride 4` (default) | 4x fewer steps/epoch |
+| `--clip-stride 8` | 8x fewer steps/epoch |
+| `--num-frames 4` | ~2x faster per step |
+
+### Out of Memory (OOM)
 ```bash
 # Reduce batch size
 python cli.py train --batch-size 1
@@ -188,6 +229,9 @@ python cli.py train --no-topology
 
 # Or disable only cbDice
 python cli.py train --no-cbdice
+
+# Disable in-memory frame caching (saves ~2 GB RAM)
+python cli.py train --no-cache
 
 # Or reduce frames per clip
 python cli.py train --num-frames 4
@@ -202,6 +246,12 @@ If thin structures break:
    python cli.py train --supervoxel-weight 2.0
    ```
    Or edit `src/config.py`: `loss_cbdice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
+
+### Poor Generalization
+1. Add more training data (5-10 videos minimum)
+2. Reduce LoRA rank: `--lora-rank 4`
+3. Use full augmentation: `--no-precompute` (slower but more augmentation diversity)
+4. Check for data leakage (same video in train and val)
 
 ### Validation Too Slow
 ```bash
@@ -239,11 +289,15 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 
 ## Hardware Requirements
 
-| Hardware | Batch Size | Training Time (30 epochs) |
-|----------|------------|---------------------------|
-| NVIDIA GPU (8GB+) | 2 | ~1-2 hours |
-| Apple M1/M2 (MPS) | 1-2 | ~2-4 hours |
-| CPU | 1 | Not recommended |
+With feature precomputation enabled (default):
+
+| Hardware | Batch Size | Training Time (5 epochs) | Training Time (30 epochs) |
+|----------|------------|--------------------------|---------------------------|
+| NVIDIA GPU (8GB+) | 2 | ~55 min | ~5-6 hours |
+| Apple M1/M2 (MPS) | 1-2 | ~2-3 hours | ~12-18 hours |
+| CPU | 1 | Not recommended | Not recommended |
+
+Without feature precomputation (`--no-precompute`), training is ~10x slower.
 
 ## Documentation
 

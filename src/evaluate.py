@@ -1,6 +1,6 @@
 """Evaluation utilities for SAM 2 fine-tuning on neuron data."""
 
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import numpy as np
@@ -120,16 +120,21 @@ def validate_epoch(
     loss_fn,
     device: str,
     max_batches: int = 0,
+    feature_cache: Optional[Dict[Tuple[str, int], List[torch.Tensor]]] = None,
+    pos_enc: Optional[List[torch.Tensor]] = None,
 ) -> Dict[str, float]:
     """
     Run validation on the validation set.
 
     Args:
         model: SAM2TrainingWrapper model.
-        val_loader: Validation DataLoader.
+        val_loader: Validation DataLoader (yields (batch, frame_id_lists) tuples).
         loss_fn: MultiStepMultiMasksAndIous loss function.
         device: Device string.
         max_batches: Maximum batches to validate (0 = all batches for full validation).
+        feature_cache: Optional precomputed feature cache. If provided, uses cached
+                       backbone features instead of running the image encoder.
+        pos_enc: Optional positional encodings (required if feature_cache is set).
 
     Returns:
         Dict with 'val_loss', 'val_iou', 'val_dice'.
@@ -141,12 +146,22 @@ def validate_epoch(
     all_dices = []
     num_batches = 0
 
-    for batch in val_loader:
+    for batch, frame_id_lists in val_loader:
         # Early exit if max_batches limit reached
         if max_batches > 0 and num_batches >= max_batches:
             break
         batch = batch.to(device)
-        outputs = model(batch)
+
+        # Use precomputed features if available (no flip for validation)
+        if feature_cache is not None and pos_enc is not None:
+            from src.trainer import assemble_cached_backbone
+            backbone_out = assemble_cached_backbone(
+                feature_cache, pos_enc, frame_id_lists, device,
+                do_hflip=False, do_vflip=False,
+            )
+            outputs = model(batch, precomputed_backbone_out=backbone_out)
+        else:
+            outputs = model(batch)
 
         # Compute loss
         targets = batch.masks.float()  # [B, T, N_obj, H, W]

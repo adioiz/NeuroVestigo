@@ -76,6 +76,9 @@ def cmd_train(args):
         data=DataConfig(
             training_data_dir=args.data_dir,
             num_frames=args.num_frames,
+            clip_stride=args.clip_stride,
+            cache_in_memory=not args.no_cache,
+            precompute_features=not args.no_precompute,
         ),
         optimizer=OptimizerConfig(
             lora_lr=args.lora_lr,
@@ -159,6 +162,23 @@ def main():
         "--no-topology",
         action="store_true",
         help="Disable BOTH cbDice and supervoxel losses (faster training on CPU/MPS)",
+    )
+    # Performance optimization arguments
+    p_train.add_argument(
+        "--clip-stride",
+        type=int,
+        default=4,
+        help="Stride between clip start frames (1=all clips, 4=every 4th, default: 4)",
+    )
+    p_train.add_argument(
+        "--no-precompute",
+        action="store_true",
+        help="Disable feature precomputation (slower but enables full pixel-level augmentation)",
+    )
+    p_train.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable in-memory frame caching (saves RAM but slower disk I/O)",
     )
 
     args = parser.parse_args()

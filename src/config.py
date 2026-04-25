@@ -20,6 +20,10 @@ class DataConfig:
     image_size: int = 1024 # Image size for SAM 2 (must match pretrained config)
     max_objects: int = 3 # Maximum objects per clip
     val_fraction: float = 0.2 # Validation split (fraction of videos held out)
+    # Performance optimizations
+    clip_stride: int = 4  # Stride between clip start frames (1=all clips, 4=every 4th)
+    cache_in_memory: bool = True  # Cache all frames/masks in RAM at init
+    precompute_features: bool = True  # Precompute frozen encoder features before training
 
 
 @dataclass

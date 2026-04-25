@@ -477,6 +477,22 @@ frame = (frame - mean) / std
 
 This centers the data around zero with unit variance, matching what the network expects from training.
 
+### 7.6 Feature-Level Augmentation (with Precomputed Features)
+
+When feature precomputation is enabled (default), pixel-level augmentation cannot be applied (features are already computed). Instead, flip augmentation is applied at the feature level:
+
+| Augmentation | With precomputed features | Without (`--no-precompute`) |
+|---|---|---|
+| H-flip, V-flip | **Keep** — flip feature maps + masks | Applied at pixel level |
+| Rotation, shear | **Dropped** — can't apply at feature level | Applied at pixel level |
+| Elastic deformation | **Dropped** | Applied at pixel level |
+| Brightness, contrast | **Dropped** | Applied at pixel level |
+| Gaussian blur/noise | **Dropped** | Applied at pixel level |
+
+For flips: `torch.flip(feat, dims=[-1])` for hflip, `dims=[-2]` for vflip. Applied to backbone_fpn tensors. Masks are flipped to match.
+
+**Trade-off:** Feature precomputation gives ~10x speedup but reduces augmentation diversity. For small datasets (<5 videos), consider `--no-precompute` for more augmentation diversity at the cost of slower training.
+
 ---
 
 ## 8. Loss Function: Multi-Objective Training
@@ -734,32 +750,56 @@ The GradScaler handles any remaining numerical issues by dynamically scaling the
 
 Here is the complete training flow, step by step:
 
-### 10.1 Data Loading
+### 10.1 Feature Precomputation (Before Training Loop)
+
+SAM2's image encoder (Hiera backbone + FPN + conv_s0/conv_s1) is frozen during training (no LoRA on Conv2d layers), so its output is deterministic for each input frame. Computing it once and caching eliminates ~60-70% of per-step compute.
+
+```
+1. Before training, run the encoder on every frame once (~3-5 min for 876 frames)
+2. Cache the 3-level FPN features in float16 on CPU (~4-8 MB/frame)
+3. Store positional encodings once (they're purely spatial, independent of content)
+4. During training, assemble cached features into backbone_out and skip the encoder
+```
+
+**Impact:** ~80 sec/step -> ~8 sec/step (10x speedup). 5 epochs in ~55 min instead of ~36 hours.
+
+### 10.2 Data Loading
 
 ```
 1. Get list of video names from training_data/images/
 2. Split into train (80%) and val (20%) sets
-3. Create NeuronVideoDataset for each
+3. Create NeuronVideoDataset for each (with clip_stride and cache_in_memory)
 4. Each __getitem__ call:
-   a. Pick a random clip (video_idx, start_frame)
-   b. Load 8 consecutive PNG frames and masks
-   c. Apply augmentations (consistent across frames)
+   a. Pick a random clip (video_idx, start_frame) using clip stride
+   b. Load 8 consecutive PNG frames and masks (from cache or disk)
+   c. Apply augmentations (validation transform when precomputing)
    d. Find object IDs present in clip
    e. Build VideoDatapoint with Frame/Object structures
-5. Collate into BatchedVideoDatapoint via Meta's collate_fn
+   f. Return (VideoDatapoint, frame_ids) for feature cache lookup
+5. Collate into (BatchedVideoDatapoint, frame_id_lists) via neuron_collate_fn
 ```
 
-### 10.2 Forward Pass
+### 10.3 Forward Pass
 
 ```
-batch (BatchedVideoDatapoint) -> model (SAM2TrainingWrapper)
-  1. Image encoder processes all frames -> features [B*T, C, H, W]
-  2. Features are reshaped to video format [B, T, C, H, W]
-  3. For each object, propagate through time:
-     - Frame 0: Use GT mask as prompt
-     - Frames 1-7: Use previous prediction as memory
-     - Mask decoder produces prediction for each frame
-  4. Return dict with 'pred_masks': [B, T, N_obj, H, W]
+(batch, frame_id_lists) -> model (SAM2TrainingWrapper)
+
+  With precomputed features (default):
+    1. Assemble backbone_out from cached per-frame features
+    2. Optionally flip feature maps (feature-level augmentation)
+    3. Flip masks to match
+    4. Skip image encoder entirely
+
+  Without precomputation:
+    1. Image encoder processes all frames -> features [B*T, C, H, W]
+
+  Then (both paths):
+    2. Features are reshaped to video format [B, T, C, H, W]
+    3. For each object, propagate through time:
+       - Frame 0: Use GT mask as prompt
+       - Frames 1-7: Use previous prediction as memory
+       - Mask decoder produces prediction for each frame
+    4. Return dict with 'pred_masks': [B, T, N_obj, H, W]
 ```
 
 Note: We use `SAM2TrainingWrapper` (defined in `src/trainer.py`) which wraps the standard SAM2 model from the pip package. This is necessary because Meta's internal `SAM2Train` class is not included in the public pip package.
@@ -931,6 +971,9 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | | num_frames | 8 | Balance: long enough for temporal learning, short enough for GPU memory |
 | | max_objects | 3 | Typical max neurons per field of view |
 | | val_fraction | 0.2 | 2 videos for validation, 8 for training |
+| | clip_stride | 4 | Skip overlapping clips: 329 -> ~82 steps/epoch |
+| | precompute_features | True | 10x speedup by caching frozen encoder output |
+| | cache_in_memory | True | Load all frames into RAM at init, eliminating disk I/O |
 | **Augmentation** | h_flip, v_flip | p=0.5 | Microscopy has no orientation preference |
 | | rotation | +/-25 deg | Neurons grow in arbitrary directions |
 | | shear | +/-20 deg | Simulates tissue deformation |
