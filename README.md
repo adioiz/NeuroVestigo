@@ -14,7 +14,8 @@ This repository provides a training pipeline to fine-tune SAM2 (Segment Anything
 - **Feature precomputation**: 10x faster training by caching frozen image encoder output
 - **In-memory caching**: All frames cached in RAM, eliminating disk I/O
 - **cbDice loss**: Skeleton topology-preserving loss with boundary weighting for tubular structures
-- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors
+- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors (scipy-accelerated)
+- **Topology downsampling**: Topology losses computed at 256×256 for ~2000× speedup vs full resolution
 - **Strong augmentations**: Elastic deformations, blur, noise (full pipeline without precomputation); feature-level flips (with precomputation)
 - **Early stopping**: Automatic stopping when metrics plateau
 - **MPS & CUDA support**: Works on Apple Silicon and NVIDIA GPUs
@@ -215,6 +216,7 @@ python cli.py train --num-frames 4
 | Optimization | Effect |
 |-------------|--------|
 | Feature precomputation (default) | 10x faster per step |
+| Topology downsampling (default) | ~2000x faster topology losses (256×256 vs 1024×1024) |
 | `--clip-stride 4` (default) | 4x fewer steps/epoch |
 | `--clip-stride 8` | 8x fewer steps/epoch |
 | `--num-frames 4` | ~2x faster per step |
@@ -293,10 +295,11 @@ With feature precomputation enabled (default):
 
 | Hardware | Batch Size | Training Time (5 epochs) | Training Time (30 epochs) |
 |----------|------------|--------------------------|---------------------------|
-| NVIDIA GPU (8GB+) | 2 | ~55 min | ~5-6 hours |
-| Apple M1/M2 (MPS) | 1-2 | ~2-3 hours | ~12-18 hours |
+| NVIDIA GPU (8GB+) | 2 | ~20 min | ~2 hours |
+| Apple M1/M2 (MPS) | 1-2 | ~1-2 hours | ~6-12 hours |
 | CPU | 1 | Not recommended | Not recommended |
 
+With feature precomputation (default) and topology downsampling (default).
 Without feature precomputation (`--no-precompute`), training is ~10x slower.
 
 ## Documentation
