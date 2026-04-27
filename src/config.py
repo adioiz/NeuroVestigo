@@ -7,9 +7,9 @@ from typing import Dict, List, Optional
 
 @dataclass
 class LoRAConfig:
-    rank: int = 8
+    rank: int = 4
     alpha: float = 16.0
-    dropout: float = 0.15  # Increased from 0.05 for better regularization
+    dropout: float = 0.25
 
 
 @dataclass
@@ -23,7 +23,7 @@ class DataConfig:
     # Performance optimizations
     clip_stride: int = 4  # Stride between clip start frames (1=all clips, 4=every 4th)
     cache_in_memory: bool = True  # Cache all frames/masks in RAM at init
-    precompute_features: bool = True  # Precompute frozen encoder features before training
+    precompute_features: bool = False  # Precompute frozen encoder features before training
 
 
 @dataclass
@@ -46,10 +46,10 @@ class AugmentationConfig:
 @dataclass
 class OptimizerConfig:
     # Learning rates (LoRA+ asymmetric A/B rates, Hayou et al. ICML 2024)
-    base_lr: float = 1e-5  # For non-LoRA trainable params (increased from 5e-6)
-    lora_lr: float = 1e-4  # LoRA A matrix learning rate (increased from 5e-5)
+    base_lr: float = 1e-5  # For non-LoRA trainable params
+    lora_lr: float = 5e-5  # LoRA A matrix learning rate
     lora_b_lr_ratio: float = 16.0  # LoRA+ ratio: lr_B = lora_lr × ratio (B needs higher LR)
-    weight_decay: float = 0.1
+    weight_decay: float = 0.2
     # Gradient clipping
     max_grad_norm: float = 1.0  # Increased from 0.1 (was too aggressive)
     # Scheduler
