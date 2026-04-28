@@ -20,6 +20,9 @@ class DataConfig:
     image_size: int = 1024 # Image size for SAM 2 (must match pretrained config)
     max_objects: int = 3 # Maximum objects per clip
     val_fraction: float = 0.25 # Validation split (fraction of videos held out → 3 of 12)
+    # Optional: explicitly pin which videos go in val. When set, overrides val_fraction
+    # and the random seed-based split. Useful for val-swap experiments.
+    val_videos: Optional[List[str]] = None
     # Performance optimizations
     clip_stride: int = 4  # Stride between clip start frames (1=all clips, 4=every 4th)
     cache_in_memory: bool = True  # Cache all frames/masks in RAM at init

@@ -679,9 +679,23 @@ def train(config: TrainingConfig = None):
             f"Run prepare_data.py first."
         )
 
-    train_videos, val_videos = train_val_split(
-        all_videos, val_fraction=config.data.val_fraction, seed=config.seed
-    )
+    if config.data.val_videos:
+        # Explicit override — pin val to these videos, train on the rest.
+        all_set = set(all_videos)
+        requested = list(config.data.val_videos)
+        missing = [v for v in requested if v not in all_set]
+        if missing:
+            raise ValueError(
+                f"--val-videos requested {missing}, but they are not in the "
+                f"dataset. Available: {sorted(all_videos)}"
+            )
+        val_videos = requested
+        train_videos = [v for v in all_videos if v not in set(val_videos)]
+        print(f"Using explicit val split (val_fraction ignored)")
+    else:
+        train_videos, val_videos = train_val_split(
+            all_videos, val_fraction=config.data.val_fraction, seed=config.seed
+        )
     print(f"Training videos ({len(train_videos)}): {train_videos}")
     print(f"Validation videos ({len(val_videos)}): {val_videos}")
 

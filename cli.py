@@ -89,6 +89,9 @@ def cmd_train(args):
         config.data.cache_in_memory = False
     if args.no_precompute:
         config.data.precompute_features = False
+    if args.val_videos:
+        # Comma-separated list, e.g. --val-videos A51_C1,A52_C2,A31_C2
+        config.data.val_videos = [v.strip() for v in args.val_videos.split(",") if v.strip()]
 
     # ----- Optimizer -----
     if args.lora_lr is not None:
@@ -123,6 +126,8 @@ def cmd_train(args):
     print(f"  data.precompute_features={config.data.precompute_features}, "
           f"clip_stride={config.data.clip_stride}, "
           f"num_frames={config.data.num_frames}")
+    if config.data.val_videos:
+        print(f"  data.val_videos={config.data.val_videos} (overrides val_fraction)")
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
           f"use_supervoxel={config.loss.use_supervoxel}")
     print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
@@ -212,6 +217,16 @@ def main():
         "--no-cache",
         action="store_true",
         help="Disable in-memory frame caching (saves RAM but slower disk I/O)",
+    )
+    p_train.add_argument(
+        "--val-videos",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated video names to use as the val split, overriding "
+            "val_fraction and the seed-based shuffle. Example: "
+            "--val-videos A51_C1,A52_C2,A31_C2"
+        ),
     )
 
     args = parser.parse_args()
