@@ -47,53 +47,85 @@ def cmd_prepare(args):
 
 
 def cmd_train(args):
-    """Run the training loop."""
-    from src.config import (
-        TrainingConfig, LoRAConfig, DataConfig, OptimizerConfig, AugmentationConfig, LossConfig,
-    )
+    """Run the training loop.
+
+    CLI flags override config.py defaults *only when explicitly provided*.
+    Unspecified flags fall through to whatever is in src/config.py, so
+    config.py is the single source of truth.
+    """
+    from src.config import TrainingConfig
     from src.trainer import train
 
-    # If --use-dataset-stats is passed, leave normalize_mean/std as None
-    # so that train.py auto-loads from manifest.json.
-    # If --imagenet-stats is passed, use ImageNet stats explicitly.
-    aug_config = AugmentationConfig()
+    config = TrainingConfig()  # Start from config.py defaults
+
+    # ----- Top-level overrides -----
+    if args.epochs is not None:
+        config.num_epochs = args.epochs
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.checkpoint_dir is not None:
+        config.checkpoint_dir = args.checkpoint_dir
+    if args.val_every is not None:
+        config.val_every_n_epochs = args.val_every
+    if args.val_samples is not None:
+        config.val_max_batches = args.val_samples
+    if args.patience is not None:
+        config.early_stopping_patience = args.patience
+
+    # ----- LoRA -----
+    if args.lora_rank is not None:
+        config.lora.rank = args.lora_rank
+    if args.lora_alpha is not None:
+        config.lora.alpha = args.lora_alpha
+
+    # ----- Data -----
+    if args.data_dir is not None:
+        config.data.training_data_dir = args.data_dir
+    if args.num_frames is not None:
+        config.data.num_frames = args.num_frames
+    if args.clip_stride is not None:
+        config.data.clip_stride = args.clip_stride
+    if args.no_cache:
+        config.data.cache_in_memory = False
+    if args.no_precompute:
+        config.data.precompute_features = False
+
+    # ----- Optimizer -----
+    if args.lora_lr is not None:
+        config.optimizer.lora_lr = args.lora_lr
+    if args.lora_b_lr_ratio is not None:
+        config.optimizer.lora_b_lr_ratio = args.lora_b_lr_ratio
+    if args.base_lr is not None:
+        config.optimizer.base_lr = args.base_lr
+    if args.warmup_epochs is not None:
+        config.optimizer.warmup_epochs = args.warmup_epochs
+
+    # ----- Augmentation / normalization -----
     if args.use_imagenet_stats:
-        aug_config.normalize_mean = [0.485, 0.456, 0.406]
-        aug_config.normalize_std = [0.229, 0.224, 0.225]
-    # else: normalize_mean/std remain None → auto-loaded from manifest
+        config.augmentation.normalize_mean = [0.485, 0.456, 0.406]
+        config.augmentation.normalize_std = [0.229, 0.224, 0.225]
 
-    # Configure loss (disable cbDice/supervoxel if requested to save memory/time)
-    # --no-topology disables BOTH topology losses at once
-    loss_config = LossConfig(
-        use_cbdice=not (args.no_cbdice or args.no_topology),
-        use_supervoxel=not (args.no_supervoxel or args.no_topology),
-        loss_supervoxel_weight=args.supervoxel_weight,
-    )
+    # ----- Loss -----
+    if args.no_cbdice or args.no_topology:
+        config.loss.use_cbdice = False
+    if args.no_supervoxel or args.no_topology:
+        config.loss.use_supervoxel = False
+    if args.supervoxel_weight is not None:
+        config.loss.loss_supervoxel_weight = args.supervoxel_weight
 
-    config = TrainingConfig(
-        num_epochs=args.epochs,
-        lora=LoRAConfig(rank=args.lora_rank, alpha=args.lora_alpha),
-        data=DataConfig(
-            training_data_dir=args.data_dir,
-            num_frames=args.num_frames,
-            clip_stride=args.clip_stride,
-            cache_in_memory=not args.no_cache,
-            precompute_features=not args.no_precompute,
-        ),
-        optimizer=OptimizerConfig(
-            lora_lr=args.lora_lr,
-            lora_b_lr_ratio=args.lora_b_lr_ratio,
-            base_lr=args.base_lr,
-            warmup_epochs=args.warmup_epochs,
-        ),
-        augmentation=aug_config,
-        loss=loss_config,
-        batch_size=args.batch_size,
-        checkpoint_dir=args.checkpoint_dir,
-        val_every_n_epochs=args.val_every,
-        val_max_batches=args.val_samples,
-        early_stopping_patience=args.patience,
-    )
+    # ----- Echo the resolved config so the SLURM log makes the source obvious -----
+    print("\n=== Resolved training config ===")
+    print(f"  lora.rank={config.lora.rank}, lora.alpha={config.lora.alpha}, "
+          f"lora.dropout={config.lora.dropout}")
+    print(f"  optimizer.lora_lr={config.optimizer.lora_lr:.1e}, "
+          f"base_lr={config.optimizer.base_lr:.1e}, "
+          f"weight_decay={config.optimizer.weight_decay}")
+    print(f"  data.precompute_features={config.data.precompute_features}, "
+          f"clip_stride={config.data.clip_stride}, "
+          f"num_frames={config.data.num_frames}")
+    print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
+          f"use_supervoxel={config.loss.use_supervoxel}")
+    print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
 
     train(config)
 
@@ -123,20 +155,21 @@ def main():
 
     # --- train command ---
     p_train = subparsers.add_parser("train", help="Train the model")
-    p_train.add_argument("--epochs", type=int, default=60)
-    p_train.add_argument("--batch-size", type=int, default=2, help="Batch size (default: 2, was 1)")
-    p_train.add_argument("--lora-rank", type=int, default=8)
-    p_train.add_argument("--lora-alpha", type=float, default=16.0)
-    p_train.add_argument("--lora-lr", type=float, default=1e-4, help="LoRA A matrix learning rate (default: 1e-4)")
-    p_train.add_argument("--lora-b-lr-ratio", type=float, default=16.0, help="LoRA+ B/A learning rate ratio (default: 16.0)")
-    p_train.add_argument("--base-lr", type=float, default=1e-5, help="Base learning rate for non-LoRA params")
-    p_train.add_argument("--warmup-epochs", type=int, default=1, help="Number of warmup epochs (default: 1)")
-    p_train.add_argument("--num-frames", type=int, default=8)
-    p_train.add_argument("--data-dir", type=str, default="training_data")
-    p_train.add_argument("--checkpoint-dir", type=str, default="checkpoints")
-    p_train.add_argument("--val-every", type=int, default=2, help="Validate every N epochs (default: 2, was 5)")
-    p_train.add_argument("--val-samples", type=int, default=0, help="Max validation batches (0 = all, >0 = faster validation)")
-    p_train.add_argument("--patience", type=int, default=10, help="Early stopping patience (validations without improvement)")
+    # All numeric/string defaults are None: when omitted, config.py wins.
+    p_train.add_argument("--epochs", type=int, default=None)
+    p_train.add_argument("--batch-size", type=int, default=None)
+    p_train.add_argument("--lora-rank", type=int, default=None)
+    p_train.add_argument("--lora-alpha", type=float, default=None)
+    p_train.add_argument("--lora-lr", type=float, default=None, help="LoRA A matrix learning rate")
+    p_train.add_argument("--lora-b-lr-ratio", type=float, default=None, help="LoRA+ B/A learning rate ratio")
+    p_train.add_argument("--base-lr", type=float, default=None, help="Base learning rate for non-LoRA params")
+    p_train.add_argument("--warmup-epochs", type=int, default=None)
+    p_train.add_argument("--num-frames", type=int, default=None)
+    p_train.add_argument("--data-dir", type=str, default=None)
+    p_train.add_argument("--checkpoint-dir", type=str, default=None)
+    p_train.add_argument("--val-every", type=int, default=None, help="Validate every N epochs")
+    p_train.add_argument("--val-samples", type=int, default=None, help="Max validation batches (0 = all)")
+    p_train.add_argument("--patience", type=int, default=None, help="Early stopping patience")
     p_train.add_argument(
         "--use-imagenet-stats",
         action="store_true",
@@ -150,8 +183,8 @@ def main():
     p_train.add_argument(
         "--supervoxel-weight",
         type=float,
-        default=1.0,
-        help="Weight for supervoxel connectivity loss (default: 1.0)",
+        default=None,
+        help="Weight for supervoxel connectivity loss",
     )
     p_train.add_argument(
         "--no-supervoxel",
@@ -167,8 +200,8 @@ def main():
     p_train.add_argument(
         "--clip-stride",
         type=int,
-        default=4,
-        help="Stride between clip start frames (1=all clips, 4=every 4th, default: 4)",
+        default=None,
+        help="Stride between clip start frames (1=all clips, 4=every 4th)",
     )
     p_train.add_argument(
         "--no-precompute",

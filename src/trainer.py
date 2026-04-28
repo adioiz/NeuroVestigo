@@ -807,6 +807,7 @@ def train(config: TrainingConfig = None):
     for epoch in range(config.num_epochs):
         model.train()
         epoch_losses = []
+        epoch_components: Dict[str, List[float]] = {}
         step_times = []
         epoch_start = time.time()
 
@@ -841,6 +842,14 @@ def train(config: TrainingConfig = None):
                 targets = batch.masks.float()
                 losses = loss_fn(outputs, targets)
                 loss = losses["core_loss"]
+
+            # Per-component loss tracking (Hypothesis A: irreducible floor).
+            # Reading .item() outside the autocast block to keep the cast tight.
+            for k, v in losses.items():
+                if k == "core_loss":
+                    continue
+                if isinstance(v, torch.Tensor):
+                    epoch_components.setdefault(k, []).append(float(v.detach().item()))
 
             # Backward
             optimizer.zero_grad()
@@ -884,11 +893,15 @@ def train(config: TrainingConfig = None):
         epoch_time = time.time() - epoch_start
         avg_epoch_loss = np.mean(epoch_losses)
         avg_step_time_epoch = np.mean(step_times) if step_times else 0
+        train_components = {
+            k: float(np.mean(v)) for k, v in epoch_components.items()
+        }
         log_entry = {
             "epoch": epoch + 1,
             "train_loss": avg_epoch_loss,
             "time_seconds": epoch_time,
             "sec_per_step": avg_step_time_epoch,
+            "train_loss_components": train_components,
         }
 
         print(
@@ -897,15 +910,24 @@ def train(config: TrainingConfig = None):
             f"time={epoch_time:.1f}s, "
             f"{avg_step_time_epoch:.1f}s/step"
         )
+        if train_components:
+            comp_str = ", ".join(
+                f"{k.replace('loss_','')}={v:.3f}"
+                for k, v in train_components.items()
+            )
+            print(f"  train_loss_components: {comp_str}")
 
         # --- Validation ---
         if (epoch + 1) % config.val_every_n_epochs == 0 and len(val_dataset) > 0:
             print("  Validating...")
+            sample_dir = checkpoint_dir / "val_samples" / f"epoch_{epoch+1:03d}"
             val_metrics = validate_epoch(
                 model, val_loader, loss_fn, device,
                 max_batches=config.val_max_batches,
                 feature_cache=feature_cache,
                 pos_enc=pos_enc,
+                sample_dump_dir=sample_dir,
+                sample_dump_tag=f"e{epoch+1:03d}",
             )
             log_entry.update(val_metrics)
             print(
@@ -913,6 +935,26 @@ def train(config: TrainingConfig = None):
                 f"val_iou={val_metrics['val_iou']:.4f}, "
                 f"val_dice={val_metrics['val_dice']:.4f}"
             )
+            # Hypothesis A: per-component val loss (compare floors vs. train).
+            if val_metrics.get("loss_components"):
+                comp_str = ", ".join(
+                    f"{k.replace('loss_','')}={v:.3f}"
+                    for k, v in val_metrics["loss_components"].items()
+                )
+                print(f"  val_loss_components: {comp_str}")
+            # Hypothesis B: chain error along the propagation.
+            pf_iou = val_metrics.get("per_frame_iou", [])
+            if pf_iou:
+                fmt = ", ".join(
+                    f"t{t}={v:.3f}" if not np.isnan(v) else f"t{t}=nan"
+                    for t, v in enumerate(pf_iou)
+                )
+                print(f"  per_frame_iou: {fmt}")
+            # Hypothesis C: variance across val videos.
+            pv_iou = val_metrics.get("per_video_iou", {})
+            if pv_iou:
+                fmt = ", ".join(f"{n}={v:.3f}" for n, v in pv_iou.items())
+                print(f"  per_video_iou: {fmt}")
 
             # Save best checkpoint and track early stopping
             if val_metrics["val_iou"] > best_val_iou:
