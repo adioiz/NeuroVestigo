@@ -117,80 +117,85 @@ def evaluate_batch(
     }
 
 
-@torch.no_grad()
-def save_prediction_samples(
+def _build_sample_record(
     pred_masks: torch.Tensor,
     target_masks: torch.Tensor,
     images: torch.Tensor,
+    b: int,
+    t: int,
+    obj_idx: int,
+    iou: float,
+    video_name: str,
+    frame_idx_in_video: Optional[int],
+) -> Dict:
+    """Pull out CPU tensors for one (b, t, obj) slice so they can be saved later.
+
+    Held in a buffer while validation runs; cheaper than keeping the whole
+    batch around. We resize the prediction to GT resolution here so the
+    saved PNGs are aligned.
+    """
+    H_gt, W_gt = target_masks.shape[-2:]
+    pred_slice = pred_masks[b, t, obj_idx].float().unsqueeze(0).unsqueeze(0)
+    pred_slice = torch.nn.functional.interpolate(
+        pred_slice, size=(H_gt, W_gt), mode="bilinear", align_corners=False,
+    )[0, 0]
+
+    return {
+        "iou": iou,
+        "video": video_name,
+        "t": t,
+        "frame_idx": frame_idx_in_video,
+        "obj": obj_idx,
+        "image": images[b, t].detach().float().cpu().clone(),
+        "gt": target_masks[b, t, obj_idx].bool().cpu().clone(),
+        "pred": pred_slice.detach().cpu().clone(),
+    }
+
+
+def save_selected_samples(
+    samples: List[Dict],
     out_dir: Path,
     tag: str,
-    max_samples: int = 4,
 ):
-    """Save side-by-side image / GT / prediction PNGs for visual inspection.
+    """Save one PNG per record in `samples`. Each PNG is image | GT | pred | overlay.
 
-    pred_masks: [B, T, N, H, W] logits (any size, will be resized to GT)
-    target_masks: [B, T, N, H, W] bool/float
-    images: [B, T, C, H, W] normalized images on the same device
+    Filenames embed video name and IoU so the worst cases are easy to spot.
     """
+    if not samples:
+        return
     try:
         from PIL import Image
     except ImportError:
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    B, T, N, H_gt, W_gt = target_masks.shape
+    for rank, s in enumerate(samples):
+        gt = s["gt"].numpy()
+        pred = (s["pred"] > 0).numpy()
+        img = s["image"].numpy()
 
-    # Resize predictions to GT spatial size for fair overlay
-    pred_resized = torch.nn.functional.interpolate(
-        pred_masks.view(B * T * N, 1, *pred_masks.shape[-2:]).float(),
-        size=(H_gt, W_gt),
-        mode="bilinear",
-        align_corners=False,
-    ).view(B, T, N, H_gt, W_gt)
+        img_min = img.min()
+        img_max = img.max()
+        img_norm = (img - img_min) / max(float(img_max - img_min), 1e-6)
+        img_uint8 = (img_norm * 255).clip(0, 255).astype(np.uint8)
+        if img_uint8.shape[0] == 1:
+            rgb = np.repeat(img_uint8, 3, axis=0).transpose(1, 2, 0)
+        else:
+            rgb = img_uint8[:3].transpose(1, 2, 0)
 
-    pred_bin = (pred_resized > 0).cpu().numpy()
-    gt_bin = target_masks.bool().cpu().numpy()
+        gt_rgb = (np.stack([gt, gt, gt], axis=-1) * 255).astype(np.uint8)
+        pr_rgb = (np.stack([pred, pred, pred], axis=-1) * 255).astype(np.uint8)
+        overlay = rgb.copy()
+        overlay[..., 0] = np.maximum(overlay[..., 0], pred * 255)  # red = pred
+        overlay[..., 1] = np.maximum(overlay[..., 1], gt * 255)    # green = GT
+        composite = np.concatenate([rgb, gt_rgb, pr_rgb, overlay], axis=1)
 
-    # Recover viewable image — undo normalization roughly via min/max scaling
-    img = images.detach().float().cpu().numpy()
-    img_min = img.min(axis=(-1, -2, -3), keepdims=True)
-    img_max = img.max(axis=(-1, -2, -3), keepdims=True)
-    img = (img - img_min) / np.maximum(img_max - img_min, 1e-6)
-    img_uint8 = (img * 255).clip(0, 255).astype(np.uint8)  # [B, T, C, H, W]
-
-    saved = 0
-    for b in range(B):
-        if saved >= max_samples:
-            break
-        # Pick frame with the lowest IoU to make label-noise issues visible.
-        # Falls back to first frame if no GT objects.
-        for t in [0, T // 2, T - 1]:
-            if saved >= max_samples:
-                break
-            obj_idx = 0  # first object slot
-            gt_t = gt_bin[b, t, obj_idx]
-            pr_t = pred_bin[b, t, obj_idx]
-            if not gt_t.any() and not pr_t.any():
-                continue
-
-            # Build composite: image | GT | pred | overlay (pred=red, GT=green)
-            # All at GT resolution.
-            ch = img_uint8[b, t]
-            if ch.shape[0] == 1:
-                rgb = np.repeat(ch, 3, axis=0).transpose(1, 2, 0)
-            else:
-                rgb = ch[:3].transpose(1, 2, 0)
-            gt_rgb = (np.stack([gt_t, gt_t, gt_t], axis=-1) * 255).astype(np.uint8)
-            pr_rgb = (np.stack([pr_t, pr_t, pr_t], axis=-1) * 255).astype(np.uint8)
-            overlay = rgb.copy()
-            overlay[..., 0] = np.maximum(overlay[..., 0], pr_t * 255)  # red = pred
-            overlay[..., 1] = np.maximum(overlay[..., 1], gt_t * 255)  # green = GT
-
-            composite = np.concatenate([rgb, gt_rgb, pr_rgb, overlay], axis=1)
-            Image.fromarray(composite).save(
-                out_dir / f"{tag}_b{b}_t{t}.png"
-            )
-            saved += 1
+        frame_id = s["frame_idx"] if s["frame_idx"] is not None else s["t"]
+        fname = (
+            f"{tag}_rank{rank:02d}_iou{s['iou']:.2f}_"
+            f"{s['video']}_t{s['t']}_f{frame_id}.png"
+        )
+        Image.fromarray(composite).save(out_dir / fname)
 
 
 @torch.no_grad()
@@ -238,8 +243,14 @@ def validate_epoch(
     flat_ious: List[float] = []
     flat_dices: List[float] = []
 
+    # Buffer of the K worst (lowest-IoU) frames seen so far across the val set.
+    # We keep a strict cap of `worst_buffer_cap` records — when full, only
+    # frames that beat the current max IoU make it in. This keeps memory
+    # bounded regardless of val set size.
+    worst_buffer: List[Dict] = []
+    worst_buffer_cap = 6 if sample_dump_dir is not None else 0
+
     num_batches = 0
-    sample_dumped = False
 
     for batch, frame_id_lists in val_loader:
         if max_batches > 0 and num_batches >= max_batches:
@@ -278,20 +289,42 @@ def validate_epoch(
                 flat_ious.append(iou)
                 flat_dices.append(dice)
 
-        # Dump a few samples from the very first batch only — keeps disk + time bounded.
-        if sample_dump_dir is not None and not sample_dumped:
-            try:
-                save_prediction_samples(
-                    outputs["pred_masks"], batch.masks, batch.images,
-                    out_dir=sample_dump_dir, tag=sample_dump_tag, max_samples=4,
-                )
-            except Exception as e:
-                print(f"  [warn] sample dump failed: {e}")
-            sample_dumped = True
+                # Worst-IoU sample tracking. Skip t==0: it always uses the GT
+                # mask as the prompt so the prediction is trivially perfect.
+                if worst_buffer_cap > 0 and t > 0:
+                    current_max = max((s["iou"] for s in worst_buffer), default=1.0)
+                    if (
+                        len(worst_buffer) < worst_buffer_cap
+                        or iou < current_max
+                    ):
+                        frame_idx_in_video = (
+                            frame_id_lists[b][t][1]
+                            if t < len(frame_id_lists[b])
+                            else None
+                        )
+                        record = _build_sample_record(
+                            outputs["pred_masks"], batch.masks, batch.images,
+                            b=b, t=t, obj_idx=0,
+                            iou=iou, video_name=video_name,
+                            frame_idx_in_video=frame_idx_in_video,
+                        )
+                        worst_buffer.append(record)
+                        if len(worst_buffer) > worst_buffer_cap:
+                            # Drop the highest-IoU record (we want the worst).
+                            worst_buffer.sort(key=lambda s: s["iou"])
+                            worst_buffer.pop()
 
         num_batches += 1
 
     model.train()
+
+    # Save the worst-IoU samples now that we've seen the full val set.
+    if sample_dump_dir is not None and worst_buffer:
+        try:
+            worst_buffer.sort(key=lambda s: s["iou"])
+            save_selected_samples(worst_buffer, sample_dump_dir, sample_dump_tag)
+        except Exception as e:
+            print(f"  [warn] sample dump failed: {e}")
 
     if num_batches == 0:
         return {"val_loss": float("inf"), "val_iou": 0.0, "val_dice": 0.0}
