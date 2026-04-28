@@ -7,9 +7,9 @@ from typing import Dict, List, Optional
 
 @dataclass
 class LoRAConfig:
-    rank: int = 4
+    rank: int = 8
     alpha: float = 16.0
-    dropout: float = 0.25
+    dropout: float = 0.10
 
 
 @dataclass
@@ -19,7 +19,7 @@ class DataConfig:
     num_frames: int = 8 # Number of frames per training clip
     image_size: int = 1024 # Image size for SAM 2 (must match pretrained config)
     max_objects: int = 3 # Maximum objects per clip
-    val_fraction: float = 0.2 # Validation split (fraction of videos held out)
+    val_fraction: float = 0.25 # Validation split (fraction of videos held out → 3 of 12)
     # Performance optimizations
     clip_stride: int = 4  # Stride between clip start frames (1=all clips, 4=every 4th)
     cache_in_memory: bool = True  # Cache all frames/masks in RAM at init
@@ -47,9 +47,9 @@ class AugmentationConfig:
 class OptimizerConfig:
     # Learning rates (LoRA+ asymmetric A/B rates, Hayou et al. ICML 2024)
     base_lr: float = 1e-5  # For non-LoRA trainable params
-    lora_lr: float = 5e-5  # LoRA A matrix learning rate
+    lora_lr: float = 1e-4  # LoRA A matrix learning rate
     lora_b_lr_ratio: float = 16.0  # LoRA+ ratio: lr_B = lora_lr × ratio (B needs higher LR)
-    weight_decay: float = 0.2
+    weight_decay: float = 0.05
     # Gradient clipping
     max_grad_norm: float = 1.0  # Increased from 0.1 (was too aggressive)
     # Scheduler
@@ -65,7 +65,7 @@ class LossConfig:
     # Loss weights - balanced for better generalization
     loss_mask_weight: float = 5.0  # Focal loss (reduced from 20.0 to balance with Dice/IoU)
     loss_dice_weight: float = 2.0  # Standard Dice for shape matching
-    loss_cbdice_weight: float = 1.0  # cbDice for skeleton topology (upgraded from clDice)
+    loss_cbdice_weight: float = 3.0  # cbDice for skeleton topology — emphasised for tree-like neurons
     loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
@@ -76,7 +76,10 @@ class LossConfig:
     use_cbdice: bool = True  # Enable skeleton topology-preserving loss (cbDice)
     cbdice_num_iter: int = 5  # Iterations for soft skeletonization (reduced from 10 for MPS memory)
     # Supervoxel params
-    use_supervoxel: bool = True  # Enable connectivity-preserving loss
+    # Disabled: in the rank-4/dropout-0.25 run this loss sat at ~0.30 from
+    # epoch 4 onward and was 39% of val_loss without contributing to learning.
+    # Re-enable with a smaller weight if topology regressions appear.
+    use_supervoxel: bool = False  # Enable connectivity-preserving loss
     # Topology resolution: resolution at which topology losses are computed
     # (cbDice skeleton/EDT + supervoxel connectivity analysis).
     # Lower = faster. 256 is 16× faster than 1024 with minimal quality loss.
