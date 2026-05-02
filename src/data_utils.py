@@ -70,11 +70,18 @@ class BatchedVideoDatapoint:
     obj_ids: List[List[int]]  # Object IDs per batch item
     video_ids: List[int]
 
-    def to(self, device):
-        """Move tensors to specified device."""
+    def to(self, device, non_blocking: bool = False):
+        """Move tensors to specified device.
+
+        Args:
+            device: Target device (e.g. 'cuda').
+            non_blocking: If True and source tensors are pinned, the H2D copy
+                returns immediately and runs concurrently with subsequent GPU
+                work. Pair with DataLoader(pin_memory=True).
+        """
         return BatchedVideoDatapoint(
-            images=self.images.to(device),
-            masks=self.masks.to(device),
+            images=self.images.to(device, non_blocking=non_blocking),
+            masks=self.masks.to(device, non_blocking=non_blocking),
             obj_ids=self.obj_ids,
             video_ids=self.video_ids,
         )

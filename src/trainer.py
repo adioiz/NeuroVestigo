@@ -137,6 +137,8 @@ def precompute_all_features(
                 frame = TF.normalize(frame, norm_mean, norm_std)
 
                 frame_batch = frame.unsqueeze(0).to(device)
+                if device == "cuda":
+                    frame_batch = frame_batch.contiguous(memory_format=torch.channels_last)
 
                 with torch.amp.autocast(device, dtype=amp_dtype, enabled=use_amp):
                     backbone_out = sam2.forward_image(frame_batch)
@@ -290,8 +292,13 @@ class SAM2TrainingWrapper(nn.Module):
         if precomputed_backbone_out is not None:
             backbone_out = precomputed_backbone_out
         else:
-            # Reshape to [B*T, C, H, W] for batch processing
+            # Reshape to [B*T, C, H, W] for batch processing.
+            # Convert to channels-last so cuDNN picks the fast tensor-core
+            # conv kernels in the Hiera encoder. Weights were already
+            # converted in build_training_model().
             images_flat = images.view(B * T, C, H, W)
+            if images_flat.is_cuda:
+                images_flat = images_flat.contiguous(memory_format=torch.channels_last)
             with torch.set_grad_enabled(self.training):
                 backbone_out = self.model.forward_image(images_flat)
 
@@ -560,6 +567,16 @@ def build_training_model(config: TrainingConfig, device: str):
         print(f"  Using supervoxel loss for connectivity (weight={config.loss.loss_supervoxel_weight})")
 
     training_model = training_model.to(device)
+
+    # Channels-last memory format on CUDA. .to(memory_format=...) only
+    # touches 4D Conv weights — Linear / LayerNorm / Embedding stay as-is.
+    # Pair with channels_last input in the wrapper forward (below) so
+    # cuDNN picks the fast tensor-core conv kernels on Hopper/Blackwell.
+    # Numerically equivalent to bf16 precision — different reduction
+    # order in cuDNN may shift values by ≤1 ulp but no systematic bias.
+    if device == "cuda":
+        training_model = training_model.to(memory_format=torch.channels_last)
+
     return training_model, loss_fn
 
 
@@ -753,13 +770,19 @@ def train(config: TrainingConfig = None):
     # When data is cached in memory, workers just add pickle overhead
     effective_num_workers = 0 if config.data.cache_in_memory else config.num_workers
 
+    # Always pin memory on CUDA — even when frames are RAM-cached, the cached
+    # tensors are unpinned, so the H2D copy blocks the GPU. Pinning the
+    # collated batch is cheap and lets us use non_blocking=True at the .to()
+    # call to overlap copy with GPU compute.
+    use_pin_memory = (device == "cuda")
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
         num_workers=effective_num_workers,
         collate_fn=neuron_collate_fn,
-        pin_memory=(not config.data.cache_in_memory),
+        pin_memory=use_pin_memory,
         drop_last=True,
     )
     val_loader = DataLoader(
@@ -768,7 +791,7 @@ def train(config: TrainingConfig = None):
         shuffle=False,
         num_workers=effective_num_workers,
         collate_fn=neuron_collate_fn,
-        pin_memory=(not config.data.cache_in_memory),
+        pin_memory=use_pin_memory,
     )
 
     # --- Model ---
@@ -802,7 +825,9 @@ def train(config: TrainingConfig = None):
     scheduler = build_scheduler(optimizer, config, len(train_loader))
 
     # --- AMP ---
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    # No GradScaler: we use bfloat16, which has fp32 exponent range and
+    # therefore no underflow risk. GradScaler is only useful for fp16.
+    # Keeping it would add per-step unscale/step/update syncs for no benefit.
 
     # --- Training loop ---
     precompute_label = " (precomputed features)" if feature_cache else ""
@@ -820,14 +845,18 @@ def train(config: TrainingConfig = None):
 
     for epoch in range(config.num_epochs):
         model.train()
-        epoch_losses = []
-        epoch_components: Dict[str, List[float]] = {}
+        # Loss tensors stay on-device — no .item() inside the step loop.
+        # We only sync at logging boundaries (every log_every_n_steps and at
+        # end of epoch). Each .item() is a cudaStreamSynchronize, so per-step
+        # syncs were the dominant CPU stall on B200.
+        epoch_losses: List[torch.Tensor] = []
+        epoch_components: Dict[str, List[torch.Tensor]] = {}
         step_times = []
         epoch_start = time.time()
 
         for step, (batch, frame_id_lists) in enumerate(train_loader):
             step_start = time.time()
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=True)
 
             with torch.amp.autocast(device, dtype=amp_dtype, enabled=use_amp):
                 if feature_cache is not None:
@@ -858,32 +887,25 @@ def train(config: TrainingConfig = None):
                 loss = losses["core_loss"]
 
             # Per-component loss tracking (Hypothesis A: irreducible floor).
-            # Reading .item() outside the autocast block to keep the cast tight.
+            # Store *detached tensors* — no sync. We aggregate at log boundaries.
             for k, v in losses.items():
                 if k == "core_loss":
                     continue
                 if isinstance(v, torch.Tensor):
-                    epoch_components.setdefault(k, []).append(float(v.detach().item()))
+                    epoch_components.setdefault(k, []).append(v.detach())
 
-            # Backward
-            optimizer.zero_grad()
-            if use_amp:
-                scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config.optimizer.max_grad_norm
-                )
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), config.optimizer.max_grad_norm
-                )
-                optimizer.step()
+            # Backward — bf16 doesn't need GradScaler (no underflow risk like
+            # fp16). Plain backward avoids the per-step unscale/step/update
+            # syncs that GradScaler.step performs internally.
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.optimizer.max_grad_norm
+            )
+            optimizer.step()
 
             scheduler.step()
-            epoch_losses.append(loss.item())
+            epoch_losses.append(loss.detach())
             step_times.append(time.time() - step_start)
 
             # Memory cleanup for MPS to prevent OOM
@@ -891,9 +913,10 @@ def train(config: TrainingConfig = None):
             if device == "mps":
                 torch.mps.empty_cache()
 
-            # Logging
+            # Logging — one sync per log_every_n_steps instead of per step.
             if (step + 1) % config.log_every_n_steps == 0:
-                avg_loss = np.mean(epoch_losses[-config.log_every_n_steps:])
+                recent = epoch_losses[-config.log_every_n_steps:]
+                avg_loss = float(torch.stack(recent).mean().item())
                 avg_step_time = np.mean(step_times[-config.log_every_n_steps:])
                 lr = optimizer.param_groups[0]["lr"]
                 print(
@@ -905,10 +928,18 @@ def train(config: TrainingConfig = None):
                 )
 
         epoch_time = time.time() - epoch_start
-        avg_epoch_loss = np.mean(epoch_losses)
+        # Now sync once per metric: the loss/components lists hold detached
+        # GPU tensors collected during the epoch. Stack + reduce + .item()
+        # gives one cudaStreamSynchronize per epoch, not per step.
+        if epoch_losses:
+            avg_epoch_loss = float(torch.stack(epoch_losses).mean().item())
+        else:
+            avg_epoch_loss = 0.0
         avg_step_time_epoch = np.mean(step_times) if step_times else 0
         train_components = {
-            k: float(np.mean(v)) for k, v in epoch_components.items()
+            k: float(torch.stack(v).mean().item())
+            for k, v in epoch_components.items()
+            if v
         }
         log_entry = {
             "epoch": epoch + 1,

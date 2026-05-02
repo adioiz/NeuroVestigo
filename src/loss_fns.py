@@ -260,6 +260,16 @@ def soft_skel(img: torch.Tensor, num_iter: int = 5) -> torch.Tensor:
     return skeleton
 
 
+# Module-level thread pool for parallel distance-transform computation.
+# scipy.ndimage.distance_transform_edt is a C extension that releases the
+# GIL, so threads (not processes) actually parallelize. Created once and
+# reused across cbDice forward passes — submission overhead is ~tens of µs.
+from concurrent.futures import ThreadPoolExecutor
+_DT_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="cbdice-dt",
+)
+
+
 def _compute_distance_weights(binary_mask: torch.Tensor) -> torch.Tensor:
     """Compute inverse-radius distance weights for cbDice.
 
@@ -270,6 +280,12 @@ def _compute_distance_weights(binary_mask: torch.Tensor) -> torch.Tensor:
     For a neuron branch with radius r, the EDT value at the centerline is r.
     We invert this: weight = 1/(r+1), so thin branches (r≈1) get weight ≈0.5
     while thick soma regions (r≈10) get weight ≈0.09.
+
+    Implementation note: at B*T*N=16 with 1-2 ms per scipy call, the serial
+    loop was ~30 ms of CPU stall per cbDice forward. Parallelising the per-
+    sample calls across 4 threads (scipy releases the GIL) cuts this to
+    ~8-10 ms while producing bit-identical output (same algorithm, same
+    arguments, deterministic write order on the way out).
 
     Args:
         binary_mask: [B, 1, H, W] binary mask (values 0 or 1)
@@ -283,19 +299,29 @@ def _compute_distance_weights(binary_mask: torch.Tensor) -> torch.Tensor:
     B, C, H, W = mask_np.shape
     weights = np.zeros_like(mask_np, dtype=np.float32)
 
-    for b in range(B):
-        for c in range(C):
-            m = mask_np[b, c]
-            if m.sum() > 0:
-                dt = distance_transform_edt(m)
-                # Inverse radius weighting: thinner structures get higher weight
-                # Add 1 to avoid division by zero, then invert
-                dt_inv = 1.0 / (dt + 1.0)
-                # Normalize so weights sum to number of foreground pixels
-                fg_count = m.sum()
-                if fg_count > 0:
-                    dt_inv = dt_inv * fg_count / (dt_inv[m > 0].sum() + 1e-8)
-                weights[b, c] = dt_inv * m  # Zero out background
+    def _dt_one(b: int, c: int):
+        m = mask_np[b, c]
+        if m.sum() == 0:
+            return b, c, None
+        dt = distance_transform_edt(m)
+        # Inverse radius weighting: thinner structures get higher weight.
+        # Add 1 to avoid division by zero, then invert.
+        dt_inv = 1.0 / (dt + 1.0)
+        # Normalize so weights sum to number of foreground pixels.
+        fg_count = m.sum()
+        dt_inv = dt_inv * fg_count / (dt_inv[m > 0].sum() + 1e-8)
+        return b, c, dt_inv * m  # Zero out background
+
+    # Submit all (b, c) tasks; collect in a deterministic order so the final
+    # `weights` tensor is identical across runs.
+    futures = [
+        _DT_EXECUTOR.submit(_dt_one, b, c)
+        for b in range(B) for c in range(C)
+    ]
+    for f in futures:
+        b, c, w = f.result()
+        if w is not None:
+            weights[b, c] = w
 
     return torch.from_numpy(weights).to(binary_mask.device)
 

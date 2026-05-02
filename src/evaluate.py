@@ -255,7 +255,7 @@ def validate_epoch(
     for batch, frame_id_lists in val_loader:
         if max_batches > 0 and num_batches >= max_batches:
             break
-        batch = batch.to(device)
+        batch = batch.to(device, non_blocking=True)
 
         if feature_cache is not None and pos_enc is not None:
             from src.trainer import assemble_cached_backbone
