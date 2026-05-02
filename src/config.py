@@ -118,6 +118,14 @@ class TrainingConfig:
     # Use mixed precision (bfloat16 on CUDA, float32 on MPS/CPU)
     use_amp: bool = True
 
+    # torch.compile (PyTorch 2.x). Off by default — first call adds 30s-2min
+    # of compile overhead and recompile loops can hurt throughput if shapes
+    # vary. SAM2's own video predictor compiles both modules, so they're
+    # known to work; enable when you want the speedup and can absorb the
+    # one-time compile cost.
+    compile_encoder: bool = False  # Compile model.image_encoder.forward
+    compile_decoder: bool = False  # Compile model.sam_mask_decoder.forward
+
     # Validation
     val_every_n_epochs: int = 2  # More frequent validation
     val_max_batches: int = 0  # Max batches for validation (0 = all batches)

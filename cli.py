@@ -93,6 +93,12 @@ def cmd_train(args):
         # Comma-separated list, e.g. --val-videos A51_C1,A52_C2,A31_C2
         config.data.val_videos = [v.strip() for v in args.val_videos.split(",") if v.strip()]
 
+    # ----- torch.compile -----
+    if args.compile_encoder:
+        config.compile_encoder = True
+    if args.compile_decoder:
+        config.compile_decoder = True
+
     # ----- Optimizer -----
     if args.lora_lr is not None:
         config.optimizer.lora_lr = args.lora_lr
@@ -131,6 +137,9 @@ def cmd_train(args):
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
           f"use_supervoxel={config.loss.use_supervoxel}")
     print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
+    if config.compile_encoder or config.compile_decoder:
+        print(f"  compile_encoder={config.compile_encoder}, "
+              f"compile_decoder={config.compile_decoder}")
 
     train(config)
 
@@ -227,6 +236,16 @@ def main():
             "val_fraction and the seed-based shuffle. Example: "
             "--val-videos A51_C1,A52_C2,A31_C2"
         ),
+    )
+    p_train.add_argument(
+        "--compile-encoder",
+        action="store_true",
+        help="torch.compile the image encoder (one-time 30s-2min compile cost)",
+    )
+    p_train.add_argument(
+        "--compile-decoder",
+        action="store_true",
+        help="torch.compile the sam_mask_decoder (one-time 30s-2min compile cost)",
     )
 
     args = parser.parse_args()

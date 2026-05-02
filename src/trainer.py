@@ -577,6 +577,27 @@ def build_training_model(config: TrainingConfig, device: str):
     if device == "cuda":
         training_model = training_model.to(memory_format=torch.channels_last)
 
+    # torch.compile (opt-in). Applied AFTER LoRA is wrapped + after .to(device)
+    # so the adapter modules and target dtype are baked into the traced graph.
+    # We compile the inner SAM2 submodules (not the wrapper) because the
+    # wrapper has Python loops + shape-dependent control flow that cause
+    # graph breaks or recompiles. SAM2's own sam2_video_predictor.py:992,1006
+    # uses this exact pattern.
+    if device == "cuda" and config.compile_encoder:
+        print("  Compiling image_encoder (first call will take 30s-2min)...")
+        training_model.model.image_encoder = torch.compile(
+            training_model.model.image_encoder,
+            mode="default",
+            dynamic=False,
+        )
+    if device == "cuda" and config.compile_decoder:
+        print("  Compiling sam_mask_decoder (first call will take 30s-2min)...")
+        training_model.model.sam_mask_decoder = torch.compile(
+            training_model.model.sam_mask_decoder,
+            mode="default",
+            dynamic=False,
+        )
+
     return training_model, loss_fn
 
 
