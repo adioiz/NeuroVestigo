@@ -704,6 +704,28 @@ def train(config: TrainingConfig = None):
     device = detect_device()
     print(f"Using device: {device}")
 
+    # Enable cuDNN's FlashAttention-3 backend for SDPA. SAM2 calls
+    # F.scaled_dot_product_attention internally; PyTorch's dispatcher then
+    # picks the fastest available kernel based on these enable flags. On
+    # B200 (Blackwell, compute 10.0) the cuDNN backend = FA-3, ~10-20%
+    # faster than the FA-2 fallback. Default is on in PyTorch 2.8 but we
+    # set it explicitly so older versions don't silently regress to FA-2.
+    if torch.cuda.is_available():
+        torch.backends.cuda.enable_cudnn_sdp(True)
+        torch.backends.cuda.enable_flash_sdp(True)        # FA-2 fallback
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        # Math kernel stays as last-resort fallback (correctness for odd shapes).
+        active = []
+        if torch.backends.cuda.cudnn_sdp_enabled():
+            active.append("cuDNN(FA-3)")
+        if torch.backends.cuda.flash_sdp_enabled():
+            active.append("flash(FA-2)")
+        if torch.backends.cuda.mem_efficient_sdp_enabled():
+            active.append("mem-efficient")
+        if torch.backends.cuda.math_sdp_enabled():
+            active.append("math")
+        print(f"SDPA backends enabled (PyTorch picks best at runtime): {', '.join(active)}")
+
     # Seed
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
