@@ -681,41 +681,77 @@ We use LoRA+ (Hayou et al., ICML 2024), which uses asymmetric learning rates for
 lora_b_lr = config.optimizer.lora_lr * config.optimizer.lora_b_lr_ratio  # 1e-4 × 16 = 1.6e-3
 
 optimizer = AdamW([
-    {"params": lora_a_params,    "lr": 1e-4,  "weight_decay": 0.1},  # A matrices
-    {"params": lora_b_params,    "lr": 1.6e-3, "weight_decay": 0.1},  # B matrices (16× higher)
-    {"params": embedding_params, "lr": 1e-5,  "weight_decay": 0.0},  # Embeddings
-])
+    {"params": lora_a_params,    "lr": 1e-4,   "weight_decay": 0.05},  # A matrices
+    {"params": lora_b_params,    "lr": 1.6e-3, "weight_decay": 0.05},  # B matrices (16× higher)
+    {"params": embedding_params, "lr": 1e-5,   "weight_decay": 0.0},   # Embeddings
+], fused=True)
 ```
 
 **LoRA A parameters (lr=1e-4):** Down-projection matrices, initialized with Kaiming uniform. They produce reasonable gradients from the start.
 
 **LoRA B parameters (lr=1.6e-3, 16× higher):** Up-projection matrices, initialized to zeros. Because B starts at zero, gradients for B are much smaller than for A — they need a higher learning rate to overcome this gradient imbalance. This is the key insight of LoRA+: zero extra cost, faster convergence.
 
-**Embedding parameters (lr=1e-5):** These are pretrained and already contain useful information. We want gentle, conservative updates -- large steps could destroy their pretrained values.
+**Embedding parameters (lr=1e-5):** These are pretrained and already contain useful information. We want gentle, conservative updates — large steps could destroy their pretrained values.
 
-**No weight decay for embeddings:** These are small vectors that encode specific information (e.g., temporal position). Weight decay would push them toward zero, which would erase that information. LoRA weights get weight_decay=0.1 to prevent them from growing too large.
+**No weight decay for embeddings:** These are small vectors that encode specific information (e.g., temporal position). Weight decay would push them toward zero, which would erase that information. LoRA weights get weight_decay=0.05 to prevent them from growing too large.
+
+**Fused AdamW:** The `fused=True` flag uses a single CUDA kernel for the optimizer step, vs ~136 small kernel launches with the default `foreach` impl. Numerically identical, just faster on GPU when there are many small parameter tensors (LoRA has 68 layers × 2 = 136 tiny adapter tensors).
 
 ### 9.3 Learning Rate Schedule
 
-**Warmup phase** (1 epoch):
+**Warmup phase** (2 epochs, ~3.3% of training):
 ```
-lr(t) = lr_base * (t / warmup_steps)
+lr(t) = lr_base * (min_lr_ratio + (1 - min_lr_ratio) * (t / warmup_steps))
 ```
 
-Linear ramp from 0 to lr_base. This prevents large, destabilizing gradient updates at the start when the model hasn't settled into the new loss landscape.
+Linear ramp from `0.05 × lr_base` to `lr_base`. This prevents large, destabilizing gradient updates at the start. We use 2 epochs (rather than 1) because LoRA-B is zero-initialized — the first gradient steps push it out of a sharp init region and benefit from a gentler ramp.
 
-**Cosine annealing phase** (epochs 2 to 60):
+**Cosine annealing phase** (epochs 3 to 60):
 ```
 progress = (t - warmup_steps) / (total_steps - warmup_steps)
-lr(t) = lr_base * 0.5 * (1 + cos(pi * progress))
+lr(t) = lr_base * max(min_lr_ratio, 0.5 * (1 + cos(pi * progress)))
 ```
 
-The learning rate smoothly decreases following a cosine curve:
+The learning rate smoothly decreases following a cosine curve, **floored at 5% of peak** (`min_lr_ratio = 0.05`):
 - At the start (progress=0): lr = lr_base (full speed)
 - At the midpoint (progress=0.5): lr = 0.5 * lr_base
-- At the end (progress=1): lr approaches 0
+- After the cosine drops below `min_lr_ratio × lr_base`: lr stays at the floor
 
-**Why cosine over step decay:** Cosine is smooth (no sudden drops that can destabilize training) and empirically produces better convergence in transformer fine-tuning. The gradual decay in the final epochs allows the model to settle into a local minimum without overshooting.
+**Why this exact shape (linear warmup → cosine → 5% floor):** This is GPT-3's recipe (Brown et al., 2020). They used 10% as the floor; we use 5% because in earlier runs the cosine bottomed out ~10 epochs before training ended and the flat 10% tail produced no improvements. Halving the floor lets the late phase run at finer LR steps.
+
+The schedule is **a single global curve evaluated step-by-step** — there are no per-epoch resets or restarts. Same as GPT-3.
+
+### 9.4 Gradient Clipping
+
+```python
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+```
+
+If the L2 norm of all gradients exceeds 1.0, all gradients are scaled down proportionally:
+```
+if ||g|| > max_norm:
+    g = g * (max_norm / ||g||)
+```
+
+**Why 1.0:** Gradient clipping prevents rare large gradient spikes from destabilizing training while allowing normal gradient flow.
+
+### 9.5 Mixed Precision (AMP)
+
+On CUDA GPUs:
+```python
+with torch.amp.autocast(device, dtype=torch.bfloat16):
+    outputs = model(batch)
+    loss = loss_fn(outputs, targets)
+loss.backward()  # backward runs OUTSIDE autocast, in default precision
+optimizer.step()
+```
+
+**bfloat16:** Half-precision floating point that preserves the full exponent range of float32 while halving memory. This allows:
+- ~2× faster matrix multiplications on modern GPUs
+- ~2× less memory for activations (crucial for 1024×1024 images)
+- Minimal impact on training quality (unlike float16, bfloat16 doesn't suffer from underflow in gradients)
+
+**No GradScaler.** Older training code uses `torch.cuda.amp.GradScaler` to handle fp16 underflow. Bfloat16 has the same exponent range as fp32, so underflow is impossible — GradScaler does nothing useful and adds per-step sync overhead. Removed from this codebase. This matches PyTorch's recommended bf16 pattern (`pytorch.org/docs/2.11/notes/amp_examples.html`).
 
 ### 9.4 Gradient Clipping
 
@@ -971,42 +1007,51 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 
 ## 13. Hyperparameter Summary
 
+`src/config.py` is the single source of truth. CLI flags only override when explicitly passed.
+
 | Category | Parameter | Value | Rationale |
 |----------|-----------|-------|-----------|
-| **LoRA** | rank | 8 | Sufficient expressiveness for 10-video adaptation |
-| | alpha | 16.0 | Scale=2.0, moderate adaptation strength |
-| | dropout | 0.05 | Light regularization for small dataset |
+| **LoRA** | rank | 8 | Sufficient expressiveness; power of 2 for GPU alignment |
+| | alpha | 16.0 | Scale = α/r = 2.0 |
+| | dropout | **0.10** | Light regularization (0.25 over-regularized; 0.05 underfit) |
 | **Data** | image_size | 1024 | SAM 2 native resolution |
-| | num_frames | 8 | Balance: long enough for temporal learning, short enough for GPU memory |
+| | num_frames | 8 | B×T = 16, GPU-friendly |
 | | max_objects | 3 | Typical max neurons per field of view |
-| | val_fraction | 0.2 | 2 videos for validation, 8 for training |
-| | clip_stride | 4 | Skip overlapping clips: 329 -> ~82 steps/epoch |
-| | precompute_features | True | 10x speedup by caching frozen encoder output |
-| | cache_in_memory | True | Load all frames into RAM at init, eliminating disk I/O |
+| | val_fraction | **0.25** | 3 of 12 videos held out — mean of 3 is more stable than mean of 2 |
+| | val_videos | None | When set, overrides val_fraction with explicit list |
+| | clip_stride | 4 | Skip overlapping clips |
+| | precompute_features | **False** | Full pixel-level augmentation enabled (rotation, shear, brightness, contrast) |
+| | cache_in_memory | True | Load all frames into RAM at init |
 | **Augmentation** | h_flip, v_flip | p=0.5 | Microscopy has no orientation preference |
-| | rotation | +/-25 deg | Neurons grow in arbitrary directions |
-| | shear | +/-20 deg | Simulates tissue deformation |
-| | brightness | +/-15% | Simulates illumination variation |
-| | contrast | +/-15% | Simulates microscope settings |
+| | rotation | ±25° | Neurons grow in arbitrary directions |
+| | shear | ±20° | Simulates tissue deformation |
+| | brightness | ±15% | Simulates illumination variation |
+| | contrast | ±15% | Simulates microscope settings |
 | **Optimizer** | lora_lr (A) | 1e-4 | Standard for LoRA A matrices |
 | | lora_b_lr_ratio | 16.0 | LoRA+ ratio: B lr = A lr × 16 (= 1.6e-3) |
 | | base_lr | 1e-5 | Conservative for pretrained embeddings |
-| | weight_decay | 0.1 | Prevents LoRA weight explosion |
+| | weight_decay | **0.05** | Prevents LoRA weight explosion (was 0.1, lowered with rank tuning) |
 | | max_grad_norm | 1.0 | Gradient clipping for stability |
-| | warmup | 1 epoch | Smooth start for frozen-backbone fine-tuning |
+| | warmup_epochs | **2** | Smooth start (was 1; bumped for LoRA-B zero init stability) |
+| | min_lr_ratio | **0.05** | LR floor at 5% of peak (was 10%, lowered for finer late-phase steps) |
+| | fused | True | CUDA fused AdamW kernel |
 | **Loss** | focal weight | 5.0 | Pixel accuracy is primary objective |
 | | dice weight | 2.0 | Region shape quality |
-| | cbdice weight | 1.0 | Skeleton topology preservation |
-| | supervoxel weight | 1.0 | Connectivity preservation |
+| | cbdice weight | **3.0** | Skeleton topology — bumped from 1.0 (neurons are tree-like) |
+| | use_supervoxel | **False** | Disabled — sat flat at 0.30 in earlier runs without contributing |
 | | iou weight | 1.0 | Confidence calibration |
 | | class weight | 1.0 | Anti-hallucination |
 | | focal alpha | 0.25 | Balances class imbalance |
 | | focal gamma | 2.0 | Focuses on hard examples |
 | | topology_resolution | 256 | Resolution for topology losses (16× fewer pixels than 1024) |
 | **Training** | epochs | 60 | Sufficient for convergence with cosine schedule |
-| | batch_size | 1 | GPU memory constraint (1024x1024, 8 frames) |
+| | batch_size | 2 | Small batch → implicit regularization on tiny dataset |
 | | seed | 42 | Reproducibility |
-| | AMP | bfloat16 | 2x speed, 2x memory savings on CUDA |
+| | AMP | bfloat16 | 2× speed, 2× memory; no GradScaler needed |
+| **B200 perf** | channels_last | True (auto) | Conv-heavy paths use cuDNN fast path |
+| | pin_memory + non_blocking | True (auto) | H2D copies overlap with compute |
+| | cuDNN SDPA backend | enabled (auto) | FlashAttention-3 on Blackwell |
+| | compile_encoder / compile_decoder | False (opt-in flags) | Optional `torch.compile` |
 
 ---
 
@@ -1034,7 +1079,7 @@ Create `data_manifest.json` listing your TIF pairs:
 ### Step 2: Prepare training data
 
 ```bash
-python3 cli.py prepare --manifest data_manifest.json --output-dir training_data
+python cli.py prepare --manifest data_manifest.json --output-dir training_data
 ```
 
 This converts TIF stacks to PNG frames, computes normalization statistics, and saves everything to `training_data/`.
@@ -1042,25 +1087,21 @@ This converts TIF stacks to PNG frames, computes normalization statistics, and s
 ### Step 3: Train
 
 ```bash
-# Default settings (recommended first run):
-python3 cli.py train --data-dir training_data
+# Recommended — uses everything in src/config.py:
+python cli.py train
 
-# Custom settings:
-python3 cli.py train --epochs 80 --lora-rank 16 --data-dir training_data
+# Maximum throughput on B200 (adds first-epoch compile cost ~30-90s):
+python cli.py train --compile-encoder --compile-decoder
 
-# Force ImageNet normalization (not recommended):
-python3 cli.py train --use-imagenet-stats
+# Pin a specific val split (e.g. for split-rotation experiments):
+python cli.py train --val-videos A11_C1,A12_C1,A52_C1
 ```
+
+The startup banner echoes the resolved config so you can verify what's running.
 
 ### Step 4: Use in napari
 
-After training, `checkpoints/lora_weights.pt` will exist. Open your labeling tool:
-
-```bash
-python3 main.py /path/to/your/tif
-```
-
-In the SAM2 propagation panel, check the "Use fine-tuned model" checkbox. Click propagate. The model will automatically load and apply the LoRA weights.
+After training, `checkpoints/lora_weights.pt` will exist. Open the labeling tool, check **"Use fine-tuned model"**, click **"SAM2: Propagate from frame 0"**.
 
 ---
 

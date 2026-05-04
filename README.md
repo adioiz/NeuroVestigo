@@ -1,32 +1,29 @@
 # SAM2 Neuron Fine-Tuning
 
-LoRA+ fine-tuning pipeline for SAM2 on neuron microscopy data.
+LoRA+ fine-tuning pipeline for SAM2 on neuron microscopy data, tuned for
+NVIDIA B200 (Blackwell) and small datasets (~10 videos).
 
 ## Overview
 
-This repository provides a training pipeline to fine-tune SAM2 (Segment Anything Model 2) for neuron segmentation using LoRA+ (Low-Rank Adaptation with asymmetric learning rates). Fine-tuning improves segmentation accuracy for your specific microscopy domain.
+This repository fine-tunes SAM2 (Segment Anything Model 2) for neuron segmentation using **LoRA+** (Low-Rank Adaptation with asymmetric A/B learning rates) plus topology-preserving losses tailored to tree-like neurite structures.
 
 **For labeling/annotation**, use the companion [neurons-labeling](../neurons-labeling/) repository.
 
 ## Features
 
-- **LoRA+ fine-tuning**: Efficient training (~0.5% of parameters) with asymmetric A/B learning rates
-- **Feature precomputation**: 10x faster training by caching frozen image encoder output
-- **In-memory caching**: All frames cached in RAM, eliminating disk I/O
-- **cbDice loss**: Skeleton topology-preserving loss with boundary weighting for tubular structures
-- **Supervoxel loss**: Connectivity-preserving loss for split/merge errors (scipy-accelerated)
-- **Topology downsampling**: Topology losses computed at 256×256 for ~2000× speedup vs full resolution
-- **Strong augmentations**: Elastic deformations, blur, noise (full pipeline without precomputation); feature-level flips (with precomputation)
-- **Early stopping**: Automatic stopping when metrics plateau
-- **MPS & CUDA support**: Works on Apple Silicon and NVIDIA GPUs
+- **LoRA+ fine-tuning** — ~12% of parameters trained, asymmetric A/B learning rates for faster convergence.
+- **Topology-aware loss** — cbDice (centerline boundary Dice) emphasises thin neurite branches over bulk pixels.
+- **B200-optimised** — bf16 + channels-last + cuDNN FlashAttention-3 + fused AdamW + (optional) `torch.compile`.
+- **Diagnostics built into the loop** — per-component loss, per-frame IoU, per-video IoU, worst-case prediction PNG dumps.
+- **Safe defaults from `config.py`** — CLI flags only override when explicitly passed; nothing silently changes between runs.
 
 ## Repository Connection
 
 This repo is **symlinked** to `neurons-labeling` for seamless data sharing:
 
 ```
-labeled_masks/       -> ../neurons-labeling/labeled_masks/
-labeled_coordinates/ -> ../neurons-labeling/labeled_coordinates/
+labeled_masks/        -> ../neurons-labeling/labeled_masks/
+labeled_coordinates/  -> ../neurons-labeling/labeled_coordinates/
 ```
 
 The labeling repo also symlinks back here:
@@ -35,282 +32,236 @@ The labeling repo also symlinks back here:
 neurons-labeling/checkpoints/ -> ../Fine-tune-SAM2-model-for-Neurons-segmentation/checkpoints/
 ```
 
-**No manual copying needed** - label in one repo, train in the other.
+**No manual copying needed** — label in one repo, train in the other.
 
 ## Installation
 
 ```bash
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate
 pip install -r requirements.txt
-
-# Install SAM2
 pip install git+https://github.com/facebookresearch/sam2.git
 ```
 
 ## Quick Start
 
-### Step 1: Create Data Manifest
-
-Create a `data_manifest.json` file listing your TIF stacks. Use relative paths via symlinks:
+### Step 1: Create the data manifest
 
 ```json
 [
-    {
-        "image_tif": "/path/to/neuron_video_1.tif",
-        "mask_tif": "labeled_masks/video_1_masks.tif",
-        "name": "video_1"
-    },
-    {
-        "image_tif": "/path/to/neuron_video_2.tif",
-        "mask_tif": "labeled_masks/video_2_masks.tif",
-        "name": "video_2"
-    }
+    {"image_tif": "/path/to/video_1.tif", "mask_tif": "labeled_masks/video_1_masks.tif", "name": "video_1"},
+    {"image_tif": "/path/to/video_2.tif", "mask_tif": "labeled_masks/video_2_masks.tif", "name": "video_2"}
 ]
 ```
 
-**Note:** `mask_tif` uses relative path `labeled_masks/` which resolves via symlink to `../neurons-labeling/labeled_masks/`.
+`mask_tif` paths use the symlink to `../neurons-labeling/labeled_masks/`.
 
-**Requirements:**
-- `image_tif`: Grayscale microscopy TIF stack (T, H, W)
-- `mask_tif`: Integer-labeled mask TIF stack (T, H, W) where each neuron has a unique ID
-- At least 5-10 videos recommended for good generalization
-
-### Step 2: Prepare Data
-
-Convert TIF stacks to PNG training format:
+### Step 2: Prepare data (TIF stacks → PNGs)
 
 ```bash
 python cli.py prepare --manifest data_manifest.json --output-dir training_data
 ```
 
-This creates:
-```
-training_data/
-├── train/
-│   ├── video_1/
-│   │   ├── images/
-│   │   │   ├── 000.png
-│   │   │   ├── 001.png
-│   │   │   └── ...
-│   │   └── masks/
-│   │       ├── 000.png
-│   │       ├── 001.png
-│   │       └── ...
-│   └── video_2/
-│       └── ...
-├── val/
-│   └── ...
-└── stats.json  # Normalization statistics
-```
-
 ### Step 3: Train
 
-```bash
-# Basic training (recommended — uses feature precomputation for 10x speedup)
-python cli.py train --epochs 30
-
-# With cbDice for thin structures (requires more memory)
-python cli.py train --epochs 30 --batch-size 2
-
-# For Apple Silicon (MPS) if OOM occurs
-python cli.py train --epochs 30 --batch-size 1 --no-cbdice
-
-# Full customization
-python cli.py train \
-    --epochs 30 \
-    --batch-size 2 \
-    --lora-rank 8 \
-    --lora-lr 1e-4 \
-    --patience 10 \
-    --val-every 2
-
-# Disable precomputation for full augmentation pipeline (slower but more diverse)
-python cli.py train --epochs 30 --no-precompute
-```
-
-Training outputs:
-```
-=== Precomputing Image Encoder Features ===
-  12 videos, 876 frames total
-  Processed 876/876 frames...
-  Feature precomputation done in 240.3s (6912 MB cached)
-
-=== Training (60 epochs, 82 steps/epoch (precomputed features)) ===
-  Using precomputed features (encoder skipped during training)
-  Epoch 1/60, Step 10/82, Loss: 1.2340, LR: 3.33e-05, 7.8s/step
-Epoch 1/60: train_loss=1.1200, time=640.2s, 7.8s/step
-  Validating...
-  val_loss=0.987, val_iou=0.543, val_dice=0.654
-  New best IoU: 0.543 - saved checkpoint
-```
-
-### Step 4: Use Fine-Tuned Model
-
-Thanks to the symlink, the weights are automatically available in `neurons-labeling`:
-
-1. Open `neurons-labeling/` and run `python main.py`
-2. Check **"Use fine-tuned model"** in the GUI
-3. Click "SAM2: Propagate from frame 0"
-
-No manual copying needed - the `neurons-labeling/checkpoints/` symlink points here.
-
-## Training Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--epochs` | 60 | Maximum training epochs |
-| `--batch-size` | 2 | Batch size (1 if OOM) |
-| `--lora-rank` | 8 | LoRA rank (8-16 typical) |
-| `--lora-alpha` | 16.0 | LoRA alpha (usually 2x rank) |
-| `--lora-lr` | 1e-4 | LoRA A matrix learning rate |
-| `--lora-b-lr-ratio` | 16.0 | LoRA+ B/A learning rate ratio |
-| `--base-lr` | 1e-5 | Learning rate for non-LoRA params |
-| `--warmup-epochs` | 1 | Warmup epochs before cosine decay |
-| `--num-frames` | 8 | Frames per training clip |
-| `--patience` | 10 | Early stopping patience |
-| `--val-every` | 2 | Validation frequency (epochs) |
-| `--val-samples` | 0 | Max validation batches (0=all, >0=faster) |
-| `--no-cbdice` | False | Disable cbDice loss to save memory |
-| `--supervoxel-weight` | 1.0 | Supervoxel connectivity loss weight |
-| `--no-supervoxel` | False | Disable supervoxel loss |
-| `--no-topology` | False | Disable BOTH cbDice and supervoxel (fast CPU/MPS training) |
-
-**Performance parameters:**
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--clip-stride` | 4 | Stride between clip start frames (1=all clips, reduces overlap) |
-| `--no-precompute` | False | Disable feature precomputation (slower but full augmentation) |
-| `--no-cache` | False | Disable in-memory frame caching (saves RAM but slower) |
-
-## Key Metrics
-
-| Metric | Good Range | Meaning |
-|--------|------------|---------|
-| `val_iou` | 0.65-0.85 | Intersection over Union (higher = better) |
-| `val_dice` | 0.75-0.90 | Dice coefficient (higher = better) |
-| Train/Val gap | < 0.1 | Low gap = not overfitting |
-
-## Troubleshooting
-
-### Training Too Slow
-
-Feature precomputation is enabled by default and gives a **10x speedup**. If training is still slow:
+The simplest command — uses everything in `src/config.py`:
 
 ```bash
-# 1. Ensure precomputation is enabled (default)
 python cli.py train
-# Look for: "Using precomputed features (encoder skipped during training)"
-
-# 2. Increase clip stride to reduce steps per epoch
-python cli.py train --clip-stride 8
-
-# 3. Reduce frames per clip
-python cli.py train --num-frames 4
 ```
 
-| Optimization | Effect |
-|-------------|--------|
-| Feature precomputation (default) | 10x faster per step |
-| Topology downsampling (default) | ~2000x faster topology losses (256×256 vs 1024×1024) |
-| `--clip-stride 4` (default) | 4x fewer steps/epoch |
-| `--clip-stride 8` | 8x fewer steps/epoch |
-| `--num-frames 4` | ~2x faster per step |
+For maximum throughput on B200, add the optional compile flags:
 
-### Out of Memory (OOM)
 ```bash
-# Reduce batch size
-python cli.py train --batch-size 1
-
-# Disable ALL topology losses (fastest for CPU/MPS)
-python cli.py train --no-topology
-
-# Or disable only cbDice
-python cli.py train --no-cbdice
-
-# Disable in-memory frame caching (saves ~2 GB RAM)
-python cli.py train --no-cache
-
-# Or reduce frames per clip
-python cli.py train --num-frames 4
+python cli.py train --compile-encoder --compile-decoder
 ```
 
-### Broken Neuron Branches
-If thin structures break:
-1. Enable cbDice (don't use `--no-cbdice`)
-2. Enable supervoxel loss (default: enabled)
-3. Increase weights for connectivity losses:
-   ```bash
-   python cli.py train --supervoxel-weight 2.0
-   ```
-   Or edit `src/config.py`: `loss_cbdice_weight = 2.0`, `loss_supervoxel_weight = 2.0`
+To pin a specific validation split (e.g. for val-swap experiments):
 
-### Poor Generalization
-1. Add more training data (5-10 videos minimum)
-2. Reduce LoRA rank: `--lora-rank 4`
-3. Use full augmentation: `--no-precompute` (slower but more augmentation diversity)
-4. Check for data leakage (same video in train and val)
-
-### Validation Too Slow
 ```bash
-# Limit to 10 validation batches
-python cli.py train --val-samples 10
+python cli.py train --val-videos A51_C1,A52_C2,A31_C2
 ```
 
-## Project Structure
+### Step 4: Use the fine-tuned weights
+
+The `lora_weights.pt` checkpoint is automatically available in `neurons-labeling` via symlink. Open the labeling app, check **"Use fine-tuned model"**, click **"SAM2: Propagate from frame 0"**.
+
+## Config — `src/config.py` is the source of truth
+
+CLI flags default to `None` and only override config when you pass them explicitly. So the most reproducible workflow is to edit `src/config.py` and run `python cli.py train` with no flags. The startup banner echoes the resolved config so the SLURM log makes it obvious which values ran.
+
+### Current defaults
+
+**LoRA+ (`LoRAConfig`)**
+
+| field | value | notes |
+|---|---|---|
+| `rank` | 8 | LoRA rank — power of 2, GPU-friendly |
+| `alpha` | 16.0 | scale = α/r = 2.0 |
+| `dropout` | 0.10 | adapter dropout |
+
+**Optimizer (`OptimizerConfig`)**
+
+| field | value | notes |
+|---|---|---|
+| `lora_lr` | 1e-4 | LoRA-A peak LR |
+| `lora_b_lr_ratio` | 16.0 | LoRA-B peak LR = 1.6e-3 (LoRA+ asymmetric) |
+| `base_lr` | 1e-5 | unfrozen embeddings (10× lower — protects pretrained weights) |
+| `weight_decay` | 0.05 | AdamW decoupled weight decay |
+| `max_grad_norm` | 1.0 | gradient clipping |
+| `warmup_epochs` | 2 | linear warmup before cosine decay |
+| `use_cosine_schedule` | True | GPT-3-style cosine annealing |
+| `min_lr_ratio` | 0.05 | LR floor at 5% of peak |
+
+**Loss (`LossConfig`)**
+
+| field | value | notes |
+|---|---|---|
+| `loss_mask_weight` (focal) | 5.0 | pixel-level loss |
+| `loss_dice_weight` | 2.0 | region overlap |
+| `loss_cbdice_weight` | 3.0 | skeleton topology — bumped for tree-like neurons |
+| `use_supervoxel` | **False** | disabled — was flat at 0.30 in earlier runs without contributing to learning |
+| `loss_iou_weight` | 1.0 | IoU prediction calibration |
+| `loss_class_weight` | 1.0 | object-presence classifier |
+
+**Data (`DataConfig`)**
+
+| field | value | notes |
+|---|---|---|
+| `image_size` | 1024 | SAM2 native resolution |
+| `num_frames` | 8 | clip length (B×T = 16, GPU-friendly) |
+| `max_objects` | 3 | per clip |
+| `batch_size` | 2 | small for generalization on tiny dataset |
+| `val_fraction` | 0.25 | 3 of 12 videos held out (stable mean) |
+| `val_videos` | None | when set, overrides val_fraction with explicit list |
+| `precompute_features` | False | full augmentation pipeline (rotation, shear, brightness, contrast) is enabled |
+| `clip_stride` | 4 | dataset stride between clip starts |
+| `cache_in_memory` | True | all frames cached at startup |
+
+**Performance (auto-applied on CUDA)**
+
+- Mixed precision: bfloat16 (no GradScaler — bf16 doesn't need it).
+- Channels-last memory format on the encoder + decoder.
+- Pinned memory + non_blocking H2D copies.
+- cuDNN SDPA backend enabled — FlashAttention-3 on B200.
+- Fused AdamW kernel.
+- Per-step `.item()` syncs deferred to logging boundaries (every 10 steps).
+- cbDice scipy distance transforms parallelized via `ThreadPoolExecutor`.
+
+### CLI flags
+
+| flag | default | what it does |
+|---|---|---|
+| `--epochs N` | None (config) | override num_epochs |
+| `--batch-size N` | None (config) | override batch_size |
+| `--lora-rank N` | None (config) | override LoRA rank |
+| `--lora-alpha F` | None (config) | override LoRA alpha |
+| `--lora-lr F` | None (config) | override LoRA-A learning rate |
+| `--lora-b-lr-ratio F` | None (config) | override LoRA+ B/A ratio |
+| `--base-lr F` | None (config) | override embeddings learning rate |
+| `--warmup-epochs N` | None (config) | override warmup duration |
+| `--num-frames N` | None (config) | override clip length |
+| `--data-dir DIR` | None (config) | override training_data dir |
+| `--checkpoint-dir DIR` | None (config) | override checkpoint output dir |
+| `--val-every N` | None (config) | override val_every_n_epochs |
+| `--val-samples N` | None (config) | max val batches (0 = all) |
+| `--val-videos A,B,C` | None (config) | **explicit val split** — overrides val_fraction |
+| `--patience N` | None (config) | override early stopping patience |
+| `--clip-stride N` | None (config) | override clip stride |
+| `--no-precompute` | False | force precompute_features=False |
+| `--no-cache` | False | force cache_in_memory=False |
+| `--no-cbdice` | False | disable cbDice loss |
+| `--no-supervoxel` | False | disable supervoxel loss (already off by default) |
+| `--no-topology` | False | disable BOTH cbDice and supervoxel |
+| `--supervoxel-weight F` | None (config) | override supervoxel weight (only if you re-enable it) |
+| `--use-imagenet-stats` | False | use ImageNet mean/std instead of dataset stats.json |
+| `--compile-encoder` | False | `torch.compile` the image encoder |
+| `--compile-decoder` | False | `torch.compile` the SAM mask decoder |
+
+## What gets logged
+
+Each epoch prints:
+
+```
+Epoch 38/60: train_loss=0.4955, time=54.6s, 0.2s/step
+  train_loss_components: mask=0.019, dice=0.183, cbdice=0.012, supervoxel=0.000, iou=0.000, class=0.000
+  Validating...
+  val_loss=0.4350, val_iou=0.7426, val_dice=0.8489
+  val_loss_components: mask=0.014, dice=0.159, cbdice=0.015, ...
+  per_frame_iou: t0=0.834, t1=0.767, t2=0.738, t3=0.731, t4=0.726, t5=0.729, t6=0.711, t7=0.705
+  per_video_iou: A52_C2=0.789, A51_C1=0.649, A31_C2=0.790
+```
+
+Plus, every validation epoch saves the **6 worst-IoU prediction PNGs** to:
+
+```
+checkpoints/val_samples/epoch_NNN/<tag>_rank00_iou0.42_<video>_t6_f47.png
+```
+
+Each PNG is `image | GT | prediction | overlay (red=pred, green=GT, yellow=both)`. Open them to see *what's actually failing*, not just an aggregate metric.
+
+## Key metrics — what to look for
+
+| metric | good range | meaning |
+|---|---|---|
+| `val_iou` | 0.70–0.85 | aggregate intersection-over-union across all val frames |
+| per-frame `t0` IoU | 0.80–0.90 | prompt frame — should be high |
+| per-frame `t7` IoU | 0.65–0.80 | last frame after propagation chain |
+| `t0 - t7` drop | < 0.20 | how much IoU you lose along the chain |
+| train/val loss gap | < 0.05 | open gap = overfitting; closed gap can also mean under-fitting |
+
+## Project structure
 
 ```
 Fine-tune-SAM2-model-for-Neurons-segmentation/
 ├── cli.py                   # Training CLI
-├── data_manifest.json       # Your data manifest file
+├── data_manifest.json
 ├── requirements.txt
-├── README.md
-├── CODE_EXPLAINED.md        # Detailed code documentation
-├── FINE_TUNING_GUIDE.md     # Complete training guide
-├── labeled_masks/           # Symlink -> ../neurons-labeling/labeled_masks
-├── labeled_coordinates/     # Symlink -> ../neurons-labeling/labeled_coordinates
-├── checkpoints/             # Saved model weights (source of truth)
-│   └── lora_weights.pt
-├── training_data/           # Prepared PNG data
-│   └── stats.json           # Normalization statistics
+├── README.md                # ← you are here
+├── METHODS_CHEAT_SHEET.md   # quick technical reference
+├── FINE_TUNING_GUIDE.md     # full pedagogical guide
+├── CODE_EXPLAINED.md        # file-by-file walkthrough
+├── labeled_masks/           # symlink → ../neurons-labeling/labeled_masks
+├── labeled_coordinates/     # symlink → ../neurons-labeling/labeled_coordinates
+├── checkpoints/
+│   ├── lora_weights.pt
+│   ├── training_log.json
+│   └── val_samples/epoch_NNN/    # worst-IoU prediction dumps
+├── training_data/
+│   └── stats.json
 └── src/
-    ├── config.py            # Hyperparameters
-    ├── lora.py              # LoRA+ implementation
-    ├── trainer.py           # Training loop
-    ├── evaluate.py          # Validation metrics
+    ├── config.py            # ← single source of truth for hyperparameters
+    ├── lora.py              # LoRA+ adapter implementation
+    ├── trainer.py           # training loop
+    ├── evaluate.py          # validation + per-frame/per-video metrics
     ├── neuron_dataset.py    # PyTorch Dataset
-    ├── augmentations.py     # Video augmentation
-    ├── loss_fns.py          # Loss functions (Focal, Dice, cbDice, Supervoxel)
-    ├── prepare_data.py      # TIF to PNG conversion
-    └── data_utils.py        # Data containers
+    ├── augmentations.py     # video augmentation
+    ├── loss_fns.py          # focal, dice, cbDice, supervoxel
+    ├── prepare_data.py      # TIF → PNG conversion
+    └── data_utils.py        # batched data containers
 ```
 
-## Hardware Requirements
+## Hardware
 
-With feature precomputation enabled (default):
+The current config targets a single B200 (or any modern NVIDIA GPU with ≥8 GB):
 
-| Hardware | Batch Size | Training Time (5 epochs) | Training Time (30 epochs) |
-|----------|------------|--------------------------|---------------------------|
-| NVIDIA GPU (8GB+) | 2 | ~20 min | ~2 hours |
-| Apple M1/M2 (MPS) | 1-2 | ~1-2 hours | ~6-12 hours |
-| CPU | 1 | Not recommended | Not recommended |
-
-With feature precomputation (default) and topology downsampling (default).
-Without feature precomputation (`--no-precompute`), training is ~10x slower.
+| GPU | step time (no compile) | step time (with `--compile-encoder --compile-decoder`) |
+|---|---|---|
+| B200 | ~0.10–0.15 s/step | ~0.07–0.10 s/step (after first-epoch compile cost) |
+| A100 | ~0.20–0.25 s/step | ~0.15–0.18 s/step |
+| Apple M-series (MPS) | seconds/step | not supported (compile is CUDA-only) |
 
 ## Documentation
 
-- `FINE_TUNING_GUIDE.md` - Complete training guide with troubleshooting
-- `CODE_EXPLAINED.md` - Detailed code documentation
+- `METHODS_CHEAT_SHEET.md` — concise technical reference, current defaults
+- `FINE_TUNING_GUIDE.md` — full pedagogical guide
+- `CODE_EXPLAINED.md` — file-by-file walkthrough
 
 ## References
 
 - [SAM 2: Segment Anything in Images and Videos](https://github.com/facebookresearch/sam2)
 - [LoRA+: Efficient Low Rank Adaptation](https://arxiv.org/abs/2402.12354) (Hayou et al., ICML 2024)
-- [cbDice: centerline boundary Dice loss](https://github.com/PengchengShi1220/cbDice) (Shi et al., MICCAI 2024)
-- [Supervoxel Loss: Connectivity-Preserving Segmentation](https://arxiv.org/abs/2501.01022) (Grim et al., AAAI 2025)
 - [LoRA: Low-Rank Adaptation](https://arxiv.org/abs/2106.09685) (Hu et al., ICLR 2022)
+- [cbDice: centerline boundary Dice loss](https://github.com/PengchengShi1220/cbDice) (Shi et al., MICCAI 2024)
+- [Focal Loss](https://arxiv.org/abs/1708.02002) (Lin et al., ICCV 2017)
+- [FlashAttention-3](https://tridao.me/blog/2024/flash3/) (Shah et al., 2024)

@@ -68,40 +68,35 @@ def cmd_prepare(args):
 
 ```python
 def cmd_train(args):
-    from src.config import (
-        TrainingConfig, LoRAConfig, DataConfig, OptimizerConfig, AugmentationConfig,
-    )
+    """Run the training loop.
+
+    CLI flags override config.py defaults *only when explicitly provided*.
+    Unspecified flags fall through to whatever is in src/config.py, so
+    config.py is the single source of truth.
+    """
+    from src.config import TrainingConfig
     from src.trainer import train
 
-    aug_config = AugmentationConfig()
-    if args.use_imagenet_stats:
-        aug_config.normalize_mean = [0.485, 0.456, 0.406]
-        aug_config.normalize_std = [0.229, 0.224, 0.225]
+    config = TrainingConfig()  # Start from config.py defaults
 
-    config = TrainingConfig(
-        num_epochs=args.epochs,
-        lora=LoRAConfig(rank=args.lora_rank, alpha=args.lora_alpha),
-        ...
-    )
+    if args.epochs is not None:
+        config.num_epochs = args.epochs
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    # ... and so on for every override ...
 
     train(config)
 ```
 
-**Purpose:** Builds the configuration object and starts training.
+**Purpose:** Builds the configuration object from `config.py` defaults and applies CLI overrides only where the user explicitly passed them. Then prints a "resolved config" banner so the SLURM log makes the actual values obvious.
 
-**Key decision (lines 61-65):**
-```python
-if args.use_imagenet_stats:
-    aug_config.normalize_mean = [0.485, 0.456, 0.406]
-    aug_config.normalize_std = [0.229, 0.224, 0.225]
-# else: normalize_mean/std remain None → auto-loaded from manifest
-```
+**The previous version had a bug:** it built `TrainingConfig(...)` from CLI defaults that hadn't been kept in sync with `config.py`, which meant edits to `config.py` silently never took effect on the cluster. Now the CLI defaults are all `None` and `config.py` is the single source of truth.
 
-**Logic:**
-- If you pass `--use-imagenet-stats`, we use ImageNet normalization
-- Otherwise, `normalize_mean/std` stay as `None`
-- Later, `cli.py` sees `None` and auto-loads your dataset's actual mean/std from stats.json
-- **Why this matters:** Your microscopy images are dark and grayscale. ImageNet stats are for bright, colorful photos. Using wrong stats hurts training.
+**Special-cased flags:**
+- `--use-imagenet-stats` → forces ImageNet normalization (otherwise `stats.json` is auto-loaded).
+- `--no-precompute`, `--no-cache`, `--no-cbdice`, `--no-supervoxel`, `--no-topology` — `store_true` flags that flip booleans only when present.
+- `--val-videos A,B,C` — comma-separated list of video names; overrides `val_fraction`.
+- `--compile-encoder`, `--compile-decoder` — enable `torch.compile` on the encoder / decoder respectively.
 
 ---
 
@@ -112,39 +107,31 @@ parser = argparse.ArgumentParser(...)
 subparsers = parser.add_subparsers(dest="command", required=True)
 ```
 
-**Concept:** We have two subcommands: `prepare` and `train`. Like `git commit` vs `git push` — same program, different actions.
+**Concept:** Two subcommands: `prepare` and `train`. Like `git commit` vs `git push` — same program, different actions.
 
-**Key arguments explained:**
-
-```python
-p_train.add_argument("--epochs", type=int, default=60)
-```
-60 epochs — how many times we go through all training data. More = better learning but slower.
+**Key change from earlier versions:** all numeric / string CLI defaults are now `None`. This is intentional — it means an unspecified flag falls through to `config.py`. Booleans default to `False` (as `store_true` flags) and only flip when present.
 
 ```python
-p_train.add_argument("--batch-size", type=int, default=1)
-```
-Batch size 1 — we process 1 video clip at a time. Why? Memory constraint (1024×1024 images × 8 frames = lots of RAM).
+p_train.add_argument("--epochs", type=int, default=None)
+p_train.add_argument("--batch-size", type=int, default=None)
+p_train.add_argument("--lora-rank", type=int, default=None)
+p_train.add_argument("--lora-alpha", type=float, default=None)
+p_train.add_argument("--lora-lr", type=float, default=None)
+p_train.add_argument("--lora-b-lr-ratio", type=float, default=None)
+p_train.add_argument("--base-lr", type=float, default=None)
+p_train.add_argument("--warmup-epochs", type=int, default=None)
+# ... etc ...
 
-```python
-p_train.add_argument("--lora-rank", type=int, default=8)
+p_train.add_argument("--val-videos", type=str, default=None,
+    help="Comma-separated video names to use as the val split")
+p_train.add_argument("--compile-encoder", action="store_true")
+p_train.add_argument("--compile-decoder", action="store_true")
 ```
-LoRA rank 8 — the "r" in LoRA. Lower = fewer parameters, less capacity. Higher = more parameters, risk of overfitting.
 
-```python
-p_train.add_argument("--lora-alpha", type=float, default=16.0)
-```
-LoRA alpha 16 — scaling factor. Combined with rank: scale = alpha/rank = 16/8 = 2.0
-
-```python
-p_train.add_argument("--lora-lr", type=float, default=1e-4)
-p_train.add_argument("--lora-b-lr-ratio", type=float, default=16.0)
-p_train.add_argument("--base-lr", type=float, default=1e-5)
-```
-**Three learning rates (LoRA+):**
-- `lora-lr = 1e-4` — for LoRA A matrices (down-projection, Kaiming init)
-- `lora-b-lr-ratio = 16.0` — B matrices get `lora-lr × 16 = 1.6e-3` (B starts at zeros, needs higher LR)
-- `base-lr = 1e-5` — for embeddings (lower, they're already pretrained)
+**Three learning rates (LoRA+) come from `config.py`:**
+- `lora_lr = 1e-4` — for LoRA A matrices (down-projection, Kaiming init)
+- `lora_b_lr_ratio = 16.0` — B matrices get `lora_lr × 16 = 1.6e-3` (B starts at zeros, needs higher LR)
+- `base_lr = 1e-5` — for embeddings (lower, they're already pretrained)
 
 ---
 
@@ -159,7 +146,7 @@ All hyperparameters organized as Python dataclasses.
 class LoRAConfig:
     rank: int = 8           # r in the LoRA paper
     alpha: float = 16.0     # α scaling factor
-    dropout: float = 0.05   # Regularization
+    dropout: float = 0.10   # Regularization
 ```
 
 **Mathematical background:**
@@ -172,7 +159,7 @@ y = W₀·x + (α/r)·B·A·x
 - `rank = 8`: Matrix A has shape (8 × input_dim), B has shape (output_dim × 8)
 - `alpha = 16.0`: Scaling factor
 - `scale = alpha/rank = 16/8 = 2.0`: How much LoRA influences output
-- `dropout = 0.05`: 5% of inputs are randomly zeroed during training (regularization)
+- `dropout = 0.10`: 10% of inputs are randomly zeroed during training. Tuned: 0.25 over-regularized (closed train/val gap from below), 0.05 underfit, 0.10 is the sweet spot.
 
 ---
 
@@ -185,12 +172,21 @@ class DataConfig:
     num_frames: int = 8        # Frames per clip
     image_size: int = 1024     # SAM 2 input size (fixed!)
     max_objects: int = 3       # Max neurons tracked simultaneously
-    val_fraction: float = 0.2  # 20% for validation
-    # Performance optimizations
+    val_fraction: float = 0.25 # 25% for validation (3 of 12 videos)
+    val_videos: Optional[List[str]] = None  # Explicit override
     clip_stride: int = 4       # Skip overlapping clips (1=all clips, 4=every 4th)
-    cache_in_memory: bool = True   # Cache all frames/masks in RAM at init
-    precompute_features: bool = True  # Precompute frozen encoder features before training
+    cache_in_memory: bool = True       # Cache all frames/masks in RAM at init
+    precompute_features: bool = False  # Off — full pixel-level augmentation enabled
 ```
+
+**Why `val_fraction = 0.25` (was 0.2)?**
+With only 12 videos, the previous 80/20 split gave 2 val videos. Mean of 2 is noisy — a single video's IoU dominates the headline number. Bumping to 0.25 gives 9 train / 3 val and a more stable mean of 3.
+
+**Why `val_videos` (override field)?**
+Lets you pin a specific val split for split-rotation experiments. When None (default), the seed-based shuffle picks 3 videos. When set (e.g. `["A11_C1", "A52_C1", "A91_C1_1"]`), those exact 3 go to val and the rest train. CLI flag: `--val-videos A11_C1,A52_C1,A91_C1_1`.
+
+**Why `precompute_features = False` (was True)?**
+With precompute on, all training augmentation is replaced by feature-level h-flip / v-flip — rotation, shear, brightness, contrast all silently drop out. On a small dataset that effectively gives the model only ~4 distinct views per frame. Precompute is faster per step but the augmentation loss made the model overfit. Now off by default; turn back on with no other changes if you want the speedup at the cost of augmentation diversity.
 
 **Why `num_frames = 8`?**
 
@@ -252,14 +248,24 @@ class AugmentationConfig:
 ```python
 @dataclass
 class OptimizerConfig:
-    base_lr: float = 1e-5     # For embeddings (pretrained)
-    lora_lr: float = 1e-4     # For LoRA A matrices (down-projection)
+    base_lr: float = 1e-5      # For embeddings (pretrained)
+    lora_lr: float = 1e-4      # For LoRA A matrices (down-projection)
     lora_b_lr_ratio: float = 16.0  # LoRA+ ratio: lr_B = lora_lr × ratio
-    weight_decay: float = 0.1
+    weight_decay: float = 0.05  # Decoupled weight decay (AdamW)
     max_grad_norm: float = 1.0
-    warmup_epochs: int = 1
+    warmup_epochs: int = 2     # Linear warmup duration
     use_cosine_schedule: bool = True
+    min_lr_ratio: float = 0.05  # LR floor at 5% of peak
 ```
+
+**Why `warmup_epochs = 2` (was 1)?**
+LoRA-B is zero-initialized; the first gradient steps push it out of a sharp init region and benefit from a gentler LR ramp. 2 epochs ≈ 3.3% of a 60-epoch run.
+
+**Why `min_lr_ratio = 0.05` (was 0.10)?**
+GPT-3 used 10% as the floor; in earlier runs the cosine bottomed out ~10 epochs before training ended and the flat 10% tail produced no improvements. Halving the floor lets the late phase run at finer LR steps.
+
+**Why `weight_decay = 0.05` (was 0.1)?**
+Tuned alongside dropout — when we lowered dropout from 0.25 to 0.10, weight_decay 0.2 was over-regularising. 0.05 paired with dropout 0.10 gives the right total regularization budget for our dataset size.
 
 **Why three learning rates (LoRA+)?**
 
@@ -286,16 +292,24 @@ This prevents training instability.
 ```python
 @dataclass
 class LossConfig:
-    loss_mask_weight: float = 5.0    # Focal loss weight
-    loss_dice_weight: float = 2.0    # Dice loss weight
-    loss_cbdice_weight: float = 1.0  # cbDice for skeleton topology (with boundary weighting)
-    loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity
-    loss_iou_weight: float = 1.0     # IoU prediction loss
-    loss_class_weight: float = 1.0   # Object presence loss
+    loss_mask_weight: float = 5.0       # Focal loss weight
+    loss_dice_weight: float = 2.0       # Dice loss weight
+    loss_cbdice_weight: float = 3.0     # cbDice for skeleton topology
+    loss_supervoxel_weight: float = 1.0 # Supervoxel weight (only used if enabled)
+    loss_iou_weight: float = 1.0        # IoU prediction loss
+    loss_class_weight: float = 1.0      # Object presence loss
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
-    topology_resolution: int = 256   # Resolution for topology loss computation
+    use_cbdice: bool = True
+    use_supervoxel: bool = False        # DISABLED — see note below
+    topology_resolution: int = 256
 ```
+
+**Why `loss_cbdice_weight = 3.0` (was 1.0)?**
+Neurons are tree-like — topology fidelity matters more than bulk pixel overlap. Diagnostic per-component logging in earlier runs showed cbdice unweighted was ~0.056 on val (small absolute value, weight×value = 0.056) while dice was 0.21 weighted ×2 = 0.42. Bumping cbDice weight 3× gave the model a real gradient on topology — the cbdice value dropped from 0.056 → 0.016 in the next run.
+
+**Why `use_supervoxel = False`?**
+In earlier runs the supervoxel loss sat flat at ~0.30 from epoch 4 onward, never moved, and contributed 39% of val_loss without contributing to learning. Removing it freed gradient budget for the other losses with no quality regression. Re-enable with `--supervoxel-weight F` if topology regressions appear later.
 
 **Why `topology_resolution = 256`?**
 
@@ -1840,20 +1854,59 @@ During validation, we don't need gradients. This:
 
 ---
 
+# B200 / GPU Performance Optimizations
+
+These are applied automatically when running on CUDA. None of them change training quality — they only change how the math is launched on the GPU.
+
+| Optimization | Where | What it does |
+|---|---|---|
+| **bfloat16 AMP** | `trainer.py` autocast block | 2× memory savings, 2× throughput on Tensor Cores. No GradScaler — bf16 has fp32 exponent range, no underflow. |
+| **Channels-last memory format** | `build_training_model()` | `model.to(memory_format=torch.channels_last)` — only touches 4D Conv weights. Encoder input is converted in the wrapper forward. cuDNN picks fast Tensor Core conv kernels. |
+| **Pinned memory + non_blocking H2D** | DataLoader + `BatchedVideoDatapoint.to()` | Async copy from CPU to GPU, overlaps with subsequent GPU compute. |
+| **Deferred `.item()` syncs** | `trainer.py` step loop | Loss tensors stay on-device during the epoch; `.item()` only runs at logging boundaries (every `log_every_n_steps`). Each `.item()` is a `cudaStreamSynchronize`, so this removes per-step stalls. |
+| **Parallel scipy distance transforms** | `loss_fns.py::_compute_distance_weights` | cbDice's per-batch CPU stall split across 4 threads via `ThreadPoolExecutor`. `scipy.ndimage.distance_transform_edt` releases the GIL, so threads genuinely parallelise. Bit-identical output. |
+| **Fused AdamW** | `build_optimizer()` | `fused=True` packs the entire optimizer step (m/v/weight/wd) into one CUDA kernel. With LoRA's 136 tiny adapter tensors, this collapses dozens of kernel launches per step into one. |
+| **cuDNN SDPA backend** | `train()` startup | `torch.backends.cuda.enable_cudnn_sdp(True)` — picks NVIDIA's FlashAttention-3 kernel for `F.scaled_dot_product_attention` on Blackwell. SAM2 already uses SDPA at three sites (Hiera self-attn + decoder self/cross attn). |
+
+## Optional opt-in flags
+
+| Flag | What it does |
+|---|---|
+| `--compile-encoder` | `torch.compile(model.image_encoder)` — adds 30-90s first-call compile cost, then ~15-30% faster encoder forward |
+| `--compile-decoder` | `torch.compile(model.sam_mask_decoder)` — SAM2's own video predictor compiles this same module |
+
+Compile is opt-in because the first-call overhead and occasional graph-break warnings make A/B testing harder if it's always on.
+
+---
+
+# Diagnostics in the Training Loop
+
+Each validation epoch (`evaluate.py::validate_epoch`) prints in addition to the headline `val_loss / val_iou / val_dice`:
+
+- **`val_loss_components`** — per-loss-function values (mask, dice, cbdice, supervoxel, iou, class). Shows whether overfitting is per-component or global.
+- **`per_frame_iou`** — IoU at each frame index `t=0..7`. The `t0 → t7` drop quantifies the propagation chain error (t0 has the GT prompt and is the ceiling).
+- **`per_video_iou`** — IoU per validation video. Catches OOD videos that drag down the mean.
+- **Worst-IoU PNG dumps** — saved to `checkpoints/val_samples/epoch_NNN/`. The 6 worst-IoU `(batch, frame, object=0)` slices across the entire val set, with filenames like `e040_rank00_iou0.42_<video>_t6_f47.png`. Each PNG is `image | GT | prediction | overlay (red=pred, green=GT, yellow=both)`. Open them to see actual failure modes — a single number can hide whether the model is failing because of label noise, OOD data, or genuine prediction errors.
+
+The training loop also prints **`train_loss_components`** at end of each epoch. Comparing train vs val components per-component reveals whether a specific loss is over- or under-fitting independently of the others.
+
+---
+
 # Summary: What You Should Know
 
 After reading this document, you should be able to explain:
 
 1. **Why LoRA?** — Parameter-efficient fine-tuning that avoids overfitting with small datasets
 2. **LoRA math:** `y = W₀·x + (α/r)·B·A·x`, B initialized to zeros
-3. **Why those specific layers?** — Mask decoder (what to segment) + memory attention (temporal reasoning)
+3. **Why those specific layers?** — Mask decoder (what to segment) + memory attention LoRA (wrapped but bypassed by our simplified mask-prompt propagation)
 4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
-6. **Augmentations:** Temporal consistency (same transform for all frames in clip); feature-level flips with precomputed features
-7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology) + Supervoxel (connectivity) + IoU pred + Object score
+6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`
+7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology, weight 3) + IoU pred + Object score. Supervoxel disabled by default.
 8. **Three learning rates (LoRA+):** LoRA A (1e-4) vs LoRA B (1.6e-3, 16× higher) vs embeddings (1e-5)
-9. **Cosine schedule:** Warmup then smooth decay
-10. **Evaluation:** IoU and Dice metrics, save best validation checkpoint
-11. **Performance optimizations:** Feature precomputation (10x speedup), topology downsampling (2000x faster topology losses), clip stride (4x fewer steps), in-memory caching (eliminates disk I/O)
+9. **Cosine schedule with floor:** 2-epoch linear warmup → cosine decay → floor at 5% of peak (GPT-3 style, half their floor)
+10. **`config.py` is the source of truth:** CLI flags only override when explicitly passed
+11. **B200 perf:** bf16 (no GradScaler), channels-last, FlashAttention-3 via cuDNN SDPA, fused AdamW, parallel cbDice scipy, pinned memory + non_blocking copies, deferred `.item()` syncs
+12. **Diagnostics:** Per-component loss + per-frame IoU + per-video IoU + worst-IoU PNG dumps — every validation epoch
 
 Good luck with your paper and presentation!
