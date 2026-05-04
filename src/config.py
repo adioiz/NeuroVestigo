@@ -54,13 +54,21 @@ class OptimizerConfig:
     lora_b_lr_ratio: float = 16.0  # LoRA+ ratio: lr_B = lora_lr × ratio (B needs higher LR)
     weight_decay: float = 0.05
     # Gradient clipping
-    max_grad_norm: float = 1.0  # Increased from 0.1 (was too aggressive)
+    max_grad_norm: float = 1.0
     # Scheduler
-    warmup_epochs: int = 1  # Reduced from 5 - was too long for short training runs
+    # Warmup: 2 epochs (~3.3% of 60-epoch run) — was 1 epoch. Bumped to give
+    # LoRA-B (zero init) more time to leave the sharp init region. Comparable
+    # to GPT-3's ~0.13% warmup scaled to our shorter, fine-tuning regime.
+    warmup_epochs: int = 2
     # Use cosine annealing after warmup
     use_cosine_schedule: bool = True
-    # Minimum LR ratio - never let LR drop below this fraction of initial
-    min_lr_ratio: float = 0.1
+    # Minimum LR ratio — was 0.10 (matching GPT-3). Lowered to 0.05 because
+    # in the previous run val IoU plateaued ~10 epochs before the schedule
+    # ended; floor was too high to drive late-phase fine-tuning. Halving the
+    # floor means the last ~10 epochs run at finer LR steps. Watch the next
+    # log: if late epochs now produce small val IoU gains (vs flat plateau
+    # in previous runs), this helped.
+    min_lr_ratio: float = 0.05
 
 
 @dataclass
