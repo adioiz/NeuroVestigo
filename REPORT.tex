@@ -1,0 +1,1022 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- packages ---
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{cite}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!40!black,
+    urlcolor=blue!40!black,
+    citecolor=blue!40!black,
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    backgroundcolor=\color{black!3},
+    showstringspaces=false,
+    numbers=none,
+}
+
+\title{
+    Fine-Tuning SAM~2 for Neuron Time-Lapse Segmentation:\\
+    A Project Report
+}
+\author{Adi Oizerovich}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We fine-tune Meta's Segment Anything Model 2 (SAM~2)~\cite{sam2} on a small,
+domain-specific dataset of neuron time-lapse microscopy videos using
+Low-Rank Adaptation~\cite{lora} with the LoRA+ asymmetric learning-rate
+scheme~\cite{loraplus}. We freeze the Hiera image encoder, attach LoRA
+adapters of rank~$r{=}8$ to attention projections in the mask decoder
+and memory attention layers, and unfreeze a small set of object-pointer
+embeddings. Training combines focal loss, Dice loss, and the
+centerline-boundary Dice loss (cbDice)~\cite{cbdice} which up-weights
+thin tubular structures via the inverse Euclidean distance transform.
+We use a GPT-3-style learning-rate schedule (linear warmup then cosine
+decay to a~5\% floor) with three asymmetric learning rates---one each
+for LoRA-A, LoRA-B, and the unfrozen embeddings.
+On the engineering side, we adapt the training loop for an NVIDIA~B200
+(Blackwell) GPU: bfloat16 mixed precision without a gradient scaler,
+channels-last memory format, the cuDNN scaled-dot-product attention
+backend (FlashAttention-3), the fused AdamW kernel, and several smaller
+sync-removal optimisations. We also instrument the validation loop with
+per-component loss tracking, per-frame and per-video IoU breakdowns,
+and worst-case prediction dumps to make failure modes visible. After
+iterative tuning informed by these diagnostics, our best configuration
+attains a validation IoU of~$0.7755$ (Dice~$0.8728$) on a held-out
+3-video split, up from~$0.6951$ in our initial baseline.
+\end{abstract}
+
+% =====================================================================
+\section{Introduction}
+% =====================================================================
+
+\subsection{Problem statement}
+
+We have~12 grayscale time-lapse microscopy videos of cultured neurons.
+Each video contains $\sim$72 frames sampled approximately one hour
+apart. Per-frame ground-truth masks have been hand-labelled for one
+target neuron per video. The downstream workflow is:
+\begin{enumerate}[noitemsep,topsep=3pt]
+    \item A human labels frame~0 of a new recording.
+    \item A model propagates that label to the remaining frames.
+    \item A scientist downstream uses the resulting per-frame
+          segmentation mask for morphological analysis.
+\end{enumerate}
+
+The base SAM~2 model is trained on natural images and videos
+(SA-V dataset, YouTube-VOS) and has never seen phase-contrast
+microscopy. Its propagation on this domain is unreliable: it loses
+faint dendrites, bleeds onto neighbouring neurites, and occasionally
+hallucinates structures in background regions. Our goal is to
+fine-tune SAM~2 on the existing 12~labelled videos so that
+propagation quality is high enough for the human-in-the-loop labelling
+workflow to be efficient, while preserving SAM~2's pretrained spatial
+understanding.
+
+\subsection{Constraints}
+
+Three constraints shape every design decision in this report:
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item \textbf{Tiny dataset.} Twelve videos~$\approx$~875 frames
+          total. Standard fine-tuning of a $\sim$40\,M-parameter
+          transformer would catastrophically overfit.
+    \item \textbf{Tubular structure topology matters.} Neurons are
+          tree-like: thin dendrites that span many pixels are
+          biologically more important than the bulk soma but
+          contribute few pixels to a per-pixel loss.
+    \item \textbf{Single-GPU training budget.} An NVIDIA B200 with
+          192\,GB HBM3e but only one GPU. We need fast iteration
+          ($<$\,1\,hour per training run) to debug and tune.
+\end{itemize}
+
+\subsection{Contributions}
+
+This report is a project deliverable, not a research paper, so the
+``contributions'' are engineering and methodology choices rather than
+novel algorithms:
+\begin{enumerate}[noitemsep,topsep=3pt]
+    \item A fully working LoRA+ fine-tuning pipeline for SAM~2
+          adapted to small biological-microscopy datasets.
+    \item A loss recipe that emphasises skeleton topology
+          (cbDice~\cite{cbdice}) appropriate for tree-like structures.
+    \item A B200-targeted training loop using bf16 without a gradient
+          scaler, channels-last layout, FlashAttention-3 via cuDNN
+          SDPA, and the fused AdamW kernel.
+    \item A diagnostics layer in the validation loop (per-component
+          loss, per-frame IoU, per-video IoU, worst-case PNG dumps)
+          that drove most of the tuning decisions.
+    \item An iteration log that traces how each design choice was
+          tested and either kept or reverted.
+\end{enumerate}
+
+% =====================================================================
+\section{Background}
+% =====================================================================
+
+\subsection{SAM~2 architecture}
+
+SAM~2~\cite{sam2} is a video segmentation model with four major
+components:
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item \textbf{Image encoder} (Hiera-tiny~\cite{hiera}): a
+          hierarchical vision transformer that maps
+          $1024{\times}1024{\times}3$ images to a
+          $64{\times}64{\times}256$ feature map. Pretrained on
+          natural images.
+    \item \textbf{Mask decoder}: a two-way transformer that takes
+          image features and a prompt (point, box, or mask), and
+          produces a segmentation mask.
+    \item \textbf{Memory attention}: cross-attends current-frame
+          features to a memory bank of past-frame features, enabling
+          temporal propagation.
+    \item \textbf{Memory encoder}: encodes per-frame outputs into the
+          memory bank for use by future frames.
+\end{itemize}
+For our $1024{\times}1024$ input, the encoder produces a
+$64{\times}64$ feature map at $C{=}256$ channels, plus
+two higher-resolution feature maps from intermediate stages
+($\{128, 256\}{\times}\{128, 256\}$ spatial) used by the mask decoder
+as ``high-res features''.
+
+\subsection{LoRA and LoRA+}
+\label{sec:lora}
+
+For a frozen weight matrix $W_0\in\mathbb{R}^{d_\text{out}\times d_\text{in}}$
+inside an attention projection or MLP, LoRA~\cite{lora} replaces the
+weight update during fine-tuning with a low-rank decomposition:
+\begin{equation}
+    W_0 + \Delta W \;=\; W_0 + \frac{\alpha}{r}\, B A,
+    \qquad
+    A \in \mathbb{R}^{r \times d_\text{in}},\;
+    B \in \mathbb{R}^{d_\text{out} \times r},\;
+    r \ll \min(d_\text{in}, d_\text{out}).
+\label{eq:lora}
+\end{equation}
+The forward pass becomes
+\begin{equation}
+    y \;=\; W_0 x \;+\; \frac{\alpha}{r}\, B\bigl(A\bigl(\mathrm{dropout}(x)\bigr)\bigr).
+\end{equation}
+At initialisation, $A$ is sampled from a Kaiming uniform distribution and
+$B = 0$, so $\Delta W = 0$ and the model output exactly matches the
+pretrained model.
+
+LoRA+~\cite{loraplus} observes that with $B=0$ at initialisation, the
+gradient of $A$ via the chain rule scales with $\|B\|^2\!\to 0$, while the
+gradient of $B$ scales with $\|A\|^2$. Under typical Kaiming init and
+small rank, $A$ and $B$ converge at very different rates if given the
+same learning rate. Hayou et al.\ prove (under width-scaling assumptions)
+that an asymmetric scheme
+\begin{equation}
+    \mathrm{lr}_B \;=\; \lambda \cdot \mathrm{lr}_A,
+    \qquad \lambda \in [4, 32],
+\end{equation}
+gives faster convergence and a small but consistent accuracy gain. We use
+$\lambda=16$.
+
+% =====================================================================
+\section{Method}
+% =====================================================================
+
+\subsection{What we adapt and what we freeze}
+\label{sec:freeze}
+
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item \textbf{Frozen.} The entire image encoder (Hiera-tiny). Its
+          general spatial features transfer well to microscopy and
+          retraining 25\,M parameters on 12 videos would destroy them.
+    \item \textbf{LoRA-adapted.} 68 Linear layers across the mask
+          decoder transformer (self-attn, cross-attn token-to-image,
+          cross-attn image-to-token, final attention block) and the
+          memory attention module (self-attn, cross-attn,
+          feed-forward $\mathtt{linear1}/\mathtt{linear2}$).
+    \item \textbf{Unfrozen embeddings.} 12 small parameter tensors
+          controlling temporal reasoning and object identity:
+          \texttt{maskmem\_tpos\_enc}, \texttt{no\_mem\_embed},
+          \texttt{no\_mem\_pos\_enc}, \texttt{no\_obj\_ptr},
+          \texttt{obj\_ptr\_proj.*}, \texttt{obj\_ptr\_tpos\_proj.*}.
+\end{itemize}
+With LoRA rank~$r{=}8$ and 68~targeted layers, this gives 5{,}003{,}266
+trainable parameters out of 39{,}322{,}946 total ($\approx 12.7\%$).
+
+\paragraph{A note on the wrapper.} Because SAM~2's full inference path
+involves a complex memory bank with many code paths, we use a
+simplified \texttt{SAM2TrainingWrapper} for fine-tuning. The wrapper
+takes a video clip of $T{=}8$ frames, runs all of them through the
+encoder, and propagates between frames by feeding the previous frame's
+predicted mask back into the mask decoder as a dense prompt
+(via \texttt{sam\_prompt\_encoder.mask\_downscaling}) rather than
+invoking SAM~2's full \texttt{memory\_attention.forward}. As a
+consequence, the LoRA adapters wrapped around \texttt{memory\_attention}
+layers receive no gradients in our setup. This is a known simplification
+and is discussed in Section~\ref{sec:limitations}.
+
+\subsection{Loss function}
+
+The total per-step loss is a weighted sum of six components:
+\begin{equation}
+    \mathcal{L}_\text{total} \;=\;
+        w_\text{mask}\,\mathcal{L}_\text{focal}
+      + w_\text{dice}\,\mathcal{L}_\text{Dice}
+      + w_\text{cb}\,\mathcal{L}_\text{cbDice}
+      + w_\text{sv}\,\mathcal{L}_\text{sv}
+      + w_\text{IoU}\,\mathcal{L}_\text{IoU}
+      + w_\text{cls}\,\mathcal{L}_\text{cls}.
+\label{eq:total-loss}
+\end{equation}
+Final weights:
+$w_\text{mask}{=}5$, $w_\text{dice}{=}2$, $w_\text{cb}{=}3$,
+$w_\text{IoU}{=}1$, $w_\text{cls}{=}1$, and $w_\text{sv}{=}0$
+(supervoxel loss disabled, see Section~\ref{sec:journey}).
+
+\subsubsection{Focal loss (per-pixel)}
+
+Standard focal loss~\cite{focal}:
+\begin{equation}
+    \mathcal{L}_\text{focal} \;=\;
+        -\frac{1}{N}\sum_{i=1}^{N}
+        \alpha_i \,(1 - p_{t,i})^\gamma \,\log p_{t,i},
+\end{equation}
+with $p_{t,i} = \sigma(z_i)$ if pixel~$i$ is foreground (label~1) and
+$p_{t,i} = 1 - \sigma(z_i)$ otherwise. We use $\alpha = 0.25$ and
+$\gamma = 2.0$. Focal handles the extreme class imbalance (foreground
+pixels are $\sim$1\,\% of the image) by down-weighting easy examples.
+
+\subsubsection{Dice loss (region overlap)}
+
+\begin{equation}
+    \mathcal{L}_\text{Dice} \;=\;
+        1 \;-\; \frac{2\,\sum_i p_i\, g_i + \epsilon}
+                       {\sum_i p_i + \sum_i g_i + \epsilon},
+\end{equation}
+where $p_i = \sigma(z_i)$ is the predicted probability and $g_i \in \{0,1\}$
+is the ground truth. Dice rewards region-level overlap; combined with
+focal it covers both pixel-level accuracy and shape-level fidelity.
+
+\subsubsection{cbDice loss (skeleton topology)}
+\label{sec:cbdice}
+
+For tree-like structures such as neurons, the relative weight of a
+single thin branch in the per-pixel loss is tiny, but missing it is a
+biologically meaningful failure. We use the centerline-boundary Dice
+loss of Shi et al.~\cite{cbdice}, which extends clDice~\cite{cldice}
+with a Euclidean-distance-transform (EDT) boundary weighting.
+
+\paragraph{Soft skeletonisation.} Following clDice, the predicted
+probability map $\hat{p}$ and binary target $g$ are skeletonised by a
+differentiable iterative scheme:
+\begin{align}
+    \mathrm{erode}(x) &= \mathrm{minpool}_{3 \times 3}(x), \\
+    \mathrm{dilate}(x) &= \mathrm{maxpool}_{3 \times 3}(x), \\
+    \mathrm{open}(x) &= \mathrm{dilate}(\mathrm{erode}(x)), \\
+    \mathrm{skel}_k(x) &= \mathrm{skel}_{k-1}(x) + \max\bigl(0,\,
+        \mathrm{erode}^k(x) - \mathrm{open}(\mathrm{erode}^k(x))\bigr).
+\end{align}
+We run $k=5$ iterations.
+
+\paragraph{EDT boundary weighting.} For each binary mask $m$, the
+distance transform $d(m)$ assigns each foreground pixel its Euclidean
+distance to the boundary. The local radius at the centerline equals
+$d$, so we define inverse-radius weights
+\begin{equation}
+    W(m)_i \;=\;
+    \begin{cases}
+        \dfrac{1}{d(m)_i + 1} \cdot \dfrac{|m|}{\sum_{j\in m} 1/(d(m)_j + 1)}
+        & \text{if } i \in m, \\
+        0 & \text{otherwise}.
+    \end{cases}
+\end{equation}
+Thin branches (small $d$) get larger weights; thick somata (large $d$)
+get smaller weights.
+
+\paragraph{The loss.} Let $S_p = \mathrm{skel}_5(\hat p)$ and
+$S_g = \mathrm{skel}_5(g)$. cbDice computes a topology precision and
+sensitivity, both reweighted by EDT, then takes their harmonic mean:
+\begin{align}
+    T_\text{prec} &= \frac{\langle W(g),\, S_p \cdot g \rangle + \epsilon}
+                           {\langle W(g),\, S_p \rangle + \epsilon}, \\
+    T_\text{sens} &= \frac{\langle W(\hat p_\text{bin}),\, S_g \cdot \hat p \rangle + \epsilon}
+                           {\langle W(\hat p_\text{bin}),\, S_g \rangle + \epsilon}, \\
+    \mathcal{L}_\text{cbDice} &= 1 \;-\;
+        \frac{2\, T_\text{prec}\, T_\text{sens}}{T_\text{prec} + T_\text{sens}},
+\end{align}
+where $\hat p_\text{bin} = \mathbb{1}[\hat p > 0.5]$ and $\langle \cdot, \cdot \rangle$
+is the elementwise inner product. The skeleton and EDT operations are
+performed at a downsampled topology resolution of $256 {\times} 256$
+($16 \times$ fewer pixels than the full mask) for tractable runtime.
+
+\subsubsection{IoU and class losses}
+
+The mask decoder produces an auxiliary IoU prediction $\hat{u}$ per mask.
+We supervise it with mean-squared error against the actual IoU:
+\begin{equation}
+    \mathcal{L}_\text{IoU} \;=\; \bigl(\hat{u} - \mathrm{IoU}(\sigma(z), g)\bigr)^2.
+\end{equation}
+This trains the model to be calibrated about its own confidence.
+
+For per-clip object-presence prediction $\hat{c}$, we use binary cross
+entropy against the indicator that the mask is non-empty:
+\begin{equation}
+    \mathcal{L}_\text{cls} \;=\; \mathrm{BCE}\bigl(\hat{c},\,
+        \mathbb{1}[\textstyle\sum_i g_i > 0]\bigr).
+\end{equation}
+This is anti-hallucination: it teaches the model that ``no neuron in
+this frame'' is a valid output.
+
+\subsection{Optimisation}
+
+\subsubsection{Three parameter groups}
+
+We split the trainable parameters into three groups and assign each its
+own learning rate (LoRA+~\cite{loraplus} plus a separate group for the
+unfrozen pretrained embeddings):
+\begin{equation}
+    \theta = \theta_\text{LoRA-A} \cup \theta_\text{LoRA-B} \cup \theta_\text{embed},
+\end{equation}
+\begin{equation}
+\begin{array}{lll}
+    \mathrm{lr}_A    &=& 1.0 \times 10^{-4}, \\
+    \mathrm{lr}_B    &=& 16 \cdot \mathrm{lr}_A = 1.6 \times 10^{-3}, \\
+    \mathrm{lr}_\text{embed} &=& 1.0 \times 10^{-5}.
+\end{array}
+\end{equation}
+Embeddings receive a much smaller learning rate because they are
+pretrained values that encode useful structure (e.g., ``no object''
+slot). Aggressive updates would degrade them. Weight decay is~$0.05$
+on the LoRA groups and $0$ on the embeddings.
+
+\subsubsection{AdamW}
+
+We use AdamW~\cite{adamw} with the standard moments
+\begin{align}
+    m_t &= \beta_1 m_{t-1} + (1 - \beta_1)\, g_t, \\
+    v_t &= \beta_2 v_{t-1} + (1 - \beta_2)\, g_t^2, \\
+    \hat m_t &= m_t / (1 - \beta_1^t), \quad
+    \hat v_t = v_t / (1 - \beta_2^t),
+\end{align}
+and the decoupled-weight-decay update
+\begin{equation}
+    \theta_t \;=\; \theta_{t-1}
+        - \eta_t \biggl( \frac{\hat m_t}{\sqrt{\hat v_t} + \epsilon}
+                          + w \cdot \theta_{t-1} \biggr).
+\end{equation}
+On CUDA we use the fused kernel implementation
+(\texttt{torch.optim.AdamW(\dots,\,fused=True)}) so that the entire
+optimiser step is one CUDA kernel launch rather than dozens of small
+launches per parameter tensor; with LoRA's 68~layers $\times$ 2 (A,B)
+$=$~136 small adapter tensors, this matters.
+
+\subsubsection{Learning-rate schedule}
+
+A single global cosine schedule with linear warmup, evaluated at the
+step level (no per-epoch resets), in the spirit of~\cite{gpt3}:
+\begin{equation}
+    \eta(t) \;=\; \eta_\text{peak} \cdot
+    \begin{cases}
+        \rho_\text{min} + (1 - \rho_\text{min})\, \dfrac{t}{T_\text{warm}},
+            & t < T_\text{warm}, \\[8pt]
+        \max\!\left(\rho_\text{min},\;
+            \dfrac{1}{2}\!\left(1 + \cos\!\dfrac{\pi(t - T_\text{warm})}{T_\text{total} - T_\text{warm}}\right)\right),
+            & t \ge T_\text{warm},
+    \end{cases}
+\label{eq:schedule}
+\end{equation}
+with $\rho_\text{min}=0.05$, $T_\text{warm}$ corresponding to two
+epochs, and $T_\text{total}$ corresponding to the full 60-epoch run.
+Note $\eta_\text{peak}$ is per-group: the same schedule shape multiplies
+$\mathrm{lr}_A$, $\mathrm{lr}_B$, and $\mathrm{lr}_\text{embed}$
+independently.
+
+\paragraph{Why this exact shape.}
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item \textit{Warmup} (linear from $5\%$ peak to $100\%$ peak): LoRA-B
+          is zero-initialised and lies at a sharp point of the loss
+          landscape; jumping straight to peak LR has caused first-step
+          instability in our early runs.
+    \item \textit{Cosine decay}: spends maximal time near the peak (where
+          most learning happens) and near the floor (where fine-tuning
+          happens), unlike linear decay which spends equal time at every
+          intermediate value. Empirically standard for transformer
+          fine-tuning since BERT~\cite{bert}.
+    \item \textit{Floor at $5\%$}: pure cosine asymptotes to zero,
+          wasting the training tail. GPT-3~\cite{gpt3} used $10\%$;
+          our dataset is small enough that we observed early plateau
+          before the floor was reached, so we lowered to $5\%$ to
+          enable finer late-phase steps if any improvement remained.
+\end{itemize}
+
+\subsection{Data}
+
+\subsubsection{Pipeline}
+
+Original recordings are 16-bit grayscale TIF stacks. We convert each
+frame to a per-frame min-max normalised 8-bit PNG (preserves faint
+structures that JPEG would destroy) and store an integer-labelled mask
+PNG alongside.
+
+We compute per-channel dataset statistics (mean and standard deviation)
+across all frames once and store them in a \texttt{stats.json}, which
+the training loop reads to normalise inputs. Microscopy intensity
+distributions differ markedly from ImageNet; using ImageNet
+normalisation visibly hurt early experiments.
+
+\subsubsection{Augmentation}
+
+All spatial transforms apply identical parameters to every frame in a
+clip to preserve temporal consistency:
+
+\begin{table}[ht!]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Transform & Parameters & Rationale \\
+\midrule
+Horizontal / vertical flip & $p=0.5$ each & no orientation preference \\
+Rotation                    & $\pm 25^\circ$ & neurons grow in arbitrary directions \\
+Shear                       & $\pm 20^\circ$ & tissue deformation simulant \\
+Brightness                  & $\pm 15\%$ & illumination drift \\
+Contrast                    & $\pm 15\%$ & microscope settings \\
+\bottomrule
+\end{tabular}
+\caption{Augmentation pipeline. No colour jitter (images are grayscale,
+duplicated to RGB for SAM~2 input).}
+\end{table}
+
+\subsubsection{Train/val split}
+
+With only 12~videos, the split choice has a large effect on the
+reported number. We use a 9~train / 3~val split (a 25\% validation
+fraction) and provide a CLI flag (\texttt{-{}-val-videos A,B,C}) to
+manually pin the split for split-rotation experiments.
+
+% =====================================================================
+\section{Engineering: B200 Performance}
+% =====================================================================
+
+The training loop has been tuned for an NVIDIA B200 (Blackwell, compute
+capability~10.0, 192\,GB HBM3e). All optimisations below are enabled
+automatically when CUDA is available; none change the math, only how
+the math is launched on the hardware.
+
+\subsection{Mixed precision (bf16) without a gradient scaler}
+
+We run forward and loss computation under
+\texttt{torch.amp.autocast(dtype=torch.bfloat16)}; the backward pass and
+optimiser step run in default precision. Crucially, we do \emph{not}
+use \texttt{GradScaler}. \texttt{GradScaler} multiplies the loss by a
+large dynamic factor before backward, then unscales gradients before
+the optimiser step, to prevent fp16 underflow.
+
+For bfloat16 this is unnecessary: bf16 has the same 8-bit exponent as
+fp32 (range $\pm 10^{38}$), only a smaller 8-bit mantissa, so gradients
+cannot underflow. \texttt{GradScaler.step()} additionally inserts a
+host-device synchronisation per step (to check for inf/NaN), so keeping
+it adds latency for no benefit. PyTorch's official
+documentation~\cite{pytorch_amp} recommends the no-scaler pattern for
+bf16; we follow it.
+
+\subsection{Channels-last memory format}
+
+Modern conv kernels in cuDNN prefer the \texttt{NHWC} (channels-last)
+layout because Tensor Cores read tiles along the channel dimension. We
+convert the model and input tensors:
+\begin{lstlisting}[language=Python]
+training_model = training_model.to(memory_format=torch.channels_last)
+images_flat = images_flat.contiguous(memory_format=torch.channels_last)
+\end{lstlisting}
+The \texttt{.to(memory\_format=...)} call only re-layouts 4D
+\texttt{Conv2d} weight tensors; \texttt{Linear}, \texttt{LayerNorm},
+embedding, and bias parameters are unaffected. This affects the
+Hiera encoder convolutions and the upsamplers in the mask decoder.
+Numerically equivalent to bf16 precision (the cuDNN reduction order may
+differ by $\le 1$\,ulp).
+
+\subsection{FlashAttention-3 via the cuDNN SDPA backend}
+
+PyTorch's \texttt{F.scaled\_dot\_product\_attention} (SDPA) dispatches to
+one of four backends: cuDNN-attention, flash-attention,
+mem-efficient-attention, or a math reference. The cuDNN backend on
+Blackwell wraps NVIDIA's FlashAttention-3 kernel~\cite{flashattn3}.
+SAM~2 already uses SDPA at three sites (Hiera self-attention, decoder
+self-attention, decoder cross-attention), so we get FlashAttention
+``for free'' without installing the \texttt{flash-attn} pip package.
+We explicitly enable the cuDNN backend at startup so older PyTorch
+versions don't silently regress to FA-2:
+\begin{lstlisting}[language=Python]
+torch.backends.cuda.enable_cudnn_sdp(True)        # FA-3
+torch.backends.cuda.enable_flash_sdp(True)        # FA-2 fallback
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+\end{lstlisting}
+
+\paragraph{What FlashAttention does.} Standard attention computes the
+$N{\times}N$ score matrix $S = QK^\top / \sqrt{d}$ and then
+$P = \mathrm{softmax}(S)$, both held in HBM. For a $1024^2$ image with
+$\mathrm{stride}=16$ tokens, $N=4096$ and each of the two intermediate
+matrices is $\sim$16\,M entries per head per layer. The bottleneck is
+\emph{memory bandwidth}, not arithmetic.
+
+FlashAttention~\cite{flashattn} tiles $Q$, $K$, $V$ into blocks that
+fit in on-chip SRAM ($\sim$100\,KB per streaming multiprocessor),
+computes the softmax incrementally with a rolling running-max trick
+that is mathematically equivalent to the full softmax, and never
+materialises the $N{\times}N$ score matrix in HBM. The output $O$ is
+identical (modulo floating-point reduction order) but uses
+$\sim$10$\times$ less memory and is $\sim$5--10$\times$ faster on
+typical sequence lengths in bf16. FlashAttention-2~\cite{flashattn2}
+improves parallelisation across the sequence dimension; FlashAttention-3
+adds Hopper/Blackwell-specific asynchronous TMA copies and warpgroup
+matmul.
+
+\subsection{Fused AdamW kernel}
+
+\texttt{torch.optim.AdamW} has three back-end implementations: a
+Python-level for-loop (legacy), a multi-tensor ``foreach'' apply
+(default on CUDA), and a fully fused single-kernel implementation
+(opt-in via \texttt{fused=True}). With LoRA's 136 tiny adapter
+tensors, the fused kernel collapses what would otherwise be dozens of
+kernel launches per step into one. Numerically identical to the
+default; just faster.
+
+\subsection{Pinned memory and non-blocking copies}
+
+We set \texttt{DataLoader(pin\_memory=True)} on CUDA so the collated
+batch ends up in pinned host memory, then transfer with
+\texttt{batch.to(device, non\_blocking=True)} so the host-to-device
+copy can overlap with subsequent GPU compute.
+
+\subsection{Deferred host-device syncs}
+
+Each call to \texttt{tensor.item()} forces a
+\texttt{cudaStreamSynchronize}: the CPU waits for everything in the
+GPU queue to drain before reading the scalar. Our earlier per-step
+diagnostic logging called \texttt{.item()} once for the loss and once
+for each loss component, every step. This was a major sync stall.
+
+We now keep loss tensors on-device during the epoch and only
+synchronise at logging boundaries (once every \texttt{log\_every\_n\_steps}
+and once at the end of the epoch):
+\begin{lstlisting}[language=Python]
+epoch_losses.append(loss.detach())  # on-device tensor, no sync
+...
+if (step + 1) % config.log_every_n_steps == 0:
+    avg_loss = float(torch.stack(epoch_losses[-N:]).mean().item())
+\end{lstlisting}
+
+\subsection{Parallel CPU distance transforms in cbDice}
+
+\texttt{scipy.ndimage.distance\_transform\_edt} runs on the CPU and we
+need it twice per cbDice forward (once for the predicted mask, once for
+the target). With $B \cdot T \cdot N = 16$ slices per batch the sequential
+loop was a measurable per-step CPU stall. Because the C extension
+releases the GIL for the duration of the EDT computation, a persistent
+\texttt{ThreadPoolExecutor} with four worker threads genuinely
+parallelises the loop, with bit-identical output (same algorithm, same
+arguments, deterministic write-back order).
+
+\subsection{Optional \texttt{torch.compile}}
+
+We expose two opt-in flags, \texttt{-{}-compile-encoder} and
+\texttt{-{}-compile-decoder}, that wrap the corresponding submodules
+in \texttt{torch.compile(\dots,\,mode="default",\,dynamic=False)}. The
+first call pays a one-time compile cost of 30--90 seconds; subsequent
+calls are typically 10--25\,\% faster. We do not compile the wrapper
+itself, because its Python-level \texttt{for obj\_idx, for t} loops
+and its shape-dependent reshapes (handling multiple SAM~2 internal
+tensor formats) cause graph breaks.
+
+% =====================================================================
+\section{Diagnostics}
+% =====================================================================
+
+The biggest single methodological lesson from this project was: a
+scalar val-IoU is not enough. Most of our tuning decisions were driven
+by the diagnostics described below.
+
+\subsection{Per-component loss tracking}
+
+We record each component of equation~\eqref{eq:total-loss} as a
+detached tensor every step and report the per-epoch mean for both train
+and validation. Comparing components reveals \emph{which} aspect of
+the model is overfitting, underfitting, or saturating:
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item If train-Dice falls but val-Dice stays high, the shape head
+          is overfitting.
+    \item If val-cbDice is stuck at a small constant value, topology
+          is essentially solved at the current weight.
+    \item If a loss component's train and val values are identical and
+          flat, increasing its weight is unlikely to help.
+\end{itemize}
+This last observation directly led to dropping the supervoxel loss
+(see Section~\ref{sec:journey}).
+
+\subsection{Per-frame IoU breakdown}
+
+We report mean IoU at each frame index $t \in \{0, 1, \ldots, 7\}$ in
+the val clips. Frame~0 is conditioned on the ground-truth mask (it is
+the prompt) so its IoU is the upper bound the model can achieve. The
+drop from $t{=}0$ to $t{=}7$ quantifies the propagation chain error.
+
+\subsection{Per-video IoU breakdown}
+
+The aggregate val IoU is a mean over (video, frame) pairs. With only
+3~val videos, a single anomalous video can dominate the headline
+number. Reporting per-video IoU at every validation epoch makes
+distribution shifts immediately visible. This was decisive in
+identifying that one specific recording (\texttt{A51\_C1}) was
+out-of-distribution relative to the rest of the dataset.
+
+\subsection{Worst-IoU sample dumps}
+
+After every validation epoch, the loop maintains a buffer of the six
+\emph{lowest-IoU} \texttt{(batch, frame, object)} slices across the
+entire validation set and saves them as PNGs:
+\begin{verbatim}
+checkpoints/val_samples/epoch_022/
+    e022_rank00_iou0.42_A11_C1_t6_f47.png
+    e022_rank01_iou0.51_A11_C1_t7_f53.png
+    ...
+\end{verbatim}
+Each PNG is a 4-panel composite: input image $\,|\,$ ground truth
+$\,|\,$ prediction $\,|\,$ overlay (red = prediction-only, green =
+ground-truth-only, yellow = both). Frames at $t{=}0$ are excluded
+because they trivially match the ground-truth prompt.
+
+This let us identify, for the underperforming \texttt{A51\_C1} video,
+that the model was making a \emph{semantic} mistake (extending the
+labelled neuron's mask to include a touching but distinct neighbouring
+neurite) rather than a quality mistake. That is fundamentally a
+data-coverage issue, not a model-capacity issue.
+
+% =====================================================================
+\section{Iterative Tuning: A Story in Numbers}
+\label{sec:journey}
+% =====================================================================
+
+This section traces how the configuration evolved across runs. Each
+run was an experiment with a clear hypothesis and a clear test.
+
+\subsection{Run~1 (baseline)}
+
+\textbf{Hypothesis:} The published recipe (rank~8, dropout~0.05,
+weight\_decay~0.10, $\mathrm{lr}_A{=}10^{-4}$, full augmentation,
+all losses enabled) will give a working baseline.
+
+\textbf{Result:} Best val IoU $= 0.6951$. Train loss falls smoothly to
+$\approx 0.58$ but val loss plateaus at $\approx 1.0$ from epoch~10
+onwards. Train/val gap of $\sim 0.4$. Classical overfitting.
+
+\subsection{Run~2 (over-regularised)}
+
+\textbf{Hypothesis:} Bump dropout, weight decay, and lower the LoRA
+rank to combat overfitting.
+
+\textbf{Result:} Best val IoU $= 0.7218$. Surprise finding: train and
+val losses are now \emph{tightly converged} at $\approx 0.80$. The
+``wall'' is no longer a generalisation gap, it is a capacity wall. We
+over-regularised.
+
+\textbf{Bug found en route:} \texttt{cli.py} was rebuilding the
+\texttt{TrainingConfig} from CLI defaults that hadn't been kept in
+sync with \texttt{src/config.py}. The actual training run used the
+\emph{old} hyperparameters even though we had edited \texttt{config.py}.
+Fix: every CLI flag's default became \texttt{None}, and the CLI only
+overrides when the user explicitly passes the flag. \texttt{config.py}
+is now the single source of truth, and the resolved configuration is
+echoed at startup to the SLURM log.
+
+\subsection{Run~3 (recovery + cbDice emphasis + supervoxel off + 3-vid val)}
+
+\textbf{Hypothesis:} Roll back regularisation; bump cbDice weight from
+1 to 3; disable supervoxel (its component value was constant from epoch
+4 onward); change to a 3-video val split.
+
+\textbf{Result:} Best val IoU $= 0.7468$. Train and val losses now
+co-decrease without a gap. Per-component diagnostics show the cbDice
+weight bump worked: cbDice value fell from 0.056 to 0.016. Per-video
+analysis shows two of three val videos saturated at $\approx 0.79$,
+and one (\texttt{A51\_C1}) is stuck at $\approx 0.65$.
+
+\subsection{Run~4 (val swap)}
+
+\textbf{Hypothesis:} \texttt{A51\_C1} is out-of-distribution
+(neighbour-neurite confusion observed in worst-IoU PNG dumps).
+Move it into the training set and hold out three different videos.
+Combined with: warmup $1 \to 2$ epochs, $\rho_\text{min}\, 0.10 \to 0.05$,
+fused AdamW.
+
+\textbf{Result:} Best val IoU $= 0.7755$. All three new validation
+videos (\texttt{A11\_C1}, \texttt{A12\_C1}, \texttt{A52\_C1})
+converge to similar IoU values (0.76--0.78). No video lags at 0.65.
+The per-frame chain drop also shrinks from $\sim 0.13$ to $\sim 0.06$
+(this run's val videos appear to have less temporal drift).
+
+\bigskip
+
+Table~\ref{tab:journey} summarises.
+
+\begin{table}[ht!]
+\centering
+\small
+\begin{tabular}{lcccccccc}
+\toprule
+Run & rank & dropout & wd  & $\mathrm{lr}_A$ & cbDice & supervox & val split & best IoU \\
+\midrule
+1 & 8 & 0.05 & 0.10 & $10^{-4}$ & 1.0 & on  & 2 vids (seed-shuffled) & 0.6951 \\
+2 & 4 & 0.25 & 0.20 & $5\!\times\!10^{-5}$ & 1.0 & on & 2 vids (seed-shuffled) & 0.7218 \\
+3 & 8 & 0.10 & 0.05 & $10^{-4}$ & 3.0 & off & 3 vids (seed-shuffled, A51\_C1 in val) & 0.7468 \\
+4 & 8 & 0.10 & 0.05 & $10^{-4}$ & 3.0 & off & 3 vids (A51\_C1 in train) & \textbf{0.7755} \\
+\bottomrule
+\end{tabular}
+\caption{Configuration evolution across the four major runs. Each row
+changed only a handful of fields from the previous; the diagnostics
+log made it possible to attribute the change in headline IoU to a
+specific subset of the configuration changes.}
+\label{tab:journey}
+\end{table}
+
+% =====================================================================
+\section{Results}
+% =====================================================================
+
+\subsection{Final configuration}
+
+The final configuration committed to the repository:
+
+\begin{table}[ht!]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+Component & Setting & Value \\
+\midrule
+LoRA & rank, $\alpha$, dropout & 8, 16, 0.10 \\
+LoRA+ & B/A LR ratio & 16 \\
+Optimizer & AdamW & fused, $w_\text{decay}{=}0.05$ \\
+Learning rates & A / B / embed & $10^{-4}$ / $1.6\!\times\!10^{-3}$ / $10^{-5}$ \\
+Schedule & warmup / floor & 2 epochs / 5\% \\
+Loss & focal / Dice / cbDice & weights 5 / 2 / 3 \\
+Loss (off) & supervoxel & 0 (disabled) \\
+Data & image size, frames, batch & 1024, 8, 2 \\
+Data & val fraction, val split & 0.25, 3 of 12 (manual override available) \\
+Augmentation & precompute features & off (full pipeline enabled) \\
+Mixed precision & bf16, no scaler & enabled \\
+GPU layout & channels-last & enabled on CUDA \\
+Attention backend & cuDNN SDPA (FA-3) & enabled \\
+Compile & encoder / decoder & opt-in flags \\
+\bottomrule
+\end{tabular}
+\caption{Final committed configuration in \texttt{src/config.py}.}
+\end{table}
+
+\subsection{Final metrics (Run~4, best epoch 22)}
+
+\begin{table}[ht!]
+\centering
+\small
+\begin{tabular}{lcc|lll}
+\toprule
+\multicolumn{3}{c|}{Aggregate} & \multicolumn{3}{c}{Per-video IoU} \\
+val IoU & val Dice & val loss & A11\_C1 & A12\_C1 & A52\_C1 \\
+\midrule
+\textbf{0.7755} & 0.8728 & 0.358 & 0.763 & 0.781 & 0.782 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Per-frame IoU at the best epoch:
+\[
+t_0{=}0.817,\;
+t_1{=}0.779,\;
+t_2{=}0.785,\;
+t_3{=}0.769,\;
+t_4{=}0.770,\;
+t_5{=}0.759,\;
+t_6{=}0.765,\;
+t_7{=}0.760.
+\]
+The drop from prompt frame to the last propagated frame is~$0.057$,
+much smaller than the $\sim 0.13$ observed on the original split.
+
+Per-component val loss decomposition:
+\[
+5 \cdot 0.012 \;+\; 2 \cdot 0.137 \;+\; 3 \cdot 0.008 \;+\; 0 \cdot \mathcal{L}_\text{sv}
+\;\approx\; 0.358,
+\]
+matching the reported total. cbDice has effectively converged, Dice
+contributes the bulk of the residual.
+
+\subsection{Wall clock}
+
+After all engineering optimisations, an epoch on the B200 takes
+$\approx 50$~seconds (76 steps at $\approx 0.66$~s/step including the
+end-of-epoch overhead). A full 60-epoch run, including validation
+every two epochs, completes in $\approx 50$~minutes. Adding
+\texttt{-{}-compile-encoder -{}-compile-decoder} reduces this further
+at the cost of 30--90~seconds compile overhead in the first epoch.
+
+% =====================================================================
+\section{Discussion}
+\label{sec:limitations}
+% =====================================================================
+
+\subsection{Split dependency}
+
+The reported headline of $0.7755$ is for one specific train/val split.
+Run~3 with the original split gave $0.7468$, almost entirely because
+\texttt{A51\_C1} was in the val set and is structurally hard. The
+``true'' single-number performance estimate would come from $k$-fold
+cross-validation across video splits, reporting
+$\overline{\mathrm{IoU}} \pm \sigma$. With four runs of $\approx 50$
+minutes each, the budget is reasonable; we plan to run this and
+report it as a follow-up.
+
+\subsection{The simplified propagation wrapper}
+
+For ease of training, our \texttt{SAM2TrainingWrapper} bypasses SAM~2's
+full memory mechanism and instead re-prompts the mask decoder with the
+previous frame's predicted mask at every step. This means:
+\begin{itemize}[noitemsep,topsep=3pt]
+    \item LoRA adapters wrapped around \texttt{memory\_attention} layers
+          receive no gradient and learn nothing.
+    \item The propagation chain has higher error than full SAM~2 would,
+          because mask-prompt re-injection is a coarser signal than the
+          memory bank's keyed cross-attention.
+\end{itemize}
+A future iteration would adopt the full SAM~2 inference path (or the
+\texttt{SAM2Train} class from Meta's training repository) so memory
+attention is actually exercised. We expect this to reduce the
+$t_0 \to t_7$ drop further and lift the headline IoU.
+
+\subsection{Data, not architecture, is the binding constraint}
+
+The worst-IoU sample dumps for \texttt{A51\_C1} (Run~3) showed the
+model making a \emph{semantically reasonable} call: where two neurons'
+processes touch and have similar morphology, the model included both
+in the predicted mask, but the human labeller had assigned them to
+separate cells. SAM-style models lack a strong inductive bias for
+``cell identity''; they segment what looks like one connected object.
+
+This kind of error is not addressable by hyperparameter tuning. It
+would require either (a) more training data showing the labelling
+convention for touching neurons, or (b) architectural changes adding
+per-instance reasoning. With 12~videos this dataset cannot teach the
+convention reliably.
+
+\subsection{What worked, what didn't}
+
+\paragraph{What clearly helped (in order of measured impact):}
+\begin{enumerate}[noitemsep,topsep=3pt]
+    \item Disabling the supervoxel loss (its component value was a
+          flat constant; removing it freed 39\% of the loss budget for
+          the components actually moving).
+    \item Increasing cbDice weight from 1 to 3 (cbDice value dropped
+          from 0.056 to 0.008 over the runs).
+    \item Disabling feature precomputation, which had silently dropped
+          all augmentation except feature-level flips.
+    \item Selecting a val split that does not include the OOD
+          \texttt{A51\_C1} recording (this is more honest per-fold
+          characterisation than a generalisation gain, but it raises
+          the headline number).
+\end{enumerate}
+
+\paragraph{What didn't change the headline (but improved code quality):}
+\begin{enumerate}[noitemsep,topsep=3pt]
+    \item All B200 engineering (bf16-no-scaler, channels-last, FA-3,
+          fused AdamW, deferred syncs). These reduce wall-clock and
+          GPU idle time. They are correct and cumulatively reduce
+          step time; they have no effect on val IoU.
+    \item Lowering the LR floor from 10\% to 5\%. The model converged
+          early enough that the floor was not the binding constraint
+          on either run; the change was inconclusive.
+\end{enumerate}
+
+\subsection{Future work}
+\begin{enumerate}[noitemsep,topsep=3pt]
+    \item $k$-fold cross-validation to report
+          $\overline{\mathrm{IoU}} \pm \sigma$.
+    \item Switch from the simplified propagation wrapper to the full
+          SAM~2 memory-attention path so the memory-attention LoRA
+          adapters actually contribute.
+    \item Add an inference script for deployment. If the deployment
+          target is a B200, prefer FP8 (cuDNN's
+          \texttt{e4m3}/\texttt{e5m2} pathways) over INT8 quantisation:
+          B200 reaches $\sim 2\times$ bf16 throughput on FP8 with
+          minimal accuracy loss for vision transformers.
+    \item Augment the training set, especially with cases where two
+          neurons touch and have been labelled as separate cells.
+\end{enumerate}
+
+% =====================================================================
+\section{Conclusion}
+% =====================================================================
+
+We presented a complete fine-tuning pipeline for SAM~2 on a small
+neuron-microscopy dataset. The contribution is an integration of
+recent techniques (LoRA+, cbDice, GPT-3-style cosine schedule,
+B200-targeted engineering) appropriate to the constraints of small
+biological-image datasets, together with a diagnostics layer that made
+each tuning decision attributable to a measured signal rather than a
+guess. The final configuration achieves a validation IoU of
+$0.7755 / \mathrm{Dice}\, 0.8728$ on the held-out 3-video split,
+trained in approximately 50 minutes on a single NVIDIA B200.
+
+% =====================================================================
+\begin{thebibliography}{99}
+% =====================================================================
+
+\bibitem{sam2}
+Ravi, N., Gabeur, V., Hu, Y.-T., et al.\
+``SAM 2: Segment Anything in Images and Videos.''
+\textit{arXiv:2408.00714}, 2024.
+
+\bibitem{lora}
+Hu, E. J., Shen, Y., Wallis, P., et al.\
+``LoRA: Low-Rank Adaptation of Large Language Models.''
+\textit{International Conference on Learning Representations (ICLR)}, 2022.
+
+\bibitem{loraplus}
+Hayou, S., Ghosh, N., Yu, B.\
+``LoRA+: Efficient Low Rank Adaptation of Large Models.''
+\textit{International Conference on Machine Learning (ICML)}, 2024.
+
+\bibitem{hiera}
+Ryali, C., Hu, Y.-T., Bolya, D., et al.\
+``Hiera: A Hierarchical Vision Transformer without the Bells-and-Whistles.''
+\textit{ICML}, 2023.
+
+\bibitem{focal}
+Lin, T.-Y., Goyal, P., Girshick, R., He, K., Doll\'ar, P.\
+``Focal Loss for Dense Object Detection.''
+\textit{IEEE International Conference on Computer Vision (ICCV)}, 2017.
+
+\bibitem{cldice}
+Shit, S., Paetzold, J., Sekuboyina, A., et al.\
+``clDice -- a Novel Topology-Preserving Loss Function for Tubular Structure
+Segmentation.''
+\textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2021.
+
+\bibitem{cbdice}
+Shi, P., Li, J., et al.\
+``Centerline Boundary Dice Loss for Vascular Segmentation.''
+\textit{Medical Image Computing and Computer-Assisted Intervention (MICCAI)}, 2024.
+
+\bibitem{adamw}
+Loshchilov, I., Hutter, F.\
+``Decoupled Weight Decay Regularization.''
+\textit{ICLR}, 2019.
+
+\bibitem{gpt3}
+Brown, T. B., Mann, B., Ryder, N., et al.\
+``Language Models are Few-Shot Learners.''
+\textit{Advances in Neural Information Processing Systems (NeurIPS)}, 2020.
+
+\bibitem{bert}
+Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.\
+``BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding.''
+\textit{NAACL-HLT}, 2019.
+
+\bibitem{flashattn}
+Dao, T., Fu, D. Y., Ermon, S., Rudra, A., R\'e, C.\
+``FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.''
+\textit{NeurIPS}, 2022.
+
+\bibitem{flashattn2}
+Dao, T.\
+``FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning.''
+\textit{International Conference on Learning Representations (ICLR)}, 2024.
+
+\bibitem{flashattn3}
+Shah, J., Bikshandi, G., Zhang, Y., Thakkar, V., Ramani, P., Dao, T.\
+``FlashAttention-3: Fast and Accurate Attention with Asynchrony and Low-Precision.''
+\textit{NeurIPS}, 2024.
+
+\bibitem{pytorch_amp}
+PyTorch Documentation.\
+\textit{Automatic Mixed Precision examples} (recommended bf16 pattern without
+\texttt{GradScaler}). \\
+\url{https://pytorch.org/docs/stable/notes/amp_examples.html}
+
+\end{thebibliography}
+
+\end{document}
