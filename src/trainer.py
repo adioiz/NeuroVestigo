@@ -614,6 +614,12 @@ def build_optimizer(model: nn.Module, config: TrainingConfig):
 
     lora_b_lr = config.optimizer.lora_lr * config.optimizer.lora_b_lr_ratio
 
+    # Use the fused AdamW kernel on CUDA. Numerically equivalent to the
+    # default `foreach` impl, but packs the entire optimizer step (m/v
+    # update, weight update, weight decay) into a single CUDA kernel
+    # launch — much faster when there are many small parameter tensors,
+    # which is exactly LoRA (rank 8 × 68 layers = 136 tiny tensors).
+    use_fused = torch.cuda.is_available()
     optimizer = torch.optim.AdamW(
         [
             {
@@ -632,11 +638,13 @@ def build_optimizer(model: nn.Module, config: TrainingConfig):
                 "weight_decay": 0.0,  # No weight decay for embeddings
             },
         ],
+        fused=use_fused,
     )
 
     print(f"  LoRA+ optimizer: A lr={config.optimizer.lora_lr:.1e}, "
           f"B lr={lora_b_lr:.1e} (ratio={config.optimizer.lora_b_lr_ratio}), "
-          f"embeddings lr={config.optimizer.base_lr:.1e}")
+          f"embeddings lr={config.optimizer.base_lr:.1e}, "
+          f"fused={use_fused}")
     return optimizer
 
 
