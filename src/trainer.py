@@ -282,6 +282,32 @@ class SAM2TrainingWrapper(nn.Module):
         if use_memory_path:
             self.model.use_mask_input_as_output_without_sam = False
 
+            # CRITICAL: disable the obj-score nuke. Inside
+            # SAM2Base._forward_sam_heads (lines 359-368), when
+            # pred_obj_scores=True, the predicted mask logits are replaced
+            # with NO_OBJ_SCORE (a large negative constant) wherever the
+            # obj_score head outputs <= 0. This is an inference-time
+            # consistency rule: "if the model says no object, force the
+            # mask to empty."
+            #
+            # During training the obj_score head is UNTRAINED in our setup
+            # (we don't surface pred_obj_scores to the loss in either path).
+            # So obj_score outputs ~random near zero -> every sample where
+            # it lands <0 has its mask nuked -> Dice loss = 1.0,
+            # supervoxel = ~30, and the torch.where has no gradient through
+            # the boolean condition so the mask decoder receives no signal.
+            # The model can NEVER learn from this state.
+            #
+            # Setting pred_obj_scores=False skips both the nuke and the
+            # obj_ptr-with-no_obj_ptr soft mixing (lines 393-403). The
+            # latter is fine to skip during training — obj_ptr is learned
+            # directly via gradient through the memory bank.
+            #
+            # The simple path didn't hit this because it bypassed
+            # _forward_sam_heads entirely and called sam_mask_decoder
+            # directly.
+            self.model.pred_obj_scores = False
+
     def forward(
         self,
         batch: BatchedVideoDatapoint,
