@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 
 @dataclass
 class LoRAConfig:
-    rank: int = 8
-    alpha: float = 16.0
+    rank: int = 16
+    alpha: float = 32.0
     dropout: float = 0.10
 
 
@@ -76,8 +76,8 @@ class LossConfig:
     # Loss weights - balanced for better generalization
     loss_mask_weight: float = 5.0  # Focal loss (reduced from 20.0 to balance with Dice/IoU)
     loss_dice_weight: float = 2.0  # Standard Dice for shape matching
-    loss_cbdice_weight: float = 3.0  # cbDice for skeleton topology — emphasised for tree-like neurons
-    loss_supervoxel_weight: float = 1.0  # Supervoxel for connectivity preservation
+    loss_cbdice_weight: float = 5.0  # cbDice for skeleton topology — strengthened to push connectivity
+    loss_supervoxel_weight: float = 0.3  # Supervoxel for connectivity preservation — small weight, retry after dataset grew
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
@@ -87,10 +87,13 @@ class LossConfig:
     use_cbdice: bool = True  # Enable skeleton topology-preserving loss (cbDice)
     cbdice_num_iter: int = 5  # Iterations for soft skeletonization (reduced from 10 for MPS memory)
     # Supervoxel params
-    # Disabled: in the rank-4/dropout-0.25 run this loss sat at ~0.30 from
-    # epoch 4 onward and was 39% of val_loss without contributing to learning.
-    # Re-enable with a smaller weight if topology regressions appear.
-    use_supervoxel: bool = False  # Enable connectivity-preserving loss
+    # Re-enabled at small weight (0.3) for Run 5. Previously disabled because
+    # the component sat flat at 0.30 — but that was on 12 videos with a
+    # different config. With 16 videos and the full memory_attention path
+    # active (Path B), it should contribute usefully. The diagnostics will
+    # tell us: if the per-component value drops below 0.20 across epochs,
+    # the loss is learning; if it sits flat again, disable.
+    use_supervoxel: bool = True  # Enable connectivity-preserving loss
     # Topology resolution: resolution at which topology losses are computed
     # (cbDice skeleton/EDT + supervoxel connectivity analysis).
     # Lower = faster. 256 is 16× faster than 1024 with minimal quality loss.
@@ -119,8 +122,8 @@ class TrainingConfig:
     loss: LossConfig = field(default_factory=LossConfig)
 
     # Training
-    batch_size: int = 2  # Increased from 1 for more stable gradients
-    num_epochs: int = 60
+    batch_size: int = 2  # Small batch for implicit regularization on a small dataset
+    num_epochs: int = 80  # Bumped from 60: with 16 videos + rank 16 the model has more to learn
     num_workers: int = 2
     seed: int = 42
     # Use mixed precision (bfloat16 on CUDA, float32 on MPS/CPU)
@@ -148,6 +151,15 @@ class TrainingConfig:
     # SAM2Train settings
     prob_to_use_pt_input: float = 0.0  # Use mask input
     num_init_cond_frames: int = 1  # Condition on 1 frame
+
+    # Forward-pass propagation path. When True, the wrapper uses SAM2's full
+    # track_step API — memory_attention conditioning + memory_encoder + SAM
+    # heads — so the LoRA adapters wrapped around memory_attention layers
+    # actually receive gradients. When False, falls back to the simplified
+    # path (interpolate previous prediction as a dense prompt on each frame),
+    # which is faster but leaves the memory_attention LoRAs inactive. Keep
+    # True unless you want to A/B compare against the legacy behavior.
+    use_memory_attention_path: bool = True
 
     # Logging
     log_every_n_steps: int = 10

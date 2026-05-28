@@ -122,6 +122,10 @@ def cmd_train(args):
     if args.supervoxel_weight is not None:
         config.loss.loss_supervoxel_weight = args.supervoxel_weight
 
+    # ----- Forward path -----
+    if args.no_memory_attention:
+        config.use_memory_attention_path = False
+
     # ----- Echo the resolved config so the SLURM log makes the source obvious -----
     print("\n=== Resolved training config ===")
     print(f"  lora.rank={config.lora.rank}, lora.alpha={config.lora.alpha}, "
@@ -135,7 +139,10 @@ def cmd_train(args):
     if config.data.val_videos:
         print(f"  data.val_videos={config.data.val_videos} (overrides val_fraction)")
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
-          f"use_supervoxel={config.loss.use_supervoxel}")
+          f"use_supervoxel={config.loss.use_supervoxel}, "
+          f"cbdice_weight={config.loss.loss_cbdice_weight}, "
+          f"supervoxel_weight={config.loss.loss_supervoxel_weight}")
+    print(f"  use_memory_attention_path={config.use_memory_attention_path}")
     print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
     if config.compile_encoder or config.compile_decoder:
         print(f"  compile_encoder={config.compile_encoder}, "
@@ -246,6 +253,15 @@ def main():
         "--compile-decoder",
         action="store_true",
         help="torch.compile the sam_mask_decoder (one-time 30s-2min compile cost)",
+    )
+    p_train.add_argument(
+        "--no-memory-attention",
+        action="store_true",
+        help=(
+            "Disable SAM 2's full memory_attention path; fall back to the "
+            "simplified previous-mask-as-prompt propagation. Useful for "
+            "A/B comparison only — the memory path is the recommended default."
+        ),
     )
 
     args = parser.parse_args()

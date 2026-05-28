@@ -259,28 +259,163 @@ class SAM2TrainingWrapper(nn.Module):
     4. Returns predicted masks for loss computation
     """
 
-    def __init__(self, sam2_model: nn.Module, num_frames: int = 8):
+    def __init__(
+        self,
+        sam2_model: nn.Module,
+        num_frames: int = 8,
+        use_memory_path: bool = True,
+    ):
         super().__init__()
         self.model = sam2_model
         self.num_frames = num_frames
+        self.use_memory_path = use_memory_path
+
+        # When the memory path is active, force the SAM decoder to be exercised
+        # on the conditioning frame too. By default SAM 2 has
+        # `use_mask_input_as_output_without_sam=True`, which on frame 0 routes
+        # the GT mask straight to output (logits = 20*mask - 10) and only calls
+        # the SAM decoder to extract an obj_ptr. Setting it to False makes the
+        # decoder produce frame 0's mask from features + the GT-as-dense-prompt,
+        # so the loss on frame 0 contributes a real gradient to the LoRA-adapted
+        # decoder. (The memory_encoder still ingests the predicted mask either
+        # way, so memory bank quality is comparable.)
+        if use_memory_path:
+            self.model.use_mask_input_as_output_without_sam = False
 
     def forward(
         self,
         batch: BatchedVideoDatapoint,
         precomputed_backbone_out: Optional[Dict] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass for training.
+        """Forward pass for training. Dispatches to the memory or simple path."""
+        if self.use_memory_path:
+            return self._forward_memory(batch, precomputed_backbone_out)
+        return self._forward_simple(batch, precomputed_backbone_out)
 
-        Args:
-            batch: BatchedVideoDatapoint with:
-                - images: [B, T, C, H, W] video frames
-                - masks: [B, T, N_obj, H, W] ground truth masks
-            precomputed_backbone_out: Optional dict from assemble_cached_backbone().
-                If provided, skips the image encoder entirely (10x faster).
+    # =====================================================================
+    # Path B: full memory_attention forward (SAM 2's track_step pipeline)
+    # =====================================================================
 
-        Returns:
-            Dict with:
-                - pred_masks: [B, T, N_obj, H, W] predicted mask logits
+    def _forward_memory(
+        self,
+        batch: BatchedVideoDatapoint,
+        precomputed_backbone_out: Optional[Dict] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Use SAM 2's track_step API for temporal propagation.
+
+        On each frame t, track_step
+          (a) conditions the current frame's features on past memory entries
+              via memory_attention (LoRA adapters there now receive gradients),
+          (b) runs the SAM decoder (with the GT mask as a dense prompt when
+              t == 0, or with no prompt for t >= 1 — memory provides context),
+          (c) encodes the prediction back into the memory bank for future frames.
+
+        Multi-object handling: we batch the per-clip features along the object
+        dim so a single track_step call processes batch B*N_obj. Each
+        (clip, object) entry of the batched tensors keeps its own memory in
+        the shared output_dict.
+        """
+        images = batch.images  # [B, T, C, H, W]
+        gt_masks = batch.masks  # [B, T, N_obj, H, W]
+        B, T, C, H, W = images.shape
+        N_obj = gt_masks.shape[2]
+        BN = B * N_obj
+
+        # 1. Image encoder forward (one pass over B*T frames).
+        # precomputed_backbone_out is supported and assumed to have the same
+        # B*T leading dim as a fresh forward_image() call would produce.
+        if precomputed_backbone_out is not None:
+            backbone_out_all = precomputed_backbone_out
+        else:
+            images_flat = images.view(B * T, C, H, W)
+            if images_flat.is_cuda:
+                images_flat = images_flat.contiguous(memory_format=torch.channels_last)
+            with torch.set_grad_enabled(self.training):
+                backbone_out_all = self.model.forward_image(images_flat)
+
+        # 2. GT mask for frame 0, in [B*N_obj, 1, H, W] format expected by
+        # _forward_sam_heads (asserted at sam2_base.py:324).
+        frame0_masks = gt_masks[:, 0].reshape(BN, 1, H, W).float()
+
+        # 3. Single output_dict shared across all objects: each (clip, object)
+        # slice in the BN batch dim maintains its own memory bank entries.
+        output_dict: Dict[str, Dict[int, Dict]] = {
+            "cond_frame_outputs": {},
+            "non_cond_frame_outputs": {},
+        }
+        per_frame_preds = []
+
+        for t in range(T):
+            # Slice frame-t features out of the B*T-batched backbone_out.
+            # Layout is [clip0_t0, clip0_t1, ..., clip0_t(T-1), clip1_t0, ...]
+            # so frame t across clips is at indices [t, T+t, 2T+t, ...] == [t::T].
+            backbone_t = {
+                "backbone_fpn": [
+                    feat[t::T] for feat in backbone_out_all["backbone_fpn"]
+                ],
+                "vision_pos_enc": [
+                    pe[t::T] for pe in backbone_out_all["vision_pos_enc"]
+                ],
+            }
+            _, vf, vpe, fs = self.model._prepare_backbone_features(backbone_t)
+
+            # vf and vpe come out as lists of [HW, B, C] (one per FPN level).
+            # Expand the per-clip batch dim to per-(clip, object) via
+            # repeat_interleave along dim=1. Each (clip, object) entry will
+            # share the same image features (correct: same frame, different
+            # mask prompt) but get its own memory bank slot.
+            vf_bn = [x.repeat_interleave(N_obj, dim=1) for x in vf]
+            vpe_bn = [x.repeat_interleave(N_obj, dim=1) for x in vpe]
+
+            mask_input = frame0_masks if t == 0 else None
+
+            out_t = self.model.track_step(
+                frame_idx=t,
+                is_init_cond_frame=(t == 0),
+                current_vision_feats=vf_bn,
+                current_vision_pos_embeds=vpe_bn,
+                feat_sizes=fs,
+                point_inputs=None,
+                mask_inputs=mask_input,
+                output_dict=output_dict,
+                num_frames=T,
+                run_mem_encoder=True,
+            )
+
+            # Store the LIVE tensor dict — gradients must flow back through
+            # the memory bank into prior frames' decoder + memory_encoder.
+            storage_key = (
+                "cond_frame_outputs" if t == 0 else "non_cond_frame_outputs"
+            )
+            output_dict[storage_key][t] = out_t
+
+            # pred_masks_high_res is [BN, 1, H, W]
+            per_frame_preds.append(out_t["pred_masks_high_res"])
+
+        # Stack T frames: [BN, T, 1, H, W] -> squeeze -> [BN, T, H, W]
+        preds = torch.stack(per_frame_preds, dim=1).squeeze(2)
+        # Unflatten (clip, object) and reorder to [B, T, N_obj, H, W]
+        pred_masks = (
+            preds.view(B, N_obj, T, H, W)
+                 .permute(0, 2, 1, 3, 4)
+                 .contiguous()
+        )
+
+        return {"pred_masks": pred_masks}
+
+    # =====================================================================
+    # Legacy "simple" forward (interpolated-mask propagation). Kept as a
+    # fallback / A-B comparison via config.use_memory_attention_path=False.
+    # =====================================================================
+
+    def _forward_simple(
+        self,
+        batch: BatchedVideoDatapoint,
+        precomputed_backbone_out: Optional[Dict] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Original simplified propagation: feed previous predicted mask as a
+        dense prompt to the SAM decoder each step. Does NOT use memory_attention,
+        so the LoRA adapters wrapped around memory_attention layers stay inactive.
         """
         images = batch.images  # [B, T, C, H, W]
         gt_masks = batch.masks  # [B, T, N_obj, H, W]
@@ -542,7 +677,15 @@ def build_training_model(config: TrainingConfig, device: str):
             print(f"    - {name}")
 
     # Wrap for training
-    training_model = SAM2TrainingWrapper(model, num_frames=config.data.num_frames)
+    training_model = SAM2TrainingWrapper(
+        model,
+        num_frames=config.data.num_frames,
+        use_memory_path=config.use_memory_attention_path,
+    )
+    if config.use_memory_attention_path:
+        print("  Forward pass: full memory_attention path (track_step API)")
+    else:
+        print("  Forward pass: simplified propagation (legacy)")
 
     # Count parameters
     total_params = sum(p.numel() for p in training_model.parameters())
