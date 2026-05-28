@@ -96,8 +96,8 @@ CLI flags default to `None` and only override config when you pass them explicit
 
 | field | value | notes |
 |---|---|---|
-| `rank` | 8 | LoRA rank — power of 2, GPU-friendly |
-| `alpha` | 16.0 | scale = α/r = 2.0 |
+| `rank` | 16 | LoRA rank — bumped from 8 with the 16-video dataset for more adapter capacity |
+| `alpha` | 32.0 | scale = α/r = 2.0 (preserved as rank doubled) |
 | `dropout` | 0.10 | adapter dropout |
 
 **Optimizer (`OptimizerConfig`)**
@@ -119,8 +119,9 @@ CLI flags default to `None` and only override config when you pass them explicit
 |---|---|---|
 | `loss_mask_weight` (focal) | 5.0 | pixel-level loss |
 | `loss_dice_weight` | 2.0 | region overlap |
-| `loss_cbdice_weight` | 3.0 | skeleton topology — bumped for tree-like neurons |
-| `use_supervoxel` | **False** | disabled — was flat at 0.30 in earlier runs without contributing to learning |
+| `loss_cbdice_weight` | 5.0 | skeleton topology — strengthened to push connectivity in tree-like neurons |
+| `use_supervoxel` | True | **re-enabled** at small weight (0.3) for the 16-video dataset and the Path-B forward pass |
+| `loss_supervoxel_weight` | 0.3 | small weight; diagnostics will tell us if it's actually moving |
 | `loss_iou_weight` | 1.0 | IoU prediction calibration |
 | `loss_class_weight` | 1.0 | object-presence classifier |
 
@@ -131,12 +132,28 @@ CLI flags default to `None` and only override config when you pass them explicit
 | `image_size` | 1024 | SAM2 native resolution |
 | `num_frames` | 8 | clip length (B×T = 16, GPU-friendly) |
 | `max_objects` | 3 | per clip |
-| `batch_size` | 2 | small for generalization on tiny dataset |
-| `val_fraction` | 0.25 | 3 of 12 videos held out (stable mean) |
+| `batch_size` | 2 | small for generalization on a small dataset |
+| `val_fraction` | 0.25 | 4 of 16 videos held out (stable mean) |
 | `val_videos` | None | when set, overrides val_fraction with explicit list |
 | `precompute_features` | False | full augmentation pipeline (rotation, shear, brightness, contrast) is enabled |
 | `clip_stride` | 4 | dataset stride between clip starts |
 | `cache_in_memory` | True | all frames cached at startup |
+
+**Training (`TrainingConfig`)**
+
+| field | value | notes |
+|---|---|---|
+| `num_epochs` | 80 | bumped from 60 with the 16-video dataset + rank 16 |
+| `use_memory_attention_path` | True | use SAM 2's real `track_step` API for temporal propagation (Path B) |
+
+**Forward-pass architecture**
+
+The training wrapper now defaults to using SAM 2's full memory-attention pipeline (Path B). On each frame `t`, the wrapper calls `model.track_step(...)` which:
+1. Conditions current-frame features on past memory entries via `memory_attention` — this is where the 40 LoRA adapters on memory_attention finally receive gradients.
+2. Runs the SAM mask decoder (GT mask as dense prompt on `t=0`, no prompt on `t≥1` — memory provides the context).
+3. Encodes the prediction back into the memory bank via `memory_encoder` for future frames.
+
+The simplified previous-mask-as-prompt path (used in runs 1–4) is retained as `_forward_simple()` and selectable via `--no-memory-attention` for A/B comparison.
 
 **Performance (auto-applied on CUDA)**
 
@@ -177,6 +194,7 @@ CLI flags default to `None` and only override config when you pass them explicit
 | `--use-imagenet-stats` | False | use ImageNet mean/std instead of dataset stats.json |
 | `--compile-encoder` | False | `torch.compile` the image encoder |
 | `--compile-decoder` | False | `torch.compile` the SAM mask decoder |
+| `--no-memory-attention` | False | fall back to legacy simplified propagation (A/B comparison only) |
 
 ## What gets logged
 

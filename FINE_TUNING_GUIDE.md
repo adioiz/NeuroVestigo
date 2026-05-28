@@ -1011,13 +1011,13 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 
 | Category | Parameter | Value | Rationale |
 |----------|-----------|-------|-----------|
-| **LoRA** | rank | 8 | Sufficient expressiveness; power of 2 for GPU alignment |
-| | alpha | 16.0 | Scale = α/r = 2.0 |
-| | dropout | **0.10** | Light regularization (0.25 over-regularized; 0.05 underfit) |
+| **LoRA** | rank | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
+| | alpha | **32.0** | Scale = α/r = 2.0 (preserved as rank doubled) |
+| | dropout | 0.10 | Light regularization (0.25 over-regularized; 0.05 underfit) |
 | **Data** | image_size | 1024 | SAM 2 native resolution |
 | | num_frames | 8 | B×T = 16, GPU-friendly |
 | | max_objects | 3 | Typical max neurons per field of view |
-| | val_fraction | **0.25** | 3 of 12 videos held out — mean of 3 is more stable than mean of 2 |
+| | val_fraction | 0.25 | 4 of 16 videos held out — mean of 4 is stable on the 16-video dataset |
 | | val_videos | None | When set, overrides val_fraction with explicit list |
 | | clip_stride | 4 | Skip overlapping clips |
 | | precompute_features | **False** | Full pixel-level augmentation enabled (rotation, shear, brightness, contrast) |
@@ -1037,15 +1037,17 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | | fused | True | CUDA fused AdamW kernel |
 | **Loss** | focal weight | 5.0 | Pixel accuracy is primary objective |
 | | dice weight | 2.0 | Region shape quality |
-| | cbdice weight | **3.0** | Skeleton topology — bumped from 1.0 (neurons are tree-like) |
-| | use_supervoxel | **False** | Disabled — sat flat at 0.30 in earlier runs without contributing |
+| | cbdice weight | **5.0** | Skeleton topology — bumped from 3.0 in Run 5 to push connectivity |
+| | use_supervoxel | **True** | Re-enabled at small weight (0.3) for Run 5 with the 16-video dataset and Path-B forward |
+| | supervoxel weight | **0.3** | Small; disable again if diagnostics show flat trajectory |
 | | iou weight | 1.0 | Confidence calibration |
 | | class weight | 1.0 | Anti-hallucination |
 | | focal alpha | 0.25 | Balances class imbalance |
 | | focal gamma | 2.0 | Focuses on hard examples |
 | | topology_resolution | 256 | Resolution for topology losses (16× fewer pixels than 1024) |
-| **Training** | epochs | 60 | Sufficient for convergence with cosine schedule |
-| | batch_size | 2 | Small batch → implicit regularization on tiny dataset |
+| **Training** | epochs | **80** | Bumped from 60: 16-video dataset + rank 16 — more to learn |
+| | use_memory_attention_path | **True** | Path B: SAM 2's real track_step API; activates the 40 memory_attention LoRA adapters that were inactive in runs 1–4 |
+| | batch_size | 2 | Small batch → implicit regularization on small dataset |
 | | seed | 42 | Reproducibility |
 | | AMP | bfloat16 | 2× speed, 2× memory; no GradScaler needed |
 | **B200 perf** | channels_last | True (auto) | Conv-heavy paths use cuDNN fast path |

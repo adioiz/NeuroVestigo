@@ -1,22 +1,27 @@
 # Training Methods Cheat Sheet
 
-**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (~10 videos), tuned for NVIDIA B200.
+**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (~16 videos), tuned for NVIDIA B200.
 
 ---
 
 ## 1. Architecture: What's Frozen vs. Trained
 
 ```
-Frame t ──► [Image Encoder (Hiera-tiny)] ──► Features ──► [Mask Decoder] ──► Mask
-                   FROZEN                                  LoRA-adapted
-                  (~25M params)                          + unfrozen embeddings
+Frame t ──► [Image Encoder (Hiera-tiny)] ──► Features ──► [Memory Attention] ──► [Mask Decoder] ──► Mask
+                   FROZEN                                   LoRA-adapted          LoRA-adapted
+                  (~25M params)                            + memory_encoder    + unfrozen embeddings
 ```
 
-- **Frozen:** Image encoder (Hiera backbone). Pretrained features transfer well to microscopy without modification; retraining on 10 videos would erase them.
+- **Frozen:** Image encoder (Hiera backbone). Pretrained features transfer well to microscopy without modification; retraining on 16 videos would erase them.
 - **LoRA-adapted:** Mask decoder transformer (self-attn + cross-attn) and `memory_attention` layers (Q, K, V, Out projections + FFN linears) — 68 layers total.
 - **Unfrozen embeddings:** `maskmem_tpos_enc`, `no_mem_embed`, `no_obj_ptr`, `obj_ptr_proj`, `obj_ptr_tpos_proj` (12 small parameter tensors). These control temporal reasoning and object tracking.
 
-**Note on `memory_attention`:** the `SAM2TrainingWrapper` in `src/trainer.py` uses a *simplified* mask-prompt propagation between frames (interpolating the previous prediction as a dense prompt) rather than calling SAM2's full `memory_attention.forward`. So although LoRA wraps memory_attention layers, those adapters do not receive gradients in our training. This is a known simplification.
+**Forward path (`use_memory_attention_path=True`, default since Run 5):** the wrapper now calls SAM 2's real `track_step(...)` API per frame. On frame `t`:
+1. `memory_attention` conditions current-frame features on past memory bank entries — the 40 LoRA adapters wrapped around memory_attention now actually receive gradients.
+2. The SAM mask decoder runs (GT mask as dense prompt on `t=0`; no prompt on `t≥1`).
+3. `memory_encoder` encodes the prediction back into the memory bank for future frames.
+
+The legacy simplified path (previous-mask-as-dense-prompt, used in runs 1–4) is retained as `_forward_simple()` and is selectable via `--no-memory-attention` for A/B comparison.
 
 ---
 
@@ -24,8 +29,8 @@ Frame t ──► [Image Encoder (Hiera-tiny)] ──► Features ──► [Mas
 
 | Parameter | Value | Why |
 |---|---|---|
-| Rank (r) | **8** | Sufficient expressiveness; power of 2 for GPU alignment |
-| Alpha (α) | **16.0** | Scale = α/r = 2.0 |
+| Rank (r) | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
+| Alpha (α) | **32.0** | Scale = α/r = 2.0 (preserved as rank doubled) |
 | Dropout | **0.10** | Light regularization (over-regularizing previously closed train/val gap from below) |
 | B/A LR ratio | **16.0** | LoRA+ asymmetric LR — see below |
 
@@ -39,22 +44,20 @@ Frame t ──► [Image Encoder (Hiera-tiny)] ──► Features ──► [Mas
 - Mask decoder: `self_attn`, `cross_attn_token_to_image`, `cross_attn_image_to_token`, `final_attn` → Q, K, V, Out projections (across 2 transformer layers + final attn block)
 - Memory attention: `self_attn`, `cross_attn_image` → Q, K, V, Out + `linear1`, `linear2` (FFN) (across 4 layers — wrapped but not active in our forward path)
 
-**Trainable params:** ~12% of total model (5M of 39M). Encoder is the other 88%.
+**Trainable params:** ~25% of total model with rank 16 (~10M of ~40M). Roughly double the rank-8 count because LoRA params scale linearly with rank. Encoder is still frozen and contributes none of these.
 
 ---
 
 ## 3. Loss Functions
 
-**Combined loss (current weights):** `L = 5·L_focal + 2·L_dice + 3·L_cbDice + 1·L_iou + 1·L_class`
-
-(Supervoxel loss is **disabled** — see "Supervoxel" row below.)
+**Combined loss (current weights):** `L = 5·L_focal + 2·L_dice + 5·L_cbDice + 0.3·L_supervoxel + 1·L_iou + 1·L_class`
 
 | Loss | Weight | Formula | Why |
 |---|---|---|---|
 | **Focal** | 5.0 | FL = −α(1−p_t)^γ log(p_t), α=0.25, γ=2.0 | Pixel-level accuracy; down-weights easy background (≈99% of image) |
 | **Dice** | 2.0 | 1 − 2·\|P∩G\|/(\|P\|+\|G\|) | Region-level shape overlap |
-| **cbDice** | **3.0** | 1 − 2·W_t·Tprec·W_p·Tsens / (W_t·Tprec + W_p·Tsens) on skeletons | Skeleton topology with boundary weighting; thin branches get higher weight via inverse-radius EDT. Bumped from 1.0 — neurons are tree-like, topology matters more than bulk pixels |
-| **Supervoxel** | (off) | — | **Disabled by default**: in earlier runs sat flat at ~0.30 from epoch 4 onward without contributing to learning. Re-enable via `--supervoxel-weight F` if topology regressions appear |
+| **cbDice** | **5.0** | 1 − 2·W_t·Tprec·W_p·Tsens / (W_t·Tprec + W_p·Tsens) on skeletons | Skeleton topology with boundary weighting; thin branches get higher weight via inverse-radius EDT. Bumped from 3.0 in Run 5 to push connectivity — predictions in Run 4 occasionally had broken thin branches |
+| **Supervoxel** | **0.3** | (1−α)L₀ + α[β·∑L₀(neg_crit) + (1−β)·∑L₀(pos_crit)] | **Re-enabled at small weight** for Run 5 after the dataset grew to 16 videos and Path B (memory_attention) became active. Previously disabled because the component sat flat at 0.30; if it sits flat again here we'll disable. Diagnostics will tell us within a few epochs |
 | **IoU** | 1.0 | \|predicted_iou − actual_iou\| | Confidence calibration |
 | **Class** | 1.0 | BCE(pred_obj_score, obj_present) | Anti-hallucination on empty frames |
 
@@ -118,8 +121,8 @@ All spatial transforms use **identical parameters across all frames** in a clip 
 | Image size | 1024×1024 | SAM 2 native resolution |
 | Frames per clip | 8 | B×T = 16 — power of 2, GPU-friendly |
 | Max objects | 3 | Typical neuron count per field of view |
-| Train/val split | **75/25** | 9 train / 3 val videos — mean of 3 is more stable than mean of 2 |
-| Batch size | 2 | Small batch → implicit regularization on a tiny dataset |
+| Train/val split | **75/25** | 12 train / 4 val videos with 16 labelled neurons (mean of 4 — even more stable than mean of 3) |
+| Batch size | 2 | Small batch → implicit regularization on a small dataset |
 | Normalization | Dataset-specific mean/std | Microscopy ≠ ImageNet distribution |
 
 **Empty mask frames included** — teaches the model that "no neuron" is a valid output.

@@ -144,8 +144,8 @@ All hyperparameters organized as Python dataclasses.
 ```python
 @dataclass
 class LoRAConfig:
-    rank: int = 8           # r in the LoRA paper
-    alpha: float = 16.0     # α scaling factor
+    rank: int = 16          # r in the LoRA paper (bumped from 8 for the 16-video dataset)
+    alpha: float = 32.0     # α scaling factor (kept α/r = 2.0)
     dropout: float = 0.10   # Regularization
 ```
 
@@ -156,10 +156,12 @@ The LoRA forward pass is:
 y = W₀·x + (α/r)·B·A·x
 ```
 
-- `rank = 8`: Matrix A has shape (8 × input_dim), B has shape (output_dim × 8)
-- `alpha = 16.0`: Scaling factor
-- `scale = alpha/rank = 16/8 = 2.0`: How much LoRA influences output
+- `rank = 16`: Matrix A has shape (16 × input_dim), B has shape (output_dim × 16)
+- `alpha = 32.0`: Scaling factor
+- `scale = alpha/rank = 32/16 = 2.0`: How much LoRA influences output (unchanged from the rank-8 setting)
 - `dropout = 0.10`: 10% of inputs are randomly zeroed during training. Tuned: 0.25 over-regularized (closed train/val gap from below), 0.05 underfit, 0.10 is the sweet spot.
+
+**Why rank 16 now (was 8 through Run 4):** With the dataset grown from 12 to 16 labelled videos, the overfit risk from a bigger adapter is lower, and Runs 1–4 saw the model behaving very similarly to the base SAM 2 — suggesting more adapter capacity could let the fine-tuned model deviate more from the pretrained behaviour. Trainable parameter count roughly doubles (≈5M → ≈10M).
 
 ---
 
@@ -294,22 +296,26 @@ This prevents training instability.
 class LossConfig:
     loss_mask_weight: float = 5.0       # Focal loss weight
     loss_dice_weight: float = 2.0       # Dice loss weight
-    loss_cbdice_weight: float = 3.0     # cbDice for skeleton topology
-    loss_supervoxel_weight: float = 1.0 # Supervoxel weight (only used if enabled)
+    loss_cbdice_weight: float = 5.0     # cbDice for skeleton topology (bumped from 3.0 in Run 5)
+    loss_supervoxel_weight: float = 0.3 # Supervoxel weight — small, re-enabled in Run 5
     loss_iou_weight: float = 1.0        # IoU prediction loss
     loss_class_weight: float = 1.0      # Object presence loss
     focal_alpha: float = 0.25
     focal_gamma: float = 2.0
     use_cbdice: bool = True
-    use_supervoxel: bool = False        # DISABLED — see note below
+    use_supervoxel: bool = True         # Re-enabled in Run 5 — see note below
     topology_resolution: int = 256
 ```
 
-**Why `loss_cbdice_weight = 3.0` (was 1.0)?**
-Neurons are tree-like — topology fidelity matters more than bulk pixel overlap. Diagnostic per-component logging in earlier runs showed cbdice unweighted was ~0.056 on val (small absolute value, weight×value = 0.056) while dice was 0.21 weighted ×2 = 0.42. Bumping cbDice weight 3× gave the model a real gradient on topology — the cbdice value dropped from 0.056 → 0.016 in the next run.
+**Why `loss_cbdice_weight = 5.0` (was 3.0 in Run 4, 1.0 originally)?**
+Neurons are tree-like — topology fidelity matters more than bulk pixel overlap. Diagnostic per-component logging showed the cbDice value drop from 0.056 (weight 1.0) to 0.016 (weight 3.0) to ~0.008 (weight 3.0, more training). Run 5 bumps to 5.0 because Run 4 predictions still showed broken thin branches in user inspection. The user-reported "lack of connectivity" issue is what this weight targets.
 
-**Why `use_supervoxel = False`?**
-In earlier runs the supervoxel loss sat flat at ~0.30 from epoch 4 onward, never moved, and contributed 39% of val_loss without contributing to learning. Removing it freed gradient budget for the other losses with no quality regression. Re-enable with `--supervoxel-weight F` if topology regressions appear later.
+**Why `use_supervoxel = True` again?**
+Was disabled in Run 3 after sitting flat at 0.30 for many epochs. Re-enabled in Run 5 with a smaller weight (0.3 instead of 1.0) for two reasons:
+1. The dataset grew from 12 to 16 videos — the previous behaviour may have been an undersampling artefact.
+2. Path B (real `memory_attention`) means the forward pass now produces temporally coherent predictions; the connectivity signal supervoxel measures might finally be learnable.
+
+Diagnostics will show within ~5 epochs whether the per-component value drops below 0.20. If it stays flat at 0.30, disable again.
 
 **Why `topology_resolution = 256`?**
 
@@ -1377,53 +1383,53 @@ def detect_device() -> str:
 
 ## Class: `SAM2TrainingWrapper`
 
-Since Meta's `SAM2Train` class is not in the pip package, we wrap the standard SAM2 model for training:
+Since Meta's `SAM2Train` class is not in the pip package, we wrap the standard SAM 2 model for training. **As of Run 5**, the wrapper dispatches to one of two forward paths:
 
 ```python
 class SAM2TrainingWrapper(nn.Module):
-    """Wrapper that adapts SAM2Base for training with video clips."""
+    """Wrapper that adapts SAM2Base for training with video clips.
 
-    def __init__(self, sam2_model: nn.Module, num_frames: int = 8):
+    Has two forward paths:
+    - _forward_memory (default): uses SAM2Base.track_step → memory_attention
+      conditioning + SAM heads + memory_encoder. All 68 LoRA adapters
+      receive gradients including the 40 in memory_attention.
+    - _forward_simple (legacy): feeds the previous predicted mask as a
+      dense prompt to the SAM decoder each step. Faster but the
+      memory_attention LoRA adapters never receive gradients.
+    """
+
+    def __init__(self, sam2_model, num_frames=8, use_memory_path=True):
         super().__init__()
         self.model = sam2_model
         self.num_frames = num_frames
+        self.use_memory_path = use_memory_path
+        if use_memory_path:
+            # Force the SAM decoder to be exercised on the conditioning frame:
+            # by default SAM2 has use_mask_input_as_output_without_sam=True
+            # which routes the GT mask straight to output on frame 0.
+            self.model.use_mask_input_as_output_without_sam = False
 
     def forward(self, batch, precomputed_backbone_out=None):
-        images = batch.images  # [B, T, C, H, W]
-        gt_masks = batch.masks  # [B, T, N_obj, H, W]
-
-        # 1. Use precomputed features or run image encoder
-        if precomputed_backbone_out is not None:
-            backbone_out = precomputed_backbone_out  # Skip encoder (10x faster)
-        else:
-            images_flat = images.view(B * T, C, H, W)
-            backbone_out = self.model.forward_image(images_flat)
-
-        # 2. Get features and reshape to video format
-        feat = self._extract_features(backbone_out)
-        feat = feat.view(B, T, C_feat, H_feat, W_feat)
-
-        # 3. For each object, propagate masks through time
-        for obj_idx in range(N_obj):
-            for t in range(T):
-                if t == 0:
-                    # Use GT mask as prompt
-                    mask_input = F.interpolate(gt_masks[:, 0, obj_idx], ...)
-                else:
-                    # Use previous prediction as memory
-                    mask_input = F.interpolate(prev_pred, ...)
-
-                pred_mask = self._decode_mask(frame_feat, mask_input)
-                ...
-
-        return {"pred_masks": pred_masks}
+        if self.use_memory_path:
+            return self._forward_memory(batch, precomputed_backbone_out)
+        return self._forward_simple(batch, precomputed_backbone_out)
 ```
 
-**Why we need this wrapper:**
-- Standard `build_sam2()` returns a model for inference
-- Training requires a forward pass that takes video batches and returns mask predictions
-- The wrapper handles frame-by-frame encoding and mask propagation
-- The `precomputed_backbone_out` parameter enables feature precomputation (10x speedup)
+### Path B forward (`_forward_memory`, default since Run 5)
+
+For each frame `t = 0..T-1`:
+1. **Slice features** for frame `t` out of the B*T-batched encoder output.
+2. **Expand to (clip × object)** via `repeat_interleave`. Each `(clip, object)` entry gets its own memory bank slot.
+3. **Call `model.track_step(...)`** with `is_init_cond_frame=(t==0)`. On frame 0 the GT mask is the dense prompt; on later frames `mask_inputs=None` and memory_attention provides the temporal context from the bank.
+4. **Store the live output dict** under `cond_frame_outputs` (t=0) or `non_cond_frame_outputs` (t>0). Gradients must flow through the bank, so we do NOT detach.
+
+The result `out_t["pred_masks_high_res"]` has shape `[B*N_obj, 1, H, W]`. We stack T frames and reshape to `[B, T, N_obj, H, W]`.
+
+### Path A forward (`_forward_simple`, legacy)
+
+Retained for A/B comparison. Activated by `use_memory_attention_path=False` or `--no-memory-attention`. Loops over objects then frames; on frame 0 uses the GT mask as a dense prompt, on later frames interpolates the previously predicted mask as the prompt. This is what Runs 1–4 used.
+
+**Why both paths exist:** the simplified path is faster (no memory bank, no temporal cross-attention) and was easier to get correct first. It also gives a clean baseline to measure the value-add of memory_attention on this dataset.
 
 ---
 
@@ -1447,8 +1453,13 @@ def build_training_model(config, device):
     # 3. Apply LoRA adapters
     apply_lora(model, target_patterns=SAM2_LORA_TARGETS, ...)
 
-    # 4. Wrap for training
-    training_model = SAM2TrainingWrapper(model, num_frames=config.data.num_frames)
+    # 4. Wrap for training (Path B by default — uses SAM 2's full
+    #    track_step API so memory_attention LoRA adapters actually train)
+    training_model = SAM2TrainingWrapper(
+        model,
+        num_frames=config.data.num_frames,
+        use_memory_path=config.use_memory_attention_path,
+    )
 
     # 5. Build loss function (from our local implementation)
     loss_fn = MultiStepMultiMasksAndIous(...)
@@ -1898,7 +1909,7 @@ After reading this document, you should be able to explain:
 
 1. **Why LoRA?** — Parameter-efficient fine-tuning that avoids overfitting with small datasets
 2. **LoRA math:** `y = W₀·x + (α/r)·B·A·x`, B initialized to zeros
-3. **Why those specific layers?** — Mask decoder (what to segment) + memory attention LoRA (wrapped but bypassed by our simplified mask-prompt propagation)
+3. **Why those specific layers?** — Mask decoder (what to segment) + memory_attention (temporal propagation). Both are LoRA-adapted and **both are now actively trained** since Run 5 introduced Path B (the full `track_step` API). In Runs 1–4 the wrapper used a simplified previous-mask-as-prompt propagation that bypassed memory_attention entirely.
 4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`
