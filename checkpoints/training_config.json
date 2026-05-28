@@ -8,10 +8,13 @@
   },
   "data": {
     "training_data_dir": "training_data",
-    "num_frames": 4,
+    "num_frames": 8,
     "image_size": 1024,
     "max_objects": 3,
-    "val_fraction": 0.2
+    "val_fraction": 0.2,
+    "clip_stride": 4,
+    "cache_in_memory": true,
+    "precompute_features": true
   },
   "augmentation": {
     "horizontal_flip_p": 0.5,
@@ -26,6 +29,7 @@
   "optimizer": {
     "base_lr": 1e-05,
     "lora_lr": 0.0001,
+    "lora_b_lr_ratio": 16.0,
     "weight_decay": 0.1,
     "max_grad_norm": 1.0,
     "warmup_epochs": 1,
@@ -35,21 +39,23 @@
   "loss": {
     "loss_mask_weight": 5.0,
     "loss_dice_weight": 2.0,
-    "loss_cldice_weight": 1.0,
+    "loss_cbdice_weight": 1.0,
+    "loss_supervoxel_weight": 1.0,
     "loss_iou_weight": 1.0,
     "loss_class_weight": 1.0,
     "focal_alpha": 0.25,
     "focal_gamma": 2.0,
-    "use_cldice": false,
-    "cldice_num_iter": 5
+    "use_cbdice": false,
+    "cbdice_num_iter": 5,
+    "use_supervoxel": false
   },
   "batch_size": 2,
-  "num_epochs": 6,
+  "num_epochs": 3,
   "num_workers": 2,
   "seed": 42,
   "use_amp": true,
   "val_every_n_epochs": 2,
-  "val_max_batches": 10,
+  "val_max_batches": 0,
   "early_stopping_patience": 10,
   "checkpoint_dir": "checkpoints",
   "save_best_only": true,
