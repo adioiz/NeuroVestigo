@@ -39,6 +39,7 @@ from src.lora import (
     get_trainable_parameters,
     save_lora_weights,
     SAM2_LORA_TARGETS,
+    HIERA_LAST_STAGE_LORA_TARGETS,
 )
 from src.neuron_dataset import (
     NeuronVideoDataset,
@@ -679,6 +680,26 @@ def build_training_model(config: TrainingConfig, device: str):
     print(f"  Wrapped {len(wrapped)} Linear layers with LoRA (rank={config.lora.rank})")
     for name in sorted(wrapped):
         print(f"    - {name}")
+
+    # Optional second LoRA pass on the Hiera encoder's last stage. Image
+    # encoder params are still frozen (set above); LoRALinear's A/B matrices
+    # are NEW parameters that default to requires_grad=True, so the
+    # adapters train while the underlying Hiera weights stay frozen. The
+    # gradient flows correctly into A and B via the LoRA forward path.
+    if config.lora.hiera_last_stage:
+        wrapped_hiera = apply_lora(
+            model,
+            target_patterns=HIERA_LAST_STAGE_LORA_TARGETS,
+            rank=config.lora.hiera_rank,
+            alpha=config.lora.hiera_alpha,
+            dropout=config.lora.dropout,
+        )
+        print(
+            f"  Wrapped {len(wrapped_hiera)} Hiera last-stage Linear layers "
+            f"with LoRA (rank={config.lora.hiera_rank})"
+        )
+        for name in sorted(wrapped_hiera):
+            print(f"    - {name}")
 
     # Unfreeze small learnable embeddings
     unfrozen_embeddings = []

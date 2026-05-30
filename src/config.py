@@ -10,6 +10,15 @@ class LoRAConfig:
     rank: int = 16
     alpha: float = 32.0
     dropout: float = 0.10
+    # Hiera encoder last-stage LoRA adaptation (Run 6 experiment).
+    # When True, applies a SECOND LoRA pass on the last 2 blocks of the
+    # Hiera trunk (the deepest, highest-dim features). This lets the model
+    # adapt its visual representation to microscopy without retraining the
+    # full encoder. Uses a smaller rank than the main LoRA because the
+    # 768-dim Hiera layers give more absolute capacity per rank unit.
+    hiera_last_stage: bool = True
+    hiera_rank: int = 8
+    hiera_alpha: float = 16.0  # keeps alpha/rank = 2.0 like the main LoRA
 
 
 @dataclass

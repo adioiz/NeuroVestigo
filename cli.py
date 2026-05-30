@@ -125,11 +125,16 @@ def cmd_train(args):
     # ----- Forward path -----
     if args.no_memory_attention:
         config.use_memory_attention_path = False
+    if args.no_hiera_last_stage:
+        config.lora.hiera_last_stage = False
 
     # ----- Echo the resolved config so the SLURM log makes the source obvious -----
     print("\n=== Resolved training config ===")
     print(f"  lora.rank={config.lora.rank}, lora.alpha={config.lora.alpha}, "
           f"lora.dropout={config.lora.dropout}")
+    print(f"  lora.hiera_last_stage={config.lora.hiera_last_stage}, "
+          f"hiera_rank={config.lora.hiera_rank}, "
+          f"hiera_alpha={config.lora.hiera_alpha}")
     print(f"  optimizer.lora_lr={config.optimizer.lora_lr:.1e}, "
           f"base_lr={config.optimizer.base_lr:.1e}, "
           f"weight_decay={config.optimizer.weight_decay}")
@@ -261,6 +266,15 @@ def main():
             "Disable SAM 2's full memory_attention path; fall back to the "
             "simplified previous-mask-as-prompt propagation. Useful for "
             "A/B comparison only — the memory path is the recommended default."
+        ),
+    )
+    p_train.add_argument(
+        "--no-hiera-last-stage",
+        action="store_true",
+        help=(
+            "Disable LoRA on the Hiera encoder's last stage. By default we "
+            "adapt the last 2 trunk blocks (encoder visual features); use this "
+            "for A/B comparison against the encoder-frozen baseline."
         ),
     )
 

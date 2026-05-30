@@ -81,6 +81,25 @@ SAM2_LORA_TARGETS = [
 ]
 
 
+# Hiera image-encoder last-stage targets. Hiera-tiny has stages [1, 2, 7, 2]
+# so 12 blocks total (indices 0..11). The last stage is blocks 10 and 11 —
+# the deepest, highest-dim (768-channel) features. These are the most
+# domain-specific representations in the encoder and the part most worth
+# adapting for microscopy (vs the early stages, which capture low-level
+# edges/textures that transfer fine from natural images).
+#
+# Each MultiScaleBlock has:
+#   .attn.qkv      — fused Q+K+V projection (in_dim -> 3 * out_dim)
+#   .attn.proj     — output projection
+#   .mlp.layers.0  — first MLP linear
+#   .mlp.layers.1  — second MLP linear
+# We LoRA-adapt all four per block (8 layers across the last 2 blocks).
+HIERA_LAST_STAGE_LORA_TARGETS = [
+    r"(model\.)?image_encoder\.trunk\.blocks\.(10|11)\.attn\.(qkv|proj)",
+    r"(model\.)?image_encoder\.trunk\.blocks\.(10|11)\.mlp\.layers\.\d+",
+]
+
+
 def _matches_any_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a module name matches any of the target patterns."""
     return any(re.fullmatch(p, name) for p in patterns)
