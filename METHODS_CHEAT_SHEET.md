@@ -8,12 +8,13 @@
 
 ```
 Frame t ──► [Image Encoder (Hiera-tiny)] ──► Features ──► [Memory Attention] ──► [Mask Decoder] ──► Mask
-                   FROZEN                                   LoRA-adapted          LoRA-adapted
-                  (~25M params)                            + memory_encoder    + unfrozen embeddings
+              FROZEN base + LoRA on                         LoRA-adapted          LoRA-adapted
+              last 2 trunk blocks (Run 6)                + memory_encoder    + unfrozen embeddings
 ```
 
-- **Frozen:** Image encoder (Hiera backbone). Pretrained features transfer well to microscopy without modification; retraining on 16 videos would erase them.
-- **LoRA-adapted:** Mask decoder transformer (self-attn + cross-attn) and `memory_attention` layers (Q, K, V, Out projections + FFN linears) — 68 layers total.
+- **Frozen base:** Image encoder (Hiera backbone) base weights stay frozen — but as of Run 6 the **last 2 trunk blocks** are LoRA-adapted on top. Adapter trains, base weights don't. 8 layers wrapped (attn.qkv, attn.proj, mlp.layers.{0,1} × 2 blocks).
+- **LoRA-adapted (main):** Mask decoder transformer (self-attn + cross-attn) and `memory_attention` layers (Q, K, V, Out projections + FFN linears) — 68 layers at rank 16.
+- **LoRA-adapted (encoder, Run 6):** Last 2 Hiera trunk blocks (the deepest, 768-dim features) — 8 layers at rank 8.
 - **Unfrozen embeddings:** `maskmem_tpos_enc`, `no_mem_embed`, `no_obj_ptr`, `obj_ptr_proj`, `obj_ptr_tpos_proj` (12 small parameter tensors). These control temporal reasoning and object tracking.
 
 **Forward path (`use_memory_attention_path=True`, default since Run 5):** the wrapper now calls SAM 2's real `track_step(...)` API per frame. On frame `t`:
@@ -27,12 +28,23 @@ The legacy simplified path (previous-mask-as-dense-prompt, used in runs 1–4) i
 
 ## 2. LoRA+ (Low-Rank Adaptation with Asymmetric LR)
 
+**Main LoRA (decoder + memory_attention):**
+
 | Parameter | Value | Why |
 |---|---|---|
 | Rank (r) | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
 | Alpha (α) | **32.0** | Scale = α/r = 2.0 (preserved as rank doubled) |
-| Dropout | **0.10** | Light regularization (over-regularizing previously closed train/val gap from below) |
+| Dropout | **0.10** | Light regularization |
 | B/A LR ratio | **16.0** | LoRA+ asymmetric LR — see below |
+
+**Hiera-encoder LoRA (last 2 trunk blocks, Run 6 addition):**
+
+| Parameter | Value | Why |
+|---|---|---|
+| Rank (r) | **8** | Smaller than main LoRA — 768-dim Hiera layers give more absolute capacity per rank, and encoder edits are most impactful so a smaller adapter is safer with 16 videos |
+| Alpha (α) | **16.0** | Scale = α/r = 2.0 (consistent with main LoRA) |
+| Dropout | 0.10 | shared with main LoRA |
+| Coverage | last 2 blocks (indices 10, 11) | The deepest features — most semantically loaded, most worth adapting for microscopy. Earlier blocks capture low-level edges/textures that transfer fine from natural images |
 
 **Formula:** `y = W₀x + (α/r) · B(A(dropout(x)))` where A∈ℝ^(r×d_in), B∈ℝ^(d_out×r)
 
@@ -44,7 +56,11 @@ The legacy simplified path (previous-mask-as-dense-prompt, used in runs 1–4) i
 - Mask decoder: `self_attn`, `cross_attn_token_to_image`, `cross_attn_image_to_token`, `final_attn` → Q, K, V, Out projections (across 2 transformer layers + final attn block)
 - Memory attention: `self_attn`, `cross_attn_image` → Q, K, V, Out + `linear1`, `linear2` (FFN) (across 4 layers — wrapped but not active in our forward path)
 
-**Trainable params:** ~25% of total model with rank 16 (~10M of ~40M). Roughly double the rank-8 count because LoRA params scale linearly with rank. Encoder is still frozen and contributes none of these.
+**Trainable params:**
+- Run 5 (main LoRA only, rank 16): ~5.4M (~14% of ~40M total)
+- Run 6 (main LoRA + Hiera last-stage LoRA): **~7.5M (~19%)**
+
+The Hiera encoder's base weights remain frozen — only the new LoRA A/B matrices on its last 2 blocks train.
 
 ---
 

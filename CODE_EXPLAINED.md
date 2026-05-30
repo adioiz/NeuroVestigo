@@ -144,9 +144,14 @@ All hyperparameters organized as Python dataclasses.
 ```python
 @dataclass
 class LoRAConfig:
-    rank: int = 16          # r in the LoRA paper (bumped from 8 for the 16-video dataset)
-    alpha: float = 32.0     # α scaling factor (kept α/r = 2.0)
-    dropout: float = 0.10   # Regularization
+    rank: int = 16              # Main LoRA rank — decoder + memory_attention
+    alpha: float = 32.0          # α scaling factor (kept α/r = 2.0)
+    dropout: float = 0.10        # Regularization
+
+    # Run 6 addition — LoRA on Hiera encoder's last stage
+    hiera_last_stage: bool = True
+    hiera_rank: int = 8          # Smaller rank for the 768-dim Hiera layers
+    hiera_alpha: float = 16.0    # Scale = α/r = 2.0 (consistent)
 ```
 
 **Mathematical background:**
@@ -158,10 +163,14 @@ y = W₀·x + (α/r)·B·A·x
 
 - `rank = 16`: Matrix A has shape (16 × input_dim), B has shape (output_dim × 16)
 - `alpha = 32.0`: Scaling factor
-- `scale = alpha/rank = 32/16 = 2.0`: How much LoRA influences output (unchanged from the rank-8 setting)
-- `dropout = 0.10`: 10% of inputs are randomly zeroed during training. Tuned: 0.25 over-regularized (closed train/val gap from below), 0.05 underfit, 0.10 is the sweet spot.
+- `scale = alpha/rank = 32/16 = 2.0`: How much LoRA influences output
+- `dropout = 0.10`: 10% of inputs are randomly zeroed during training. Tuned: 0.25 over-regularized, 0.05 underfit, 0.10 is the sweet spot.
 
-**Why rank 16 now (was 8 through Run 4):** With the dataset grown from 12 to 16 labelled videos, the overfit risk from a bigger adapter is lower, and Runs 1–4 saw the model behaving very similarly to the base SAM 2 — suggesting more adapter capacity could let the fine-tuned model deviate more from the pretrained behaviour. Trainable parameter count roughly doubles (≈5M → ≈10M).
+**Why rank 16 for main LoRA (was 8 through Run 4):** With the dataset grown to 16 videos, the overfit risk from a bigger adapter is lower, and Runs 1–4 saw the model behaving very similarly to the base SAM 2 — suggesting more adapter capacity could help. Trainable parameter count roughly doubles from rank 8.
+
+**Why Hiera last-stage LoRA in Run 6:** Run 5 (Path B + rank 16) reached val IoU 0.8295 with train_loss=0.395 > val_loss=0.282 — a wide reversed gap that signals capacity headroom, not overfit. Per-video performance was uniform (0.822/0.844/0.823), suggesting a representational ceiling rather than isolated hard cases. The frozen Hiera encoder was pretrained on natural images; its deepest features had never seen phase-contrast microscopy. Adapting the last 2 trunk blocks gives the model permission to adjust its visual representation to microscopy without fully unfreezing the encoder.
+
+**Why rank 8 (smaller than main) for Hiera:** Hiera's last-stage layers are 768-dim (vs 256 in the decoder/memory_attention). The same rank gives more absolute capacity per layer, and encoder edits are more impactful — so a smaller LoRA is the safer add given only 16 training videos. Coverage is exactly 8 layers: `attn.qkv`, `attn.proj`, `mlp.layers.0`, `mlp.layers.1` per block × 2 blocks.
 
 ---
 
@@ -449,7 +458,15 @@ SAM2_LORA_TARGETS = [
     r"memory_attention\.layers\.\d+\.cross_attn_image\.(q_proj|k_proj|v_proj|out_proj)",
     r"memory_attention\.layers\.\d+\.(linear1|linear2)",
 ]
+
+# Run 6 addition — Hiera encoder's last stage (deepest visual features)
+HIERA_LAST_STAGE_LORA_TARGETS = [
+    r"image_encoder\.trunk\.blocks\.(10|11)\.attn\.(qkv|proj)",
+    r"image_encoder\.trunk\.blocks\.(10|11)\.mlp\.layers\.\d+",
+]
 ```
+
+The Hiera target list matches the last 2 of the trunk's 12 blocks (stages `[1, 2, 7, 2]` → indices 10 and 11 are the last stage). Each `MultiScaleBlock` has `attn.qkv` (fused QKV projection), `attn.proj` (output projection), and `mlp.layers.{0,1}` (two MLP linears).
 
 **These are regex patterns.** Let me decode one:
 
@@ -1450,8 +1467,20 @@ def build_training_model(config, device):
         for p in model.image_encoder.parameters():
             p.requires_grad = False
 
-    # 3. Apply LoRA adapters
+    # 3. Apply main LoRA — mask decoder + memory_attention (rank 16)
     apply_lora(model, target_patterns=SAM2_LORA_TARGETS, ...)
+
+    # 3b. (Run 6) Apply second LoRA pass on the last 2 Hiera trunk
+    #     blocks. The encoder base weights stay frozen; LoRALinear's A/B
+    #     are NEW parameters that default to requires_grad=True, so the
+    #     adapters train while the base Hiera weights stay frozen.
+    if config.lora.hiera_last_stage:
+        apply_lora(
+            model,
+            target_patterns=HIERA_LAST_STAGE_LORA_TARGETS,
+            rank=config.lora.hiera_rank,  # 8 — smaller than main LoRA
+            alpha=config.lora.hiera_alpha,
+        )
 
     # 4. Wrap for training (Path B by default — uses SAM 2's full
     #    track_step API so memory_attention LoRA adapters actually train)
@@ -1909,7 +1938,7 @@ After reading this document, you should be able to explain:
 
 1. **Why LoRA?** — Parameter-efficient fine-tuning that avoids overfitting with small datasets
 2. **LoRA math:** `y = W₀·x + (α/r)·B·A·x`, B initialized to zeros
-3. **Why those specific layers?** — Mask decoder (what to segment) + memory_attention (temporal propagation). Both are LoRA-adapted and **both are now actively trained** since Run 5 introduced Path B (the full `track_step` API). In Runs 1–4 the wrapper used a simplified previous-mask-as-prompt propagation that bypassed memory_attention entirely.
+3. **Why those specific layers?** — Mask decoder (what to segment), memory_attention (temporal propagation), and **as of Run 6**, the last 2 blocks of the Hiera trunk (the deepest encoder features — domain adaptation for microscopy). The decoder + memory_attention are LoRA-adapted at rank 16; Hiera last-stage at rank 8. The encoder's base weights still stay frozen; only the new LoRA adapters train. In Runs 1–4 the wrapper used a simplified previous-mask-as-prompt propagation that bypassed memory_attention entirely.
 4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`

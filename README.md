@@ -96,9 +96,12 @@ CLI flags default to `None` and only override config when you pass them explicit
 
 | field | value | notes |
 |---|---|---|
-| `rank` | 16 | LoRA rank — bumped from 8 with the 16-video dataset for more adapter capacity |
-| `alpha` | 32.0 | scale = α/r = 2.0 (preserved as rank doubled) |
+| `rank` | 16 | LoRA rank for decoder + memory_attention layers |
+| `alpha` | 32.0 | scale = α/r = 2.0 |
 | `dropout` | 0.10 | adapter dropout |
+| `hiera_last_stage` | True | **Run 6 addition** — also LoRA-adapt the last 2 Hiera trunk blocks (deepest encoder features) |
+| `hiera_rank` | 8 | smaller rank for the wider 768-dim Hiera layers |
+| `hiera_alpha` | 16.0 | scale = α/r = 2.0 (consistent) |
 
 **Optimizer (`OptimizerConfig`)**
 
@@ -195,6 +198,7 @@ The simplified previous-mask-as-prompt path (used in runs 1–4) is retained as 
 | `--compile-encoder` | False | `torch.compile` the image encoder |
 | `--compile-decoder` | False | `torch.compile` the SAM mask decoder |
 | `--no-memory-attention` | False | fall back to legacy simplified propagation (A/B comparison only) |
+| `--no-hiera-last-stage` | False | disable LoRA on the Hiera last stage (A/B vs encoder-frozen baseline) |
 
 ## What gets logged
 

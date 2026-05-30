@@ -1011,9 +1011,12 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 
 | Category | Parameter | Value | Rationale |
 |----------|-----------|-------|-----------|
-| **LoRA** | rank | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
+| **LoRA (main)** | rank | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
 | | alpha | **32.0** | Scale = α/r = 2.0 (preserved as rank doubled) |
 | | dropout | 0.10 | Light regularization (0.25 over-regularized; 0.05 underfit) |
+| **LoRA (Hiera)** | hiera_last_stage | **True** | Run 6: LoRA on the last 2 Hiera trunk blocks (encoder visual features) |
+| | hiera_rank | **8** | Smaller than main LoRA — 768-dim layers, more capacity per rank |
+| | hiera_alpha | **16.0** | Scale = α/r = 2.0 (consistent) |
 | **Data** | image_size | 1024 | SAM 2 native resolution |
 | | num_frames | 8 | B×T = 16, GPU-friendly |
 | | max_objects | 3 | Typical max neurons per field of view |
