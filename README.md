@@ -136,7 +136,7 @@ CLI flags default to `None` and only override config when you pass them explicit
 | `num_frames` | 8 | clip length (B×T = 16, GPU-friendly) |
 | `max_objects` | 3 | per clip |
 | `batch_size` | 2 | small for generalization on a small dataset |
-| `val_fraction` | 0.25 | 4 of 16 videos held out (stable mean) |
+| `val_fraction` | 0.25 | 5 of 20 videos held out (stable mean) |
 | `val_videos` | None | when set, overrides val_fraction with explicit list |
 | `precompute_features` | False | full augmentation pipeline (rotation, shear, brightness, contrast) is enabled |
 | `clip_stride` | 4 | dataset stride between clip starts |
@@ -199,6 +199,29 @@ The simplified previous-mask-as-prompt path (used in runs 1–4) is retained as 
 | `--compile-decoder` | False | `torch.compile` the SAM mask decoder |
 | `--no-memory-attention` | False | fall back to legacy simplified propagation (A/B comparison only) |
 | `--no-hiera-last-stage` | False | disable LoRA on the Hiera last stage (A/B vs encoder-frozen baseline) |
+| `--resume PATH` | None | resume from a `train_state.pt` checkpoint (chain SLURM jobs under a wall-clock limit) |
+
+## Chained training across SLURM jobs
+
+Single-job training is capped by the cluster's wall-clock limit (e.g. 4 hours on the `B200-4h` partition — fits ~60 epochs at current step times, not 80–90). The `--resume` flag lets you split one logical training run across multiple jobs.
+
+How it works:
+- At the end of every epoch the trainer writes `checkpoints/train_state.pt` (model + optimiser + scheduler + counters).
+- Submitting a job with `--resume checkpoints/train_state.pt` restores everything and continues from `saved_epoch + 1`.
+- `lora_weights.pt` (best-IoU inference checkpoint) is unchanged and unaffected.
+
+Minimal sbatch pattern (auto-detects whether to resume or start fresh):
+
+```bash
+STATE_FILE=checkpoints/train_state.pt
+if [ -f "$STATE_FILE" ]; then
+    python -u cli.py train --epochs 90 --resume "$STATE_FILE"
+else
+    python -u cli.py train --epochs 90
+fi
+```
+
+Submit the script repeatedly until `num_epochs` is reached (or early stopping triggers). To begin a **new** training run later, delete `train_state.pt` first — otherwise the script silently resumes the old one.
 
 ## What gets logged
 

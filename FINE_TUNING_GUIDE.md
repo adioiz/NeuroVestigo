@@ -1020,7 +1020,7 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | **Data** | image_size | 1024 | SAM 2 native resolution |
 | | num_frames | 8 | B×T = 16, GPU-friendly |
 | | max_objects | 3 | Typical max neurons per field of view |
-| | val_fraction | 0.25 | 4 of 16 videos held out — mean of 4 is stable on the 16-video dataset |
+| | val_fraction | 0.25 | 5 of 20 videos held out — mean of 5 keeps the headline IoU stable run-to-run |
 | | val_videos | None | When set, overrides val_fraction with explicit list |
 | | clip_stride | 4 | Skip overlapping clips |
 | | precompute_features | **False** | Full pixel-level augmentation enabled (rotation, shear, brightness, contrast) |
@@ -1100,9 +1100,30 @@ python cli.py train --compile-encoder --compile-decoder
 
 # Pin a specific val split (e.g. for split-rotation experiments):
 python cli.py train --val-videos A11_C1,A12_C1,A52_C1
+
+# Resume from a saved training state (used to chain SLURM jobs under
+# a wall-clock limit — see "Chained training" below):
+python cli.py train --resume checkpoints/train_state.pt
 ```
 
 The startup banner echoes the resolved config so you can verify what's running.
+
+#### Chained training across SLURM jobs
+
+For training runs that exceed the cluster's wall-clock limit (e.g. 90+ epochs on a 4-hour partition), `--resume` lets a single logical run span multiple submissions. The training loop writes `checkpoints/train_state.pt` at the end of every epoch — this contains the model weights, optimiser moments, LR scheduler position, and the early-stopping counter.
+
+A self-contained sbatch script that auto-detects whether to resume or start fresh:
+
+```bash
+STATE_FILE=checkpoints/train_state.pt
+if [ -f "$STATE_FILE" ]; then
+    python -u cli.py train --epochs 90 --resume "$STATE_FILE"
+else
+    python -u cli.py train --epochs 90
+fi
+```
+
+Submit the script repeatedly until training reaches `num_epochs` or early stopping triggers. When you want to begin a **new** training run, delete `checkpoints/train_state.pt` manually first — otherwise the script silently picks up the old one.
 
 ### Step 4: Use in napari
 
@@ -1117,7 +1138,7 @@ After training, `checkpoints/lora_weights.pt` will exist. Open the labeling tool
 | `cli.py` | CLI entry point | `cmd_prepare()`, `cmd_train()` |
 | `src/config.py` | All hyperparameters as dataclasses | `TrainingConfig`, `LoRAConfig` |
 | `src/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
-| `src/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()` |
+| `src/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()`, `save/load_train_state()` |
 | `src/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
 | `src/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCBDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
 | `src/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |

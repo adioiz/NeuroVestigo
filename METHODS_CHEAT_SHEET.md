@@ -1,6 +1,6 @@
 # Training Methods Cheat Sheet
 
-**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (~16 videos), tuned for NVIDIA B200.
+**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (~20 videos), tuned for NVIDIA B200.
 
 ---
 
@@ -137,7 +137,7 @@ All spatial transforms use **identical parameters across all frames** in a clip 
 | Image size | 1024×1024 | SAM 2 native resolution |
 | Frames per clip | 8 | B×T = 16 — power of 2, GPU-friendly |
 | Max objects | 3 | Typical neuron count per field of view |
-| Train/val split | **75/25** | 12 train / 4 val videos with 16 labelled neurons (mean of 4 — even more stable than mean of 3) |
+| Train/val split | **75/25** | 15 train / 5 val videos with 20 labelled neurons — mean of 5 keeps the headline IoU stable run-to-run |
 | Batch size | 2 | Small batch → implicit regularization on a small dataset |
 | Normalization | Dataset-specific mean/std | Microscopy ≠ ImageNet distribution |
 
@@ -207,7 +207,38 @@ And saves the **6 worst-IoU prediction PNGs** to `checkpoints/val_samples/epoch_
 
 ---
 
-## 10. References
+## 10. Chained Training Across SLURM Jobs
+
+Single-job training is capped by the cluster's wall-clock limit (4 hours on `B200-4h` — fits ~60 epochs at current ~225 s/epoch, not 80–90). The `--resume` flag lets one logical training run span multiple jobs.
+
+**What gets saved.** At the end of every epoch the trainer writes `checkpoints/train_state.pt` (in addition to the inference-only `lora_weights.pt`). Contents:
+
+- model trainable params (LoRA A/B + unfrozen embeddings) — same payload as `lora_weights.pt`
+- Adam optimiser moments
+- LR scheduler state (preserves cosine-schedule step position)
+- counters: epoch, best_val_iou, epochs_without_improvement
+- `num_epochs` and `steps_per_epoch` the original schedule was built with (sanity check)
+
+**Resuming.** Submit again with `--resume checkpoints/train_state.pt`. The training loop restores everything in-place and runs `for epoch in range(saved_epoch + 1, num_epochs)`.
+
+**Smart sbatch pattern.** Auto-detect whether to resume or start fresh:
+
+```bash
+STATE_FILE=checkpoints/train_state.pt
+if [ -f "$STATE_FILE" ]; then
+    python -u cli.py train --epochs 90 --resume "$STATE_FILE"
+else
+    python -u cli.py train --epochs 90
+fi
+```
+
+To **start a new** training run after a previous one finished, delete `train_state.pt` manually first — otherwise the smart sbatch silently resumes the old one.
+
+**Loss of progress on a mid-epoch SIGTERM.** Save happens at end-of-epoch only. If SLURM kills the job halfway through an epoch, the saved state is one epoch behind the killed epoch — about 3–4 minutes of lost compute, no more.
+
+---
+
+## 11. References
 
 | Method | Paper |
 |---|---|

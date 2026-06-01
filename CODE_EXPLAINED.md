@@ -183,7 +183,7 @@ class DataConfig:
     num_frames: int = 8        # Frames per clip
     image_size: int = 1024     # SAM 2 input size (fixed!)
     max_objects: int = 3       # Max neurons tracked simultaneously
-    val_fraction: float = 0.25 # 25% for validation (3 of 12 videos)
+    val_fraction: float = 0.25 # 25% for validation (5 of 20 videos at current dataset size)
     val_videos: Optional[List[str]] = None  # Explicit override
     clip_stride: int = 4       # Skip overlapping clips (1=all clips, 4=every 4th)
     cache_in_memory: bool = True       # Cache all frames/masks in RAM at init
@@ -588,6 +588,53 @@ def save_lora_weights(model: nn.Module, path: str):
 - LoRA weights only: ~1-2 MB
 
 We don't save the frozen W₀ weights — they're identical to the pretrained model. At inference, we load the pretrained model, apply LoRA structure, then load our small checkpoint.
+
+---
+
+## Functions: `save_train_state()` and `load_train_state()`
+
+`save_lora_weights` saves only the bytes you need for **inference**. For **resuming a training run** under a SLURM wall-clock limit, the model weights alone aren't enough — you also need the optimiser moments, the LR scheduler position, and the early-stopping counter. That's what `save_train_state` writes:
+
+```python
+def save_train_state(path, *, model, optimizer, scheduler, epoch,
+                     best_val_iou, epochs_without_improvement,
+                     num_epochs, steps_per_epoch) -> None:
+    torch.save({
+        # Model side — same payload as save_lora_weights
+        "lora_state_dict":    {...},  # all LoRA A/B params
+        "other_state_dict":   {...},  # unfrozen embeddings
+        "config":             {"rank": ..., "alpha": ...},
+        # Training-continuation side
+        "optimizer_state_dict":         optimizer.state_dict(),
+        "scheduler_state_dict":         scheduler.state_dict(),
+        "epoch":                        epoch,
+        "best_val_iou":                 best_val_iou,
+        "epochs_without_improvement":   epochs_without_improvement,
+        "num_epochs":                   num_epochs,
+        "steps_per_epoch":              steps_per_epoch,
+    }, path)
+```
+
+Written at the end of every epoch to `<checkpoint_dir>/train_state.pt`.
+
+`load_train_state(path, *, model, optimizer, scheduler)` reverses it: restores model params, optimiser, scheduler, and returns the saved counters so the train loop can pick up at `epoch + 1`.
+
+**Workflow:** an sbatch script auto-detects the file and adds `--resume` accordingly:
+
+```bash
+STATE_FILE=checkpoints/train_state.pt
+if [ -f "$STATE_FILE" ]; then
+    python -u cli.py train --epochs 90 --resume "$STATE_FILE"
+else
+    python -u cli.py train --epochs 90
+fi
+```
+
+Submitting the script repeatedly carries one logical training run across multiple SLURM jobs. To start a NEW training run later, delete `train_state.pt` manually — otherwise the smart sbatch silently picks up the old one.
+
+**Size.** Heavier than `lora_weights.pt` because of the Adam moments (~5M trainable params × 2 buffers × 4 bytes ≈ 40 MB), but still trivial vs the dataset.
+
+**Mid-epoch interrupt cost.** Save happens at end-of-epoch only, so a SIGTERM mid-epoch costs about one epoch's worth of GPU time (~3.5 min at current step times). Acceptable.
 
 ---
 
@@ -1942,11 +1989,12 @@ After reading this document, you should be able to explain:
 4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`
-7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology, weight 3) + IoU pred + Object score. Supervoxel disabled by default.
+7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology, weight 5) + Supervoxel (connectivity, weight 0.3) + IoU pred + Object score.
 8. **Three learning rates (LoRA+):** LoRA A (1e-4) vs LoRA B (1.6e-3, 16× higher) vs embeddings (1e-5)
 9. **Cosine schedule with floor:** 2-epoch linear warmup → cosine decay → floor at 5% of peak (GPT-3 style, half their floor)
 10. **`config.py` is the source of truth:** CLI flags only override when explicitly passed
 11. **B200 perf:** bf16 (no GradScaler), channels-last, FlashAttention-3 via cuDNN SDPA, fused AdamW, parallel cbDice scipy, pinned memory + non_blocking copies, deferred `.item()` syncs
 12. **Diagnostics:** Per-component loss + per-frame IoU + per-video IoU + worst-IoU PNG dumps — every validation epoch
+13. **Chained training:** `--resume train_state.pt` lets one logical training run span multiple SLURM jobs under a wall-clock limit (e.g. 90 epochs across two 4-hour B200 jobs)
 
 Good luck with your paper and presentation!
