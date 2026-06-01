@@ -38,6 +38,8 @@ from src.lora import (
     apply_lora,
     get_trainable_parameters,
     save_lora_weights,
+    save_train_state,
+    load_train_state,
     SAM2_LORA_TARGETS,
     HIERA_LAST_STAGE_LORA_TARGETS,
 )
@@ -1083,8 +1085,57 @@ def train(config: TrainingConfig = None):
     best_val_iou = 0.0
     epochs_without_improvement = 0
     training_log = []
+    start_epoch = 0
 
-    for epoch in range(config.num_epochs):
+    # Resume from a saved training-state checkpoint if requested.
+    # The saved file is at <checkpoint_dir>/train_state.pt (written at the
+    # end of each epoch). Restoring it brings back the model weights,
+    # optimiser moments, scheduler step position, best-IoU tracking, and
+    # the early-stopping counter — so a fresh SLURM job continues exactly
+    # where the previous one left off.
+    if config.resume_from:
+        resume_path = Path(config.resume_from)
+        if not resume_path.exists():
+            raise FileNotFoundError(
+                f"--resume points to {resume_path}, but no file exists there."
+            )
+        print(f"\n=== Resuming from {resume_path} ===")
+        resume = load_train_state(
+            str(resume_path),
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+        )
+        start_epoch = resume["start_epoch"]
+        best_val_iou = resume["best_val_iou"]
+        epochs_without_improvement = resume["epochs_without_improvement"]
+        prev_total_epochs = resume["num_epochs"]
+        prev_steps_per_epoch = resume["steps_per_epoch"]
+        print(
+            f"  Resumed at epoch {start_epoch}/{config.num_epochs}, "
+            f"best_val_iou={best_val_iou:.4f}, "
+            f"epochs_without_improvement={epochs_without_improvement}"
+        )
+        # Warn if the schedule parameters differ from the saved run. The
+        # cosine LR schedule depends on (num_epochs × steps_per_epoch), so
+        # changing either after resume will produce LR values that don't
+        # match what the scheduler "thinks" it is at — usually harmless
+        # for short extensions, but worth flagging.
+        if prev_total_epochs and prev_total_epochs != config.num_epochs:
+            print(
+                f"  [warn] saved checkpoint targeted num_epochs="
+                f"{prev_total_epochs}, this run uses {config.num_epochs}. "
+                f"LR schedule curve will shift."
+            )
+        if prev_steps_per_epoch and prev_steps_per_epoch != len(train_loader):
+            print(
+                f"  [warn] saved checkpoint had steps_per_epoch="
+                f"{prev_steps_per_epoch}, this run has {len(train_loader)}. "
+                f"Dataset likely changed."
+            )
+
+    for epoch in range(start_epoch, config.num_epochs):
         model.train()
         # Loss tensors stay on-device — no .item() inside the step loop.
         # We only sync at logging boundaries (every log_every_n_steps and at
@@ -1257,6 +1308,22 @@ def train(config: TrainingConfig = None):
         # Save training log
         with open(checkpoint_dir / "training_log.json", "w") as f:
             json.dump(training_log, f, indent=2, default=str)
+
+        # Save full training state at the end of every epoch so the run can
+        # resume from a fresh SLURM job (4-hour queue limit). This includes
+        # optimiser moments + scheduler step + early-stop counter, which
+        # lora_weights.pt does NOT — that one is inference-only.
+        save_train_state(
+            str(checkpoint_dir / "train_state.pt"),
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=epoch,
+            best_val_iou=best_val_iou,
+            epochs_without_improvement=epochs_without_improvement,
+            num_epochs=config.num_epochs,
+            steps_per_epoch=len(train_loader),
+        )
 
         # Early stopping check
         if epochs_without_improvement >= config.early_stopping_patience:

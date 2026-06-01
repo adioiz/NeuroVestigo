@@ -128,6 +128,10 @@ def cmd_train(args):
     if args.no_hiera_last_stage:
         config.lora.hiera_last_stage = False
 
+    # ----- Resume -----
+    if args.resume:
+        config.resume_from = args.resume
+
     # ----- Echo the resolved config so the SLURM log makes the source obvious -----
     print("\n=== Resolved training config ===")
     print(f"  lora.rank={config.lora.rank}, lora.alpha={config.lora.alpha}, "
@@ -149,6 +153,8 @@ def cmd_train(args):
           f"supervoxel_weight={config.loss.loss_supervoxel_weight}")
     print(f"  use_memory_attention_path={config.use_memory_attention_path}")
     print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
+    if config.resume_from:
+        print(f"  resume_from={config.resume_from}")
     if config.compile_encoder or config.compile_decoder:
         print(f"  compile_encoder={config.compile_encoder}, "
               f"compile_decoder={config.compile_decoder}")
@@ -275,6 +281,19 @@ def main():
             "Disable LoRA on the Hiera encoder's last stage. By default we "
             "adapt the last 2 trunk blocks (encoder visual features); use this "
             "for A/B comparison against the encoder-frozen baseline."
+        ),
+    )
+    p_train.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Resume training from a train_state.pt checkpoint. Restores "
+            "model + optimiser + scheduler + counters and continues from the "
+            "saved epoch. Used to chain SLURM jobs together when the 4-hour "
+            "queue limit would otherwise cut training off mid-schedule. "
+            "Example: --resume checkpoints/train_state.pt"
         ),
     )
 

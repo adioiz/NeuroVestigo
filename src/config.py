@@ -170,6 +170,14 @@ class TrainingConfig:
     # True unless you want to A/B compare against the legacy behavior.
     use_memory_attention_path: bool = True
 
+    # Path to a train_state.pt checkpoint to resume from. When set, the
+    # train loop restores model + optimiser + scheduler + counters and
+    # continues from the saved epoch. Used to chain SLURM jobs together
+    # under a 4-hour queue limit: run 1 trains epochs 0..30 then exits,
+    # run 2 picks up at epoch 31. Set via --resume PATH on the CLI; leave
+    # None for a fresh run.
+    resume_from: Optional[str] = None
+
     # Logging
     log_every_n_steps: int = 10
 

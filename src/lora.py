@@ -215,6 +215,114 @@ def _normalize_key(key: str) -> str:
     return key
 
 
+def save_train_state(
+    path: str,
+    *,
+    model: nn.Module,
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_iou: float,
+    epochs_without_improvement: int,
+    num_epochs: int,
+    steps_per_epoch: int,
+) -> None:
+    """Save a full training-state checkpoint so a run can resume mid-schedule.
+
+    Unlike save_lora_weights (which saves only the model parameters needed
+    for inference), this saves everything required to continue training
+    from the exact point we left off:
+        - LoRA + other trainable model params (same as save_lora_weights)
+        - Optimizer state (Adam moments)
+        - LR scheduler state (preserves cosine schedule position)
+        - Counters: epoch, best_val_iou, epochs_without_improvement
+        - num_epochs and steps_per_epoch the original schedule was built with
+          (so a resume can detect a schedule mismatch and warn)
+
+    The resulting file is bigger than lora_weights.pt because of the Adam
+    moments, but at ~5M trainable params × 2 (m + v) × 4 bytes (fp32) it
+    is still only ~40 MB per checkpoint.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Reuse save_lora_weights' layout for the model side so that the
+    # resulting file is recognisable to load_lora_weights too if needed.
+    lora_state = {}
+    other_state = {}
+    cfg = {}
+    for name, module in model.named_modules():
+        if isinstance(module, LoRALinear):
+            prefix = _normalize_key(name)
+            lora_state[f"{prefix}.lora_A.weight"] = module.lora_A.weight.data.cpu()
+            lora_state[f"{prefix}.lora_B.weight"] = module.lora_B.weight.data.cpu()
+            if not cfg:
+                cfg = {"rank": module.rank, "alpha": module.alpha}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            is_lora = any(
+                name.startswith(n)
+                for n, m in model.named_modules()
+                if isinstance(m, LoRALinear)
+            )
+            if not is_lora:
+                other_state[_normalize_key(name)] = param.data.cpu()
+
+    torch.save(
+        {
+            "lora_state_dict": lora_state,
+            "other_state_dict": other_state,
+            "config": cfg,
+            # Training-continuation state below.
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "epoch": int(epoch),
+            "best_val_iou": float(best_val_iou),
+            "epochs_without_improvement": int(epochs_without_improvement),
+            "num_epochs": int(num_epochs),
+            "steps_per_epoch": int(steps_per_epoch),
+        },
+        path,
+    )
+
+
+def load_train_state(
+    path: str,
+    *,
+    model: nn.Module,
+    optimizer,
+    scheduler,
+    device: str = "cpu",
+) -> dict:
+    """Restore a full training state from `save_train_state` output.
+
+    Loads model params (via load_lora_weights logic), then restores the
+    optimizer and scheduler in-place. Returns a dict with the resume
+    counters:
+        {"start_epoch", "best_val_iou", "epochs_without_improvement",
+         "num_epochs", "steps_per_epoch"}
+
+    start_epoch is the epoch number to BEGIN with on resume (= saved
+    epoch + 1, because the saved epoch was already completed).
+    """
+    state = torch.load(path, map_location=device, weights_only=False)
+
+    # Restore model params using the same key-matching logic as
+    # load_lora_weights — we reuse it for consistency.
+    load_lora_weights(model, str(path), device=device)
+
+    optimizer.load_state_dict(state["optimizer_state_dict"])
+    scheduler.load_state_dict(state["scheduler_state_dict"])
+
+    return {
+        "start_epoch": int(state["epoch"]) + 1,
+        "best_val_iou": float(state["best_val_iou"]),
+        "epochs_without_improvement": int(state["epochs_without_improvement"]),
+        "num_epochs": int(state.get("num_epochs", 0)),
+        "steps_per_epoch": int(state.get("steps_per_epoch", 0)),
+    }
+
+
 def save_lora_weights(model: nn.Module, path: str):
     """
     Save only the LoRA adapter weights and any other trainable parameters.
