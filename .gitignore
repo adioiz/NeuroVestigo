@@ -25,7 +25,9 @@ Thumbs.db
 # Outputs
 *.csv
 outputs/
-
+checkpoints/
+checkpoints-new/
+gpu-checkpoints/
 # Jupyter
 .ipynb_checkpoints/
 
