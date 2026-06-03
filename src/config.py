@@ -71,22 +71,31 @@ class OptimizerConfig:
     warmup_epochs: int = 2
     # Use cosine annealing after warmup
     use_cosine_schedule: bool = True
-    # Minimum LR ratio — was 0.10 (matching GPT-3). Lowered to 0.05 because
-    # in the previous run val IoU plateaued ~10 epochs before the schedule
-    # ended; floor was too high to drive late-phase fine-tuning. Halving the
-    # floor means the last ~10 epochs run at finer LR steps. Watch the next
-    # log: if late epochs now produce small val IoU gains (vs flat plateau
-    # in previous runs), this helped.
-    min_lr_ratio: float = 0.05
+    # Minimum LR ratio — was 0.10 (matching GPT-3). Lowered to 0.05 for Run 7,
+    # which produced a genuine late-phase gain at the floor (val IoU climbed
+    # from 0.8397 @ ep58 → 0.8401 @ ep88 while LR sat at 5e-6). Lowered
+    # further to 0.03 for Run 8 (B+C plan) to give the topology-rebalanced
+    # loss regime even finer LR resolution during the long polishing phase.
+    min_lr_ratio: float = 0.03
 
 
 @dataclass
 class LossConfig:
-    # Loss weights - balanced for better generalization
+    # Loss weights — Run 8: topology-rebalanced budget.
+    # Run 7 (best val IoU=0.8401 @ ep88) found thin neuron branches that Run 6
+    # missed but visual inspection showed MORE disconnected fragments. Loss-
+    # budget audit at convergence: dice ~69%, mask ~16%, cbDice ~7%,
+    # supervoxel ~7% — topology losses were learning (50%+ component reduction)
+    # but too small a share of the gradient signal to compete with dice.
+    # Run 8 rebalances (projected shares using Run 7 val component values):
+    #   dice 2.0 → 1.5  (cool shape pressure ~25%)
+    #   cbDice 5.0 → 10.0  (doubled; val is near-saturated at 0.004, modest extra signal)
+    #   supervoxel 0.3 → 2.0  (6.7× — the primary lever; val=0.064 has real headroom)
+    # New projected budget: dice ~50%, supervoxel ~44%, cbDice ~14%, mask ~16%.
     loss_mask_weight: float = 5.0  # Focal loss (reduced from 20.0 to balance with Dice/IoU)
-    loss_dice_weight: float = 2.0  # Standard Dice for shape matching
-    loss_cbdice_weight: float = 5.0  # cbDice for skeleton topology — strengthened to push connectivity
-    loss_supervoxel_weight: float = 0.3  # Supervoxel for connectivity preservation — small weight, retry after dataset grew
+    loss_dice_weight: float = 1.5  # Cooled from 2.0 to free budget for topology losses
+    loss_cbdice_weight: float = 10.0  # Doubled — strengthens skeleton topology pressure
+    loss_supervoxel_weight: float = 2.0  # Big bump (6.7×) — primary connectivity lever for Run 8
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
@@ -132,7 +141,9 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 2  # Small batch for implicit regularization on a small dataset
-    num_epochs: int = 80  # Bumped from 60: with 16 videos + rank 16 the model has more to learn
+    num_epochs: int = 110  # Run 8: bumped from 90 to extend the LR-floor polishing phase
+                           # (Run 7 improved at the floor from ep78→ep88, so more floor time
+                           # should help the new topology-heavy loss regime settle).
     num_workers: int = 2
     seed: int = 42
     # Use mixed precision (bfloat16 on CUDA, float32 on MPS/CPU)
