@@ -81,21 +81,22 @@ class OptimizerConfig:
 
 @dataclass
 class LossConfig:
-    # Loss weights — Run 8: topology-rebalanced budget.
-    # Run 7 (best val IoU=0.8401 @ ep88) found thin neuron branches that Run 6
-    # missed but visual inspection showed MORE disconnected fragments. Loss-
-    # budget audit at convergence: dice ~69%, mask ~16%, cbDice ~7%,
-    # supervoxel ~7% — topology losses were learning (50%+ component reduction)
-    # but too small a share of the gradient signal to compete with dice.
-    # Run 8 rebalances (projected shares using Run 7 val component values):
-    #   dice 2.0 → 1.5  (cool shape pressure ~25%)
-    #   cbDice 5.0 → 10.0  (doubled; val is near-saturated at 0.004, modest extra signal)
-    #   supervoxel 0.3 → 2.0  (6.7× — the primary lever; val=0.064 has real headroom)
-    # New projected budget: dice ~50%, supervoxel ~44%, cbDice ~14%, mask ~16%.
-    loss_mask_weight: float = 5.0  # Focal loss (reduced from 20.0 to balance with Dice/IoU)
-    loss_dice_weight: float = 1.5  # Cooled from 2.0 to free budget for topology losses
-    loss_cbdice_weight: float = 10.0  # Doubled — strengthens skeleton topology pressure
-    loss_supervoxel_weight: float = 2.0  # Big bump (6.7×) — primary connectivity lever for Run 8
+    # Loss weights — Run 9: resolution-driven topology fix.
+    # Run 8 (val IoU=0.8229) tried weight-rebalancing (dice↓, cbDice↑, supervoxel
+    # 6.7×↑) and LOST 0.017 IoU vs Run 7 (0.8401). Diagnosis: the supervoxel
+    # loss hit a STRUCTURAL CEILING at val ≈ 0.05 because topology was computed
+    # at 256 resolution — hair-thin neuron breaks at 1024 res were invisible to
+    # the loss, so weight pumping had nothing to optimize. cbDice was already
+    # saturated at val ≈ 0.005.
+    # Run 9 fixes the underlying problem instead: bump topology_resolution
+    # 256 → 384 (see below) so the losses can SEE the fine-scale breaks. Weight
+    # bumps from Run 8 are mostly reverted because the resolution change is now
+    # doing the heavy lifting — supervoxel held at a modest 0.5 (vs Run 7's 0.3)
+    # since the loss now has real headroom to drop.
+    loss_mask_weight: float = 5.0  # Focal loss
+    loss_dice_weight: float = 2.0  # Back to Run 7 value
+    loss_cbdice_weight: float = 5.0  # Back to Run 7 value (saturated regardless)
+    loss_supervoxel_weight: float = 0.5  # Modest bump from Run 7's 0.3 — the resolution change is the real lever
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
@@ -114,8 +115,13 @@ class LossConfig:
     use_supervoxel: bool = True  # Enable connectivity-preserving loss
     # Topology resolution: resolution at which topology losses are computed
     # (cbDice skeleton/EDT + supervoxel connectivity analysis).
-    # Lower = faster. 256 is 16× faster than 1024 with minimal quality loss.
-    topology_resolution: int = 256
+    # Lower = faster. 256 is 16× faster than 1024.
+    # Run 9: bumped 256 → 384 because supervoxel val plateaued at ~0.05 in Run 8
+    # despite a 6.7× weight bump — the loss was blind to fine-scale breaks at 256.
+    # 384 res is 2.25× more cells (384²/256² = 1.5²), so topology forward+backward
+    # gets ~2.25× slower; expect ~1.6s/step → ~2.5s/step. Total epoch time
+    # ~260s → ~400s, so 90 epochs ≈ 10 hours (was 7h in Run 7/8).
+    topology_resolution: int = 384
 
 
 @dataclass
