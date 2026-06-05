@@ -71,32 +71,31 @@ class OptimizerConfig:
     warmup_epochs: int = 2
     # Use cosine annealing after warmup
     use_cosine_schedule: bool = True
-    # Minimum LR ratio — was 0.10 (matching GPT-3). Lowered to 0.05 for Run 7,
+    # Minimum LR ratio — was 0.10 (matching GPT-3). Lowered to 0.05 in Run 7,
     # which produced a genuine late-phase gain at the floor (val IoU climbed
-    # from 0.8397 @ ep58 → 0.8401 @ ep88 while LR sat at 5e-6). Lowered
-    # further to 0.03 for Run 8 (B+C plan) to give the topology-rebalanced
-    # loss regime even finer LR resolution during the long polishing phase.
-    min_lr_ratio: float = 0.03
+    # from 0.8397 @ ep58 → 0.8401 @ ep88 while LR sat at 5e-6). Run 8/9 briefly
+    # tried 0.03, but both runs underperformed Run 7 so we reverted. Run 7's
+    # 0.05 stays as the shipping value.
+    min_lr_ratio: float = 0.05
 
 
 @dataclass
 class LossConfig:
-    # Loss weights — Run 9: resolution-driven topology fix.
-    # Run 8 (val IoU=0.8229) tried weight-rebalancing (dice↓, cbDice↑, supervoxel
-    # 6.7×↑) and LOST 0.017 IoU vs Run 7 (0.8401). Diagnosis: the supervoxel
-    # loss hit a STRUCTURAL CEILING at val ≈ 0.05 because topology was computed
-    # at 256 resolution — hair-thin neuron breaks at 1024 res were invisible to
-    # the loss, so weight pumping had nothing to optimize. cbDice was already
-    # saturated at val ≈ 0.005.
-    # Run 9 fixes the underlying problem instead: bump topology_resolution
-    # 256 → 384 (see below) so the losses can SEE the fine-scale breaks. Weight
-    # bumps from Run 8 are mostly reverted because the resolution change is now
-    # doing the heavy lifting — supervoxel held at a modest 0.5 (vs Run 7's 0.3)
-    # since the loss now has real headroom to drop.
+    # Loss weights — Run 7 (shipping config, best val IoU = 0.8401 @ ep88).
+    # Post-Run-7 experiments tried to push topology harder; both lost ground:
+    #   - Run 8: dice 2→1.5, cbDice 5→10, supervoxel 0.3→2.0 (256 res) →
+    #     val IoU dropped to 0.8229. The supervoxel loss hit a structural
+    #     ceiling at val ≈ 0.05 — weight pumping a blind loss does nothing.
+    #   - Run 9: topology_resolution 256→384, supervoxel 0.3→0.5 (other
+    #     weights at Run 7 baseline) → val IoU = 0.8346. The resolution lift
+    #     helped (closed most of Run 8's gap) but didn't beat Run 7 and cost
+    #     2.5× wall-clock per step.
+    # Conclusion: at 20 videos we've extracted what loss tuning can give.
+    # Further gains need MORE DATA, not more loss engineering. Reverted here.
     loss_mask_weight: float = 5.0  # Focal loss
-    loss_dice_weight: float = 2.0  # Back to Run 7 value
-    loss_cbdice_weight: float = 5.0  # Back to Run 7 value (saturated regardless)
-    loss_supervoxel_weight: float = 0.5  # Modest bump from Run 7's 0.3 — the resolution change is the real lever
+    loss_dice_weight: float = 2.0  # Shape coverage
+    loss_cbdice_weight: float = 5.0  # Skeleton topology
+    loss_supervoxel_weight: float = 0.3  # Connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
@@ -115,13 +114,11 @@ class LossConfig:
     use_supervoxel: bool = True  # Enable connectivity-preserving loss
     # Topology resolution: resolution at which topology losses are computed
     # (cbDice skeleton/EDT + supervoxel connectivity analysis).
-    # Lower = faster. 256 is 16× faster than 1024.
-    # Run 9: bumped 256 → 384 because supervoxel val plateaued at ~0.05 in Run 8
-    # despite a 6.7× weight bump — the loss was blind to fine-scale breaks at 256.
-    # 384 res is 2.25× more cells (384²/256² = 1.5²), so topology forward+backward
-    # gets ~2.25× slower; expect ~1.6s/step → ~2.5s/step. Total epoch time
-    # ~260s → ~400s, so 90 epochs ≈ 10 hours (was 7h in Run 7/8).
-    topology_resolution: int = 384
+    # Lower = faster. 256 is 16× faster than 1024, with minimal quality loss
+    # at Run 7's per-component values (cbDice val ≈ 0.005, supervoxel ≈ 0.064).
+    # Run 9 tried 384: 2.5× slower per step and only +0.012 IoU vs Run 7
+    # baseline — not worth the wall-clock cost. Reverted to 256.
+    topology_resolution: int = 256
 
 
 @dataclass
@@ -147,9 +144,10 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 2  # Small batch for implicit regularization on a small dataset
-    num_epochs: int = 110  # Run 8: bumped from 90 to extend the LR-floor polishing phase
-                           # (Run 7 improved at the floor from ep78→ep88, so more floor time
-                           # should help the new topology-heavy loss regime settle).
+    num_epochs: int = 90  # Run 7 shipping value. Bumped from 60 to give 20 videos +
+                          # rank-16 LoRA enough training. Best epoch lands ~80-88
+                          # consistently (cosine floor phase). Run 8/9 tried 110 with
+                          # extended floor — didn't change outcome, reverted.
     num_workers: int = 2
     seed: int = 42
     # Use mixed precision (bfloat16 on CUDA, float32 on MPS/CPU)
