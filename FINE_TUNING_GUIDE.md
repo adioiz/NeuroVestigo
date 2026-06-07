@@ -36,7 +36,7 @@ We have a neuron time-lapse microscopy dataset: grayscale TIF stacks where each 
 - It may hallucinate neurons where there are none (background regions)
 - It may miss faint structures (thin dendrites, axon tips) that look like noise to a model trained on natural images
 
-**Our goal:** Fine-tune SAM 2 on our 10 previously labeled neuron datasets so that propagation quality improves, while preserving SAM 2's general video understanding capabilities.
+**Our goal:** Fine-tune SAM 2 on our 20 previously labeled neuron datasets so that propagation quality improves, while preserving SAM 2's general video understanding capabilities. The shipping configuration ("Run 7") trains for 90 epochs on a 15/5 train/val split and reaches **val IoU 0.8401 / Dice 0.9117** on the held-out 5 videos.
 
 ---
 
@@ -70,7 +70,7 @@ A hierarchical vision transformer that converts each video frame into a spatial 
 
 This component was pretrained on millions of images. Its features are highly general-purpose and transfer well to microscopy without modification.
 
-**Decision: Freeze the image encoder.** Retraining it on 10 videos would destroy its general features (catastrophic forgetting) and waste compute. The encoder already produces good spatial features; our problem is in *how those features are interpreted across time*, not in how individual frames are encoded.
+**Decision: Freeze the image encoder base weights, but adapt its last stage with LoRA (Run 6+).** Retraining the full encoder on 20 videos would destroy its general features (catastrophic forgetting) and waste compute. The encoder already produces good spatial features; our primary problem is in *how those features are interpreted across time*, not in how individual frames are encoded. But the deepest features had never seen phase-contrast microscopy, so Run 6 added a smaller LoRA (rank 8) to the last 2 trunk blocks for gentle domain adaptation. See Section 5 for the full target list.
 
 ### 2.2 Mask Decoder
 
@@ -101,21 +101,21 @@ Encodes the predicted mask from each frame into a compact representation that ge
 
 ## 3. Why LoRA? The Fine-Tuning Strategy
 
-We have only 10 labeled videos (~720 frames total). This is a tiny dataset by deep learning standards. We need a fine-tuning strategy that:
+We have 20 labeled videos (~1440 frames total). This is still a tiny dataset by deep learning standards. We need a fine-tuning strategy that:
 
-1. **Avoids overfitting** -- with only 10 videos, a fully fine-tuned model would memorize training data
+1. **Avoids overfitting** -- with only 20 videos, a fully fine-tuned model would memorize training data
 2. **Preserves pretrained knowledge** -- SAM 2's video understanding should remain intact
 3. **Is parameter-efficient** -- small checkpoint size, fast training
-4. **Works on consumer GPUs** -- single NVIDIA GPU, not a server cluster
+4. **Works on a single GPU** -- single NVIDIA GPU, not a server cluster
 
 ### Alternatives Considered
 
 | Strategy | Trainable Params | Risk of Overfitting | Preserves Pretrained? |
 |----------|-----------------|---------------------|-----------------------|
-| Full fine-tuning | ~38M (100%) | Very high | No |
+| Full fine-tuning | ~40M (100%) | Very high | No |
 | Fine-tune decoder only | ~10M (26%) | High | Partially |
-| **LoRA (our choice)** | **~1-3M (3-8%)** | **Low** | **Yes** |
-| Train from scratch | ~38M (100%) | Impossible (too little data) | N/A |
+| **LoRA, dual-rank (our choice)** | **~5.6M (13.9%)** | **Low** | **Yes** |
+| Train from scratch | ~40M (100%) | Impossible (too little data) | N/A |
 | Feature extraction (freeze all) | 0 | None | Yes, but can't adapt |
 
 **LoRA** (Low-Rank Adaptation) is the optimal choice: it adds a small number of trainable parameters *alongside* the frozen original weights, allowing adaptation without destroying pretrained features.
@@ -147,8 +147,8 @@ where:
 - **W_0** is the original frozen weight matrix (d_out x d_in)
 - **A** is a "down-projection" matrix (r x d_in) -- compresses input to rank r
 - **B** is an "up-projection" matrix (d_out x r) -- projects back to output dimension
-- **r** is the rank (a small integer, we use r=8)
-- **alpha** is a scaling factor (we use alpha=16)
+- **r** is the rank (a small integer). Run 7 uses **r=16** on the main LoRA (mask_decoder + memory_attention) and **r=8** on the Hiera last-stage LoRA — a dual-rank checkpoint.
+- **alpha** is a scaling factor. We use alpha=32 (main) and alpha=16 (Hiera) so that scale = alpha/r = 2.0 in both groups.
 
 ### 4.2 Why This Works
 
@@ -163,6 +163,7 @@ The key insight from the LoRA paper (Hu et al., 2021) is that the *change* neede
 
 For a typical attention projection (256 x 256):
 - Full: 256 * 256 = 65,536 parameters
+- LoRA rank 16: 16 * (256 + 256) = 8,192 parameters (**8x reduction**)
 - LoRA rank 8: 8 * (256 + 256) = 4,096 parameters (**16x reduction**)
 
 ### 4.3 The Scaling Factor
@@ -170,13 +171,14 @@ For a typical attention projection (256 x 256):
 The LoRA output is scaled by alpha/r:
 
 ```
-scale = alpha / r = 16 / 8 = 2.0
+scale = alpha / r = 32 / 16 = 2.0   # main LoRA
+scale = alpha / r = 16 / 8  = 2.0   # Hiera last-stage LoRA
 ```
 
 This controls *how much* the adaptation influences the output. The ratio alpha/r is the effective scaling:
 - **Higher ratio** (e.g., alpha=32, r=8 -> scale=4): Stronger adaptation, faster learning, but risks instability
 - **Lower ratio** (e.g., alpha=8, r=8 -> scale=1): Gentler adaptation, more stable, but may need more epochs
-- **Our choice** (alpha=16, r=8 -> scale=2): A moderate balance. The adaptation has meaningful influence without dominating the pretrained features.
+- **Our choice** (scale=2 in both groups): A moderate balance. The adaptation has meaningful influence without dominating the pretrained features. Keeping `alpha/r` constant when we doubled the rank from 8 to 16 in Run 5 preserved the relative magnitude of the adaptation per layer.
 
 ### 4.4 Initialization
 
@@ -188,24 +190,24 @@ This means training begins from the pretrained model's behavior and gradually le
 
 ### 4.5 Dropout
 
-We apply dropout (p=0.05) to the LoRA path:
+We apply dropout (p=0.10) to the LoRA path:
 
 ```
 y = W_0 * x + scale * B(A(dropout(x)))
 ```
 
-This acts as regularization: during training, random input dimensions are zeroed out with 5% probability, forcing the adaptation to be robust and preventing overfitting to specific input patterns. This is especially important with only 10 training videos.
+This acts as regularization: during training, random input dimensions are zeroed out with 10% probability, forcing the adaptation to be robust and preventing overfitting to specific input patterns. This is especially important with only 20 training videos. We tuned this: Run 1 used 0.05 (underfit), Run 2 tried 0.25 (over-regularised — train and val losses collapsed together at a capacity wall), and Run 3+ settled on 0.10 as the sweet spot.
 
 ### 4.6 Code Reference (lora.py)
 
 ```python
 class LoRALinear(nn.Module):
-    def __init__(self, original: nn.Linear, rank=8, alpha=16.0, dropout=0.0):
+    def __init__(self, original: nn.Linear, rank=16, alpha=32.0, dropout=0.10):
         self.original = original                           # Frozen W_0
         self.lora_A = nn.Linear(in_features, rank, bias=False)   # A: (d_in -> r)
         self.lora_B = nn.Linear(rank, out_features, bias=False)  # B: (r -> d_out)
         self.scale = alpha / rank                          # = 2.0
-        self.lora_dropout = nn.Dropout(p=dropout)          # p = 0.05
+        self.lora_dropout = nn.Dropout(p=dropout)          # p = 0.10
 
         # Initialize A with Kaiming, B with zeros
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
@@ -229,6 +231,8 @@ Not all layers benefit equally from LoRA. We target specific components based on
 
 ### 5.1 Targeted Modules
 
+**Main LoRA (rank 16, alpha 32) — 68 Linear layers:**
+
 ```
 sam_mask_decoder.transformer.layers.{0,1}.self_attn.{q,k,v,out}_proj
 sam_mask_decoder.transformer.layers.{0,1}.cross_attn_token_to_image.{q,k,v,out}_proj
@@ -239,6 +243,20 @@ memory_attention.layers.{0,1,2,3}.cross_attn_image.{q,k,v,out}_proj
 memory_attention.layers.{0,1,2,3}.linear1
 memory_attention.layers.{0,1,2,3}.linear2
 ```
+
+**Hiera last-stage LoRA (rank 8, alpha 16) — 8 Linear layers, added in Run 6:**
+
+```
+image_encoder.trunk.blocks.{10,11}.attn.qkv
+image_encoder.trunk.blocks.{10,11}.attn.proj
+image_encoder.trunk.blocks.{10,11}.mlp.layers.{0,1}
+```
+
+These are the last 2 blocks of the Hiera trunk (stages `[1,2,7,2]` → indices 10 and 11 are the last stage). Each `MultiScaleBlock` exposes `attn.qkv` (fused QKV projection), `attn.proj` (output projection), and two MLP linears.
+
+**This is a dual-rank checkpoint.** Each saved tensor lives in one of two regex groups; inference loaders classify by which target list matches and instantiate the LoRA with the matching rank. `load_lora_weights` does this automatically.
+
+Total trainable parameter count (LoRA A/B matrices + unfrozen embeddings): **5,557,250 of 39,876,930 (13.9%)**.
 
 ### 5.2 Why These Specific Layers
 
@@ -267,7 +285,7 @@ This is where the model performs *nonlinear feature transformation* on temporall
 
 ### 5.3 What We Don't Adapt and Why
 
-**Image encoder (Hiera):** Frozen entirely. Its spatial features are general-purpose and excellent. Adapting it with 10 videos would cause overfitting. The encoder has ~25M parameters -- keeping them frozen is also a major compute saving.
+**Image encoder (Hiera) base weights:** Stay frozen. Adapting the full encoder with 20 videos would cause overfitting. The encoder has ~25M parameters -- keeping them frozen is also a major compute saving. Run 6 adds *small* LoRA adapters on the last 2 trunk blocks (the deepest features, most domain-specific), but the base Hiera weights are untouched.
 
 **Memory encoder:** Not adapted via LoRA. It's a relatively simple module that encodes masks into memory tokens. The representation is close to the mask itself, and the base encoding works fine for binary neuron masks.
 
@@ -562,7 +580,7 @@ This is activated by `pred_obj_scores=True`. The model learns to predict whether
 
 **Why this is critical for our use case:** In our 72-frame videos, the neuron may not be visible in all frames. Without this loss, the model always predicts "object present" and hallucinates neurons on empty frames. With this loss, it learns to output low confidence when the neuron isn't there.
 
-### 8.5 cbDice Loss (weight = 1.0)
+### 8.5 cbDice Loss (weight = 5.0)
 
 **Purpose:** Preserve skeleton topology of tubular structures with boundary weighting.
 
@@ -582,7 +600,9 @@ Where W_t and W_p are inverse-radius distance transform weights: for a structure
 
 **Memory note:** cbDice requires soft skeletonization on GPU plus EDT computation on CPU. Use `--no-cbdice` if you encounter OOM errors on MPS.
 
-### 8.6 Supervoxel Loss (weight = 1.0) — NEW!
+**Why weight 5.0:** Iteratively bumped. Run 1 used weight 1.0 (cbDice value sat at ~0.056). Run 3 bumped to 3.0 (cbDice dropped to ~0.016, then ~0.008). Run 5 bumped to 5.0 because user inspection of worst-IoU PNG dumps showed thin neuron branches still being broken. The high weight directly pressures connectivity in tree-like neurons.
+
+### 8.6 Supervoxel Loss (weight = 0.3)
 
 **Purpose:** Directly penalize split/merge errors in connectivity.
 
@@ -630,12 +650,14 @@ python cli.py train --no-supervoxel
 python cli.py train --no-topology
 ```
 
+**Why weight 0.3 (small):** Was disabled in Runs 3–4 because the per-component value sat flat at ~0.30 — supervoxel was effectively a constant offset, not a signal. Run 5 re-enabled it at the smaller weight of 0.3 once two things changed: (a) the dataset grew to 16 → 20 videos (the flat-value behaviour may have been an undersampling artefact), and (b) Path B made forward-pass predictions temporally coherent, so the connectivity signal was actually learnable. Run 7 diagnostics confirm the val component does drop (val supervoxel ≈ 0.064 at the best epoch).
+
 **Reference:** Grim et al., "Efficient Connectivity-Preserving Instance Segmentation with Supervoxel-Based Loss Function", AAAI 2025
 
 ### 8.7 Combined Loss
 
 ```
-L_total = 5.0 * L_focal + 2.0 * L_dice + 1.0 * L_cbDice + 1.0 * L_supervoxel + 1.0 * L_iou + 1.0 * L_class
+L_total = 5.0 * L_focal + 2.0 * L_dice + 5.0 * L_cbDice + 0.3 * L_supervoxel + 1.0 * L_iou + 1.0 * L_class
 ```
 
 This is referred to as `core_loss` in the codebase.
@@ -706,7 +728,7 @@ lr(t) = lr_base * (min_lr_ratio + (1 - min_lr_ratio) * (t / warmup_steps))
 
 Linear ramp from `0.05 × lr_base` to `lr_base`. This prevents large, destabilizing gradient updates at the start. We use 2 epochs (rather than 1) because LoRA-B is zero-initialized — the first gradient steps push it out of a sharp init region and benefit from a gentler ramp.
 
-**Cosine annealing phase** (epochs 3 to 60):
+**Cosine annealing phase** (epochs 3 to 90):
 ```
 progress = (t - warmup_steps) / (total_steps - warmup_steps)
 lr(t) = lr_base * max(min_lr_ratio, 0.5 * (1 + cos(pi * progress)))
@@ -751,37 +773,7 @@ optimizer.step()
 - ~2× less memory for activations (crucial for 1024×1024 images)
 - Minimal impact on training quality (unlike float16, bfloat16 doesn't suffer from underflow in gradients)
 
-**No GradScaler.** Older training code uses `torch.cuda.amp.GradScaler` to handle fp16 underflow. Bfloat16 has the same exponent range as fp32, so underflow is impossible — GradScaler does nothing useful and adds per-step sync overhead. Removed from this codebase. This matches PyTorch's recommended bf16 pattern (`pytorch.org/docs/2.11/notes/amp_examples.html`).
-
-### 9.4 Gradient Clipping
-
-```python
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-```
-
-If the L2 norm of all gradients exceeds 1.0, all gradients are scaled down proportionally:
-```
-if ||g|| > max_norm:
-    g = g * (max_norm / ||g||)
-```
-
-**Why 1.0:** Gradient clipping prevents rare large gradient spikes from destabilizing training while allowing normal gradient flow.
-
-### 9.5 Mixed Precision (AMP)
-
-On CUDA GPUs:
-```python
-with torch.amp.autocast(device, dtype=torch.bfloat16):
-    outputs = model(batch)
-    loss = loss_fn(outputs, targets)
-```
-
-**bfloat16:** Half-precision floating point that preserves the full exponent range of float32 while halving memory. This allows:
-- ~2x faster matrix multiplications on modern GPUs
-- ~2x less memory for activations (crucial for 1024x1024 images)
-- Minimal impact on training quality (unlike float16, bfloat16 doesn't suffer from underflow in gradients)
-
-The GradScaler handles any remaining numerical issues by dynamically scaling the loss before backward pass.
+**No GradScaler.** Older training code uses `torch.cuda.amp.GradScaler` to handle fp16 underflow. Bfloat16 has the same exponent range as fp32, so underflow is impossible — GradScaler does nothing useful and adds per-step sync overhead. Removed from this codebase. This matches PyTorch's recommended bf16 pattern (`pytorch.org/docs/stable/notes/amp_examples.html`).
 
 ---
 
@@ -789,59 +781,59 @@ The GradScaler handles any remaining numerical issues by dynamically scaling the
 
 Here is the complete training flow, step by step:
 
-### 10.1 Feature Precomputation (Before Training Loop)
+### 10.1 Feature Precomputation (optional, off by default in Run 7)
 
-SAM2's image encoder (Hiera backbone + FPN + conv_s0/conv_s1) is frozen during training (no LoRA on Conv2d layers), so its output is deterministic for each input frame. Computing it once and caching eliminates ~60-70% of per-step compute.
+SAM2's image encoder is mostly frozen, but Run 6 added LoRA adapters on the last 2 Hiera trunk blocks, so the encoder output is **no longer deterministic per frame** — adapter weights change every step. Feature precomputation would silently miss those adapter contributions.
 
-```
-1. Before training, run the encoder on every frame once (~3-5 min for 876 frames)
-2. Cache the 3-level FPN features in float16 on CPU (~4-8 MB/frame)
-3. Store positional encodings once (they're purely spatial, independent of content)
-4. During training, assemble cached features into backbone_out and skip the encoder
-```
+For this reason, `precompute_features = False` in Run 7's config. The encoder runs every step. We also wanted the full pixel-level augmentation pipeline (rotation, shear, brightness, contrast), which precomputation drops in favour of feature-level flips only.
 
-**Impact:** ~80 sec/step -> ~8 sec/step (10x speedup). 5 epochs in ~55 min instead of ~36 hours.
+You can still opt back into precomputation with `precompute_features = True` for an A/B test against an encoder-frozen baseline (`--no-hiera-last-stage`), but it is not the shipping configuration.
 
 ### 10.2 Data Loading
 
 ```
 1. Get list of video names from training_data/images/
-2. Split into train (80%) and val (20%) sets
+2. Split into train (75%) and val (25%) sets — Run 7 default is 15 train / 5 val
 3. Create NeuronVideoDataset for each (with clip_stride and cache_in_memory)
 4. Each __getitem__ call:
    a. Pick a random clip (video_idx, start_frame) using clip stride
    b. Load 8 consecutive PNG frames and masks (from cache or disk)
-   c. Apply augmentations (validation transform when precomputing)
+   c. Apply augmentations (full pixel-level pipeline)
    d. Find object IDs present in clip
    e. Build VideoDatapoint with Frame/Object structures
    f. Return (VideoDatapoint, frame_ids) for feature cache lookup
 5. Collate into (BatchedVideoDatapoint, frame_id_lists) via neuron_collate_fn
 ```
 
-### 10.3 Forward Pass
+### 10.3 Forward Pass — Path B (`_forward_memory`, default since Run 5)
 
 ```
 (batch, frame_id_lists) -> model (SAM2TrainingWrapper)
 
-  With precomputed features (default):
-    1. Assemble backbone_out from cached per-frame features
-    2. Optionally flip feature maps (feature-level augmentation)
-    3. Flip masks to match
-    4. Skip image encoder entirely
-
-  Without precomputation:
-    1. Image encoder processes all frames -> features [B*T, C, H, W]
-
-  Then (both paths):
-    2. Features are reshaped to video format [B, T, C, H, W]
-    3. For each object, propagate through time:
-       - Frame 0: Use GT mask as prompt
-       - Frames 1-7: Use previous prediction as memory
-       - Mask decoder produces prediction for each frame
-    4. Return dict with 'pred_masks': [B, T, N_obj, H, W]
+  1. Image encoder processes all frames -> features [B*T, C, H, W]
+     (full pixel-level augmentation is applied at the dataset level;
+      precomputation is off because the Hiera last-stage LoRA adapters
+      mutate the encoder output every step.)
+  2. Features are reshaped to video format [B, T, C, H, W]
+  3. For each frame t = 0..T-1, call SAM2Base.track_step(...) with
+     is_init_cond_frame = (t == 0):
+       - t = 0: GT mask is the dense prompt; result stored under
+         cond_frame_outputs.
+       - t > 0: mask_inputs = None; memory_attention pulls from the
+         memory bank's cond + non-cond entries to produce the
+         conditioning, the SAM heads emit the mask, and the result is
+         stored under non_cond_frame_outputs and re-encoded into the
+         bank.
+     Gradients flow through the bank (no detach), so the 40
+     memory_attention LoRA adapters actually receive gradient.
+  4. Return dict with 'pred_masks_high_res': [B, T, N_obj, H, W]
 ```
 
-Note: We use `SAM2TrainingWrapper` (defined in `src/trainer.py`) which wraps the standard SAM2 model from the pip package. This is necessary because Meta's internal `SAM2Train` class is not included in the public pip package.
+Path A (legacy, `--no-memory-attention`) is the simplified previous-mask-as-prompt loop used in Runs 1–4. It bypasses `memory_attention.forward` entirely; the memory_attention LoRA adapters get zero gradient on this path. Turning Path B on alone — without any other change — jumped Run 5's val IoU from Run 4's 0.7755 to ~0.8295.
+
+**Critical wrapper fix.** When `use_memory_path=True`, the wrapper sets `model.pred_obj_scores = False` and `model.use_mask_input_as_output_without_sam = False`. Without these flags, `SAM2Base._forward_sam_heads` replaces masks with `NO_OBJ_SCORE` (~`-inf`) whenever its untrained obj-score head outputs <0. At init the score is near zero with sign noise, so half the predictions silently went to all-zero, dice became 1.0 trivially on those, val IoU collapsed to 0.0, and no gradient flowed. This bug is the reason Path B looked broken in early Run 5 attempts. Anyone touching the wrapper must preserve those two flag overrides.
+
+We use `SAM2TrainingWrapper` (defined in `src/trainer.py`) which wraps the standard SAM2 model from the pip package. This is necessary because Meta's internal `SAM2Train` class is not included in the public pip package.
 
 ### 10.3 Loss Computation
 
@@ -855,8 +847,8 @@ outputs -> loss_fn (MultiStepMultiMasksAndIous)
   L_dice = dice_loss(pred_masks, gt_masks) * 2.0
 
   # Topology losses (computed at 256×256 for speed, ~2000× faster)
-  L_cbdice = cbdice_loss(pred_masks, gt_masks) * 1.0   # Downsample → skeleton + EDT → cbDice
-  L_supervoxel = supervoxel_loss(pred_masks, gt_masks) * 1.0  # Downsample → scipy label → upscale critical masks → loss at full res
+  L_cbdice = cbdice_loss(pred_masks, gt_masks) * 5.0   # Downsample → skeleton + EDT → cbDice
+  L_supervoxel = supervoxel_loss(pred_masks, gt_masks) * 0.3  # Downsample → scipy label → upscale critical masks → loss at full res
 
   # Auxiliary losses
   L_iou = iou_loss(pred_iou, actual_iou) * 1.0
@@ -869,12 +861,10 @@ outputs -> loss_fn (MultiStepMultiMasksAndIous)
 
 ```
 1. optimizer.zero_grad()           -- Clear old gradients
-2. scaler.scale(loss).backward()   -- Compute gradients (with AMP scaling)
-3. scaler.unscale_(optimizer)      -- Unscale for gradient clipping
-4. clip_grad_norm_(params, 1.0)    -- Clip large gradients
-5. scaler.step(optimizer)          -- Update weights
-6. scaler.update()                 -- Adjust AMP scale factor
-7. scheduler.step()                -- Update learning rate
+2. loss.backward()                 -- Compute gradients (no GradScaler — bf16)
+3. clip_grad_norm_(params, 1.0)    -- Clip large gradients
+4. optimizer.step()                -- Update weights (fused AdamW)
+5. scheduler.step()                -- Update learning rate (per-step cosine)
 ```
 
 ### 10.5 Validation
@@ -896,12 +886,16 @@ Every 2 epochs:
 
 ### 10.6 Checkpointing
 
-The checkpoint file (`lora_weights.pt`) contains only:
+There are **two** checkpoint files:
+
+**`lora_weights.pt`** — inference-only, saved when val IoU improves:
 ```python
 {
-    'lora_state_dict': {      # LoRA A and B matrices
+    'lora_state_dict': {      # LoRA A and B matrices (both groups, dual-rank)
         "sam_mask_decoder.transformer.layers.0.self_attn.q_proj.lora_A.weight": tensor,
         "sam_mask_decoder.transformer.layers.0.self_attn.q_proj.lora_B.weight": tensor,
+        ...
+        "image_encoder.trunk.blocks.10.attn.qkv.lora_A.weight": tensor,  # Hiera group
         ...
     },
     'other_state_dict': {     # Unfrozen embeddings
@@ -909,11 +903,15 @@ The checkpoint file (`lora_weights.pt`) contains only:
         "no_mem_embed": tensor,
         ...
     },
-    'config': {'rank': 8, 'alpha': 16.0}
+    'config': {'rank': 16, 'alpha': 32.0, 'hiera_rank': 8, 'hiera_alpha': 16.0}
 }
 ```
 
-This is typically 1-2 MB (vs ~150 MB for the full model), because we only save the adaptation, not the base model.
+This is ~25 MB at Run 7 sizes (vs ~150 MB for the full model). The loader regex-classifies each tensor name to decide which rank to instantiate.
+
+**`train_state.pt`** — written every epoch for resume:
+
+Contains everything in `lora_weights.pt` plus optimizer state, scheduler state, current epoch, best val IoU, and the early-stopping counter. Heavier (~40 MB extra from Adam moments) but lets a SLURM job pick up exactly where the previous one stopped. See Section 14's "Chained training" for the sbatch pattern.
 
 ---
 
@@ -1011,19 +1009,19 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 
 | Category | Parameter | Value | Rationale |
 |----------|-----------|-------|-----------|
-| **LoRA (main)** | rank | **16** | Bumped from 8 with the 16-video dataset for more adapter capacity |
+| **LoRA (main)** | rank | **16** | Bumped from 8 in Run 5 with the larger dataset for more adapter capacity (68 Linear layers wrapped) |
 | | alpha | **32.0** | Scale = α/r = 2.0 (preserved as rank doubled) |
 | | dropout | 0.10 | Light regularization (0.25 over-regularized; 0.05 underfit) |
-| **LoRA (Hiera)** | hiera_last_stage | **True** | Run 6: LoRA on the last 2 Hiera trunk blocks (encoder visual features) |
+| **LoRA (Hiera)** | hiera_last_stage | **True** | Run 6: LoRA on the last 2 Hiera trunk blocks (8 Linear layers in encoder visual features) |
 | | hiera_rank | **8** | Smaller than main LoRA — 768-dim layers, more capacity per rank |
 | | hiera_alpha | **16.0** | Scale = α/r = 2.0 (consistent) |
 | **Data** | image_size | 1024 | SAM 2 native resolution |
 | | num_frames | 8 | B×T = 16, GPU-friendly |
 | | max_objects | 3 | Typical max neurons per field of view |
 | | val_fraction | 0.25 | 5 of 20 videos held out — mean of 5 keeps the headline IoU stable run-to-run |
-| | val_videos | None | When set, overrides val_fraction with explicit list |
+| | val_videos | None | When set, overrides val_fraction. Run 7 default: `A91_C1_2, A31_C1, A52_C2, A22_C2, A42_C1` |
 | | clip_stride | 4 | Skip overlapping clips |
-| | precompute_features | **False** | Full pixel-level augmentation enabled (rotation, shear, brightness, contrast) |
+| | precompute_features | **False** | Full pixel-level augmentation enabled (rotation, shear, brightness, contrast); also required because Hiera last-stage LoRA mutates encoder output every step |
 | | cache_in_memory | True | Load all frames into RAM at init |
 | **Augmentation** | h_flip, v_flip | p=0.5 | Microscopy has no orientation preference |
 | | rotation | ±25° | Neurons grow in arbitrary directions |
@@ -1041,15 +1039,17 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | **Loss** | focal weight | 5.0 | Pixel accuracy is primary objective |
 | | dice weight | 2.0 | Region shape quality |
 | | cbdice weight | **5.0** | Skeleton topology — bumped from 3.0 in Run 5 to push connectivity |
-| | use_supervoxel | **True** | Re-enabled at small weight (0.3) for Run 5 with the 16-video dataset and Path-B forward |
-| | supervoxel weight | **0.3** | Small; disable again if diagnostics show flat trajectory |
+| | use_supervoxel | **True** | Re-enabled in Run 5 (small weight 0.3) with the larger dataset and Path B forward |
+| | supervoxel weight | **0.3** | Small but non-zero; Run 7 diagnostics show val component ≈ 0.064 (it is learning, not flat) |
 | | iou weight | 1.0 | Confidence calibration |
 | | class weight | 1.0 | Anti-hallucination |
 | | focal alpha | 0.25 | Balances class imbalance |
 | | focal gamma | 2.0 | Focuses on hard examples |
-| | topology_resolution | 256 | Resolution for topology losses (16× fewer pixels than 1024) |
-| **Training** | epochs | **80** | Bumped from 60: 16-video dataset + rank 16 — more to learn |
-| | use_memory_attention_path | **True** | Path B: SAM 2's real track_step API; activates the 40 memory_attention LoRA adapters that were inactive in runs 1–4 |
+| | topology_resolution | **256** | Resolution for topology losses (16× fewer pixels than 1024). Note: post-Run-7 experiments suggest this may be a ceiling for finer connectivity errors — see "Post-Run-7 experiments" below |
+| **Training** | epochs | **90** | Run 7: 90 epochs × ~260s ≈ 6.5 h on B200 → 2 chained 4-hour SLURM jobs |
+| | use_memory_attention_path | **True** | Path B: SAM 2's real track_step API; activates the 40 memory_attention LoRA adapters that were inactive in Runs 1–4 |
+| | val_every_n_epochs | 2 | Validate every 2 epochs |
+| | early_stopping_patience | 15 | Stop if no IoU improvement for 15 validation checks |
 | | batch_size | 2 | Small batch → implicit regularization on small dataset |
 | | seed | 42 | Reproducibility |
 | | AMP | bfloat16 | 2× speed, 2× memory; no GradScaler needed |
@@ -1057,6 +1057,8 @@ If `use_finetuned` is checked but no checkpoint exists, the system falls back to
 | | pin_memory + non_blocking | True (auto) | H2D copies overlap with compute |
 | | cuDNN SDPA backend | enabled (auto) | FlashAttention-3 on Blackwell |
 | | compile_encoder / compile_decoder | False (opt-in flags) | Optional `torch.compile` |
+
+**Post-Run-7 experiments (not the shipping config).** Run 8 tried rebalancing the loss (dice 2 → 1.5, cbDice 5 → 10, supervoxel 0.3 → 2.0) and lost 0.017 IoU (0.8401 → 0.8229). Diagnosis: the supervoxel component hit a structural ceiling at val ≈ 0.05 because connectivity is computed at 256 — finer breaks were invisible to the loss. Run 9 (in progress) bumps `topology_resolution: 256 → 384` to lift the ceiling and reverts the other weights to Run 7 values (only supervoxel kept slightly above Run 7 at 0.5). Run 7 remains the documented best.
 
 ---
 
@@ -1110,7 +1112,7 @@ The startup banner echoes the resolved config so you can verify what's running.
 
 #### Chained training across SLURM jobs
 
-For training runs that exceed the cluster's wall-clock limit (e.g. 90+ epochs on a 4-hour partition), `--resume` lets a single logical run span multiple submissions. The training loop writes `checkpoints/train_state.pt` at the end of every epoch — this contains the model weights, optimiser moments, LR scheduler position, and the early-stopping counter.
+For training runs that exceed the cluster's wall-clock limit (e.g. Run 7's 90 epochs × ~260 s ≈ 6.5 h on a 4-hour partition), `--resume` lets a single logical run span multiple submissions. The training loop writes `checkpoints/train_state.pt` at the end of every epoch — this contains the model weights, optimiser moments, LR scheduler position, and the early-stopping counter.
 
 A self-contained sbatch script that auto-detects whether to resume or start fresh:
 
@@ -1138,7 +1140,7 @@ After training, `checkpoints/lora_weights.pt` will exist. Open the labeling tool
 | `cli.py` | CLI entry point | `cmd_prepare()`, `cmd_train()` |
 | `src/config.py` | All hyperparameters as dataclasses | `TrainingConfig`, `LoRAConfig` |
 | `src/prepare_data.py` | TIF to PNG conversion + stats | `prepare_dataset()`, `prepare_single_video()` |
-| `src/lora.py` | LoRA adapter implementation | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()`, `save/load_train_state()` |
+| `src/lora.py` | LoRA adapter implementation (dual-rank-aware load) | `LoRALinear`, `apply_lora()`, `save/load_lora_weights()`, `save/load_train_state()` |
 | `src/data_utils.py` | Data containers for training | `Frame`, `Object`, `VideoDatapoint`, `BatchedVideoDatapoint`, `collate_fn()` |
 | `src/loss_fns.py` | Loss function implementations | `FocalLoss`, `DiceLoss`, `SoftCBDiceLoss`, `SupervoxelLoss2D`, `MultiStepMultiMasksAndIous` |
 | `src/neuron_dataset.py` | PyTorch Dataset for video clips | `NeuronVideoDataset`, `neuron_collate_fn()` |

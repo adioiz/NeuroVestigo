@@ -166,11 +166,13 @@ y = W₀·x + (α/r)·B·A·x
 - `scale = alpha/rank = 32/16 = 2.0`: How much LoRA influences output
 - `dropout = 0.10`: 10% of inputs are randomly zeroed during training. Tuned: 0.25 over-regularized, 0.05 underfit, 0.10 is the sweet spot.
 
-**Why rank 16 for main LoRA (was 8 through Run 4):** With the dataset grown to 16 videos, the overfit risk from a bigger adapter is lower, and Runs 1–4 saw the model behaving very similarly to the base SAM 2 — suggesting more adapter capacity could help. Trainable parameter count roughly doubles from rank 8.
+**Why rank 16 for main LoRA (was 8 through Run 4):** Bumped in Run 5 as the dataset grew (16 → 20 videos by Run 7), where the overfit risk from a bigger adapter is lower, and Runs 1–4 saw the model behaving very similarly to the base SAM 2 — suggesting more adapter capacity could help. Trainable parameter count roughly doubles from rank 8.
 
-**Why Hiera last-stage LoRA in Run 6:** Run 5 (Path B + rank 16) reached val IoU 0.8295 with train_loss=0.395 > val_loss=0.282 — a wide reversed gap that signals capacity headroom, not overfit. Per-video performance was uniform (0.822/0.844/0.823), suggesting a representational ceiling rather than isolated hard cases. The frozen Hiera encoder was pretrained on natural images; its deepest features had never seen phase-contrast microscopy. Adapting the last 2 trunk blocks gives the model permission to adjust its visual representation to microscopy without fully unfreezing the encoder.
+**Why Hiera last-stage LoRA in Run 6:** Run 5 (Path B + rank 16) reached val IoU ~0.8295 with train_loss > val_loss — a reversed gap that signals capacity headroom, not overfit. Per-video performance was uniform, suggesting a representational ceiling rather than isolated hard cases. The frozen Hiera encoder was pretrained on natural images; its deepest features had never seen phase-contrast microscopy. Adapting the last 2 trunk blocks gives the model permission to adjust its visual representation to microscopy without fully unfreezing the encoder. Run 7 (20 videos, all improvements combined, 90 epochs) reached **val IoU 0.8401 / Dice 0.9117** at epoch 88.
 
-**Why rank 8 (smaller than main) for Hiera:** Hiera's last-stage layers are 768-dim (vs 256 in the decoder/memory_attention). The same rank gives more absolute capacity per layer, and encoder edits are more impactful — so a smaller LoRA is the safer add given only 16 training videos. Coverage is exactly 8 layers: `attn.qkv`, `attn.proj`, `mlp.layers.0`, `mlp.layers.1` per block × 2 blocks.
+**Why rank 8 (smaller than main) for Hiera:** Hiera's last-stage layers are 768-dim (vs 256 in the decoder/memory_attention). The same rank gives more absolute capacity per layer, and encoder edits are more impactful — so a smaller LoRA is the safer add given the dataset size. Coverage is exactly 8 layers: `attn.qkv`, `attn.proj`, `mlp.layers.0`, `mlp.layers.1` per block × 2 blocks.
+
+**Dual-rank checkpoint.** Because the two groups use different ranks, the saved `lora_state_dict` contains tensors of two distinct shapes. `load_lora_weights` (in `src/lora.py`) regex-classifies each tensor name against `SAM2_LORA_TARGETS` and `HIERA_LAST_STAGE_LORA_TARGETS` to decide which rank to instantiate before loading. The total trainable parameter count is **5,557,250 of 39,876,930 (13.9%)**.
 
 ---
 
@@ -191,13 +193,13 @@ class DataConfig:
 ```
 
 **Why `val_fraction = 0.25` (was 0.2)?**
-With only 12 videos, the previous 80/20 split gave 2 val videos. Mean of 2 is noisy — a single video's IoU dominates the headline number. Bumping to 0.25 gives 9 train / 3 val and a more stable mean of 3.
+With the dataset at 20 videos in Run 7, 0.25 gives a clean 15 train / 5 val split. Mean of 5 keeps the headline IoU stable run-to-run. Earlier runs used smaller splits (2 of 12, 3 of 12, 3 of 16) and were noticeably more sensitive to individual hard videos.
 
 **Why `val_videos` (override field)?**
-Lets you pin a specific val split for split-rotation experiments. When None (default), the seed-based shuffle picks 3 videos. When set (e.g. `["A11_C1", "A52_C1", "A91_C1_1"]`), those exact 3 go to val and the rest train. CLI flag: `--val-videos A11_C1,A52_C1,A91_C1_1`.
+Lets you pin a specific val split for split-rotation experiments. When None (default), the seed-based shuffle picks the videos. When set, those exact names go to val and the rest train. Run 7's val split is `["A91_C1_2", "A31_C1", "A52_C2", "A22_C2", "A42_C1"]`. CLI flag: `--val-videos A91_C1_2,A31_C1,A52_C2,A22_C2,A42_C1`.
 
 **Why `precompute_features = False` (was True)?**
-With precompute on, all training augmentation is replaced by feature-level h-flip / v-flip — rotation, shear, brightness, contrast all silently drop out. On a small dataset that effectively gives the model only ~4 distinct views per frame. Precompute is faster per step but the augmentation loss made the model overfit. Now off by default; turn back on with no other changes if you want the speedup at the cost of augmentation diversity.
+Two reasons. (1) With precompute on, all training augmentation is replaced by feature-level h-flip / v-flip — rotation, shear, brightness, contrast all silently drop out. On a small dataset that effectively gives the model only ~4 distinct views per frame. (2) Run 6 added LoRA adapters on the last 2 Hiera trunk blocks, so the encoder output is **no longer deterministic per frame** — adapter weights change every step. Precomputing the encoder output once would silently freeze those new adapters out of the gradient path. Off by default in Run 7; you can still turn it on with `--no-hiera-last-stage` for an encoder-frozen A/B baseline.
 
 **Why `num_frames = 8`?**
 
@@ -226,7 +228,7 @@ With stride=1, consecutive clips overlap by 7/8 frames (87.5% overlap). This was
 The frozen image encoder output is deterministic — recomputing it every step wastes ~60-70% of per-step compute. Precomputing once gives a **10x speedup**.
 
 **Why `cache_in_memory = True`?**
-All 876 frames + masks fit in ~2.4 GB RAM. Caching eliminates disk I/O from NFS, which can add 1-5s/step on cluster storage.
+All ~1440 frames + masks (20 videos × ~72 frames) fit in ~5 GB RAM. Caching eliminates disk I/O from NFS, which can add 1-5s/step on cluster storage.
 
 ---
 
@@ -270,7 +272,7 @@ class OptimizerConfig:
 ```
 
 **Why `warmup_epochs = 2` (was 1)?**
-LoRA-B is zero-initialized; the first gradient steps push it out of a sharp init region and benefit from a gentler LR ramp. 2 epochs ≈ 3.3% of a 60-epoch run.
+LoRA-B is zero-initialized; the first gradient steps push it out of a sharp init region and benefit from a gentler LR ramp. 2 epochs ≈ 2.2% of a 90-epoch Run 7.
 
 **Why `min_lr_ratio = 0.05` (was 0.10)?**
 GPT-3 used 10% as the floor; in earlier runs the cosine bottomed out ~10 epochs before training ended and the flat 10% tail produced no improvements. Halving the floor lets the late phase run at finer LR steps.
@@ -321,10 +323,10 @@ Neurons are tree-like — topology fidelity matters more than bulk pixel overlap
 
 **Why `use_supervoxel = True` again?**
 Was disabled in Run 3 after sitting flat at 0.30 for many epochs. Re-enabled in Run 5 with a smaller weight (0.3 instead of 1.0) for two reasons:
-1. The dataset grew from 12 to 16 videos — the previous behaviour may have been an undersampling artefact.
-2. Path B (real `memory_attention`) means the forward pass now produces temporally coherent predictions; the connectivity signal supervoxel measures might finally be learnable.
+1. The dataset grew (12 → 16, then 20 by Run 7) — the previous flat behaviour may have been an undersampling artefact.
+2. Path B (real `memory_attention`) means the forward pass now produces temporally coherent predictions; the connectivity signal supervoxel measures becomes learnable.
 
-Diagnostics will show within ~5 epochs whether the per-component value drops below 0.20. If it stays flat at 0.30, disable again.
+Run 7 diagnostics confirm the per-component value does move (val supervoxel ≈ 0.064 at the best epoch — well below the constant ~0.30 it sat at in Runs 1–2).
 
 **Why `topology_resolution = 256`?**
 
@@ -1274,9 +1276,9 @@ def train_val_split(video_names, val_fraction=0.2, seed=42):
 
 `seed=42` ensures the same split every time you run. This is critical for reproducibility — you want to compare different training runs on the same data split.
 
-With 10 videos and 20% validation:
-- 2 videos for validation
-- 8 videos for training
+With 20 videos and 25% validation (Run 7 default):
+- 5 videos for validation
+- 15 videos for training
 
 ---
 
@@ -1559,7 +1561,7 @@ def build_training_model(config, device):
     print(f"  Wrapped {len(wrapped)} Linear layers with LoRA")
 ```
 
-This wraps ~50 Linear layers with LoRALinear.
+This wraps 68 Linear layers with LoRALinear (the main group). When `lora.hiera_last_stage=True`, a second `apply_lora` call wraps a further 8 Linear layers in the Hiera last stage at the smaller `hiera_rank` / `hiera_alpha`.
 
 ---
 
@@ -1674,16 +1676,16 @@ def build_scheduler(optimizer, config, steps_per_epoch):
 ```
 LR
 │
-│  Warmup (1 epoch)
+│  Warmup (2 epochs)
 │ ╱
 │╱   Cosine annealing
 │ ╲
 │   ╲
 │     ╲
-│       ╲____
-│             ╲
-└─────────────────────── epochs
-  0 1            55  60
+│       ╲____         floor at 5% of peak
+│             ╲___    (min_lr_ratio = 0.05)
+└──────────────────────────── epochs
+  0  2                    90
 ```
 
 **Warmup formula:**
@@ -1706,21 +1708,23 @@ At progress=1: cos(π) = -1, so lr ≈ 0
 
 ## Function: `train()` — The Main Loop
 
-### Mixed Precision Setup (Lines 297-300)
+### Mixed Precision Setup
 
 ```python
     use_amp = config.use_amp and device == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     amp_dtype = torch.bfloat16 if use_amp else torch.float32
+    # No GradScaler — bf16 has fp32's exponent range, no underflow risk.
 ```
 
 **What is mixed precision (AMP)?**
 
-Use float16/bfloat16 for forward pass (faster, less memory) but float32 for sensitive operations (gradients, loss).
+Use bfloat16 for forward pass (faster, less memory) and backward at the same precision. Loss and optimizer step stay in default precision.
 
 **bfloat16 vs float16:**
 - float16: 5-bit exponent, 10-bit mantissa — can underflow
 - bfloat16: 8-bit exponent, 7-bit mantissa — same range as float32, safer
+
+**No GradScaler.** Older fp16 training requires `torch.amp.GradScaler` to handle underflow. bf16 doesn't underflow, so scaling adds no value and inserts a host sync per step (the scaler's inf/NaN check). We follow PyTorch's recommended bf16 pattern and omit the scaler entirely.
 
 ---
 
@@ -1985,8 +1989,8 @@ After reading this document, you should be able to explain:
 
 1. **Why LoRA?** — Parameter-efficient fine-tuning that avoids overfitting with small datasets
 2. **LoRA math:** `y = W₀·x + (α/r)·B·A·x`, B initialized to zeros
-3. **Why those specific layers?** — Mask decoder (what to segment), memory_attention (temporal propagation), and **as of Run 6**, the last 2 blocks of the Hiera trunk (the deepest encoder features — domain adaptation for microscopy). The decoder + memory_attention are LoRA-adapted at rank 16; Hiera last-stage at rank 8. The encoder's base weights still stay frozen; only the new LoRA adapters train. In Runs 1–4 the wrapper used a simplified previous-mask-as-prompt propagation that bypassed memory_attention entirely.
-4. **Why freeze image encoder?** — General features work, would overfit with 10 videos
+3. **Why those specific layers?** — Mask decoder (what to segment), memory_attention (temporal propagation), and **as of Run 6**, the last 2 blocks of the Hiera trunk (the deepest encoder features — domain adaptation for microscopy). The decoder + memory_attention are LoRA-adapted at rank 16; Hiera last-stage at rank 8 (a dual-rank checkpoint). The encoder's base weights stay frozen; only the new LoRA adapters train. In Runs 1–4 the wrapper used a simplified previous-mask-as-prompt propagation that bypassed memory_attention entirely; Run 5's Path B fix activates the 40 memory_attention LoRAs and was the single biggest IoU jump in the project history (0.7755 → ~0.8295).
+4. **Why freeze image encoder base weights?** — General features work, full retrain would overfit with 20 videos. Only the new last-stage LoRA adapters train.
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`
 7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology, weight 5) + Supervoxel (connectivity, weight 0.3) + IoU pred + Object score.
