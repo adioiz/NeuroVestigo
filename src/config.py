@@ -95,7 +95,7 @@ class LossConfig:
     loss_mask_weight: float = 5.0  # Focal loss
     loss_dice_weight: float = 2.0  # Shape coverage
     loss_cbdice_weight: float = 5.0  # Skeleton topology
-    loss_supervoxel_weight: float = 0.5  # Connectivity preservation
+    loss_supervoxel_weight: float = 0.3  # Connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
     # Focal loss params
