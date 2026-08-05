@@ -398,47 +398,70 @@ biologically meaningful failure. We use the centerline-boundary Dice
 loss of Shi et al.~\cite{cbdice}, which extends clDice~\cite{cldice}
 with a Euclidean-distance-transform (EDT) boundary weighting.
 
-\paragraph{Soft skeletonisation.} Following clDice, the predicted
-probability map $\hat{p}$ and binary target $g$ are skeletonised by a
-differentiable iterative scheme:
-\begin{align}
-    \mathrm{erode}(x) &= \mathrm{minpool}_{3 \times 3}(x), \\
-    \mathrm{dilate}(x) &= \mathrm{maxpool}_{3 \times 3}(x), \\
-    \mathrm{open}(x) &= \mathrm{dilate}(\mathrm{erode}(x)), \\
-    \mathrm{skel}_k(x) &= \mathrm{skel}_{k-1}(x) + \max\bigl(0,\,
-        \mathrm{erode}^k(x) - \mathrm{open}(\mathrm{erode}^k(x))\bigr).
-\end{align}
-We run $k=5$ iterations.
+Our implementation is a faithful port of the authors' reference
+code~\cite{cbdice}; an earlier in-house paraphrase left the term inert
+(the topology-precision ratio collapsed to a constant), which the port
+corrects.
 
-\paragraph{EDT boundary weighting.} For each binary mask $m$, the
-distance transform $d(m)$ assigns each foreground pixel its Euclidean
-distance to the boundary. The local radius at the centerline equals
-$d$, so we define inverse-radius weights
+\paragraph{Soft skeletonisation.} Following clDice, a mask $x$ is
+skeletonised by a differentiable iterative scheme with morphological
+opening $\mathrm{open}(x) = \mathrm{maxpool}_{3}(\mathrm{minpool}_{3}(x))$:
+\begin{align}
+    \mathrm{skel}_0(x) &= \max\bigl(0,\, x - \mathrm{open}(x)\bigr), \\
+    \delta_k &= \max\bigl(0,\, \mathrm{erode}^k(x) - \mathrm{open}(\mathrm{erode}^k(x))\bigr), \\
+    \mathrm{skel}_k(x) &= \mathrm{skel}_{k-1}(x) + \max\bigl(0,\,
+        \delta_k - \mathrm{skel}_{k-1}(x)\,\delta_k\bigr).
+\end{align}
+We run $k=5$ iterations. The $k{=}0$ seed term is essential: without it
+the first erosion destroys any structure $\le 2$\,px wide before it is
+measured, yielding an empty skeleton for the thinnest neurites; the
+soft union $\max(0, \delta_k - \mathrm{skel}\,\delta_k)$ keeps the
+skeleton in $[0,1]$. Skeletonisation is applied to the \emph{hard}
+masks; gradients re-enter through the predicted probabilities in the
+weight maps below.
+
+\paragraph{Radius-normalised weight maps.} For a mask $m$ with skeleton
+$S = \mathrm{skel}_5(m)$, let $d = \mathrm{EDT}(m)$ be the Euclidean
+distance transform (each foreground pixel's distance to the boundary,
+i.e.\ the local radius) and $r = d \cdot S$ the radius sampled along the
+skeleton. With the per-image maximum radius $R = \max(\max_i r_i,\, 1)$
+and $r_{\min}=1$, we form three maps~\cite{cbdice}:
+\begin{align}
+    q_v(m) &= \tfrac{\min(d,\,R)}{R}\, m && \text{(distance--volume)}, \\
+    q_{sv}(m) &= \tfrac{r}{R}\, m && \text{(skeleton radius)}, \\
+    q_s(m) &= \tfrac{R - r + r_{\min}}{R}\, S && \text{(inverse radius)}.
+\end{align}
+$q_s$ up-weights thin structures (small $r$) and down-weights thick
+somata. For the prediction the geometry ($d, r, R$) is computed on the
+binarised mask $\hat p_\text{bin} = \mathbb{1}[\hat p > 0.5]$, while
+$q_v, q_{sv}, q_s$ are rescaled by $\hat p$ so gradients flow; for the
+target the hard mask $g$ is used throughout.
+
+\paragraph{The loss.} Writing $q^{p}_\bullet$ and $q^{g}_\bullet$ for the
+prediction- and target-side maps, cbDice combines a topology precision
+and sensitivity and takes their harmonic mean:
+\begin{align}
+    w_\text{prec} &= \frac{\langle q^{p}_s,\, q^{g}_v \rangle + \epsilon}
+        {\sum \mathrm{comb}(q^{p}_{sv},\, q^{g}_{sv},\, q^{p}_s) + \epsilon}, \\
+    w_\text{sens} &= \frac{\langle q^{g}_s,\, q^{p}_v \rangle + \epsilon}
+        {\sum \mathrm{comb}(q^{g}_{sv},\, q^{p}_{sv},\, q^{g}_s) + \epsilon}, \\
+    \mathcal{L}_\text{cbDice} &= 1 \;-\;
+        \frac{2\, w_\text{prec}\, w_\text{sens}}{w_\text{prec} + w_\text{sens}},
+\end{align}
+where $\langle \cdot, \cdot \rangle$ is the elementwise inner product and
+the merge operator
 \begin{equation}
-    W(m)_i \;=\;
+    \mathrm{comb}(A,B,C)_i =
     \begin{cases}
-        \dfrac{1}{d(m)_i + 1} \cdot \dfrac{|m|}{\sum_{j\in m} 1/(d(m)_j + 1)}
-        & \text{if } i \in m, \\
-        0 & \text{otherwise}.
+        A_i\,C_i & \text{if } A_i \neq 0 \text{ and } B_i = 0, \\
+        B_i\,C_i & \text{otherwise},
     \end{cases}
 \end{equation}
-Thin branches (small $d$) get larger weights; thick somata (large $d$)
-get smaller weights.
-
-\paragraph{The loss.} Let $S_p = \mathrm{skel}_5(\hat p)$ and
-$S_g = \mathrm{skel}_5(g)$. cbDice computes a topology precision and
-sensitivity, both reweighted by EDT, then takes their harmonic mean:
-\begin{align}
-    T_\text{prec} &= \frac{\langle W(g),\, S_p \cdot g \rangle + \epsilon}
-                           {\langle W(g),\, S_p \rangle + \epsilon}, \\
-    T_\text{sens} &= \frac{\langle W(\hat p_\text{bin}),\, S_g \cdot \hat p \rangle + \epsilon}
-                           {\langle W(\hat p_\text{bin}),\, S_g \rangle + \epsilon}, \\
-    \mathcal{L}_\text{cbDice} &= 1 \;-\;
-        \frac{2\, T_\text{prec}\, T_\text{sens}}{T_\text{prec} + T_\text{sens}},
-\end{align}
-where $\hat p_\text{bin} = \mathbb{1}[\hat p > 0.5]$ and $\langle \cdot, \cdot \rangle$
-is the elementwise inner product. The skeleton and EDT operations are
-performed at a downsampled topology resolution of $256 {\times} 256$
+builds each denominator from both prediction- and target-side
+skeleton-radius maps. Precision scores the predicted skeleton ($q^{p}_s$)
+against the target distance--volume ($q^{g}_v$); sensitivity scores the
+target skeleton against the predicted distance--volume. Skeleton and EDT
+operations run at a downsampled topology resolution of $256 {\times} 256$
 ($16 \times$ fewer pixels than the full mask) for tractable runtime.
 
 \subsubsection{Supervoxel connectivity loss}

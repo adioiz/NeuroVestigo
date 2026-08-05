@@ -939,6 +939,20 @@ def train(config: TrainingConfig = None):
             f"Run prepare_data.py first."
         )
 
+    # Remove the held-out TEST set from the pool BEFORE any split, so it can
+    # never leak into train or val (even under the random split).
+    test_set = set(config.data.test_videos or [])
+    if test_set:
+        leaked_to_val = test_set & set(config.data.val_videos or [])
+        if leaked_to_val:
+            raise ValueError(
+                f"Test videos requested as validation: {sorted(leaked_to_val)}. "
+                f"Remove them from config.data.test_videos to use them."
+            )
+        excluded = sorted(v for v in all_videos if v in test_set)
+        all_videos = [v for v in all_videos if v not in test_set]
+        print(f"Excluding {len(excluded)} held-out TEST video(s) from train/val: {excluded}")
+
     if config.data.val_videos:
         # Explicit override — pin val to these videos, train on the rest.
         all_set = set(all_videos)

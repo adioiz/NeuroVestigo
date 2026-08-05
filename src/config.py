@@ -32,6 +32,14 @@ class DataConfig:
     # Optional: explicitly pin which videos go in val. When set, overrides val_fraction
     # and the random seed-based split. Useful for val-swap experiments.
     val_videos: Optional[List[str]] = None
+    # Held-out TEST set — NEVER trained or validated on. These recordings are
+    # removed from the video pool before the train/val split, so they cannot
+    # leak into training even under the random split. They are reserved for
+    # final benchmarking only (mirrors benchmark/data.py TEST_VIDEOS). To train
+    # on a video, remove it from this list.
+    test_videos: List[str] = field(default_factory=lambda: [
+        "A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2",
+    ])
     # Performance optimizations
     clip_stride: int = 4  # Stride between clip start frames (1=all clips, 4=every 4th)
     cache_in_memory: bool = True  # Cache all frames/masks in RAM at init

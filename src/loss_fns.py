@@ -243,19 +243,28 @@ def soft_skel(img: torch.Tensor, num_iter: int = 5) -> torch.Tensor:
 
     Returns:
         Soft skeleton tensor, same shape as input.
-    """
-    img_eroded = img.clone()
-    skeleton = torch.zeros_like(img)
 
+    Note (k=0 seed): the reference clDice implementation
+    (github.com/jocpae/clDice) seeds the skeleton at scale 0 —
+    ``skel = relu(img - open(img))`` — *before* the erosion loop. Omitting
+    it (as an earlier version of this function did) destroys any structure
+    ≤2 px wide on the first erosion, yielding an empty skeleton for the
+    thinnest neurites. The seed line below restores that term. Bounding to
+    [0, 1] uses the reference's soft-union ``relu(delta - skel*delta)``
+    rather than a hard clamp.
+    """
+    # k=0 seed term (skeleton at the original scale).
+    skeleton = F.relu(img - soft_open(img))
+
+    img_eroded = img
     for _ in range(num_iter):
         img_eroded = soft_erode(img_eroded)
         img_opened = soft_open(img_eroded)
-        # Points removed by opening = thin parts = skeleton candidates
-        delta = torch.clamp(img_eroded - img_opened, min=0)
-        # Use in-place operations to reduce memory
-        skeleton.add_(delta).clamp_(max=1)
-        # Clear intermediate to free memory
-        del delta, img_opened
+        # Points removed by opening = thin parts = skeleton candidates.
+        delta = F.relu(img_eroded - img_opened)
+        # Soft union (reference clDice): add only the part of delta not
+        # already captured by the accumulated skeleton; keeps S in [0, 1].
+        skeleton = skeleton + F.relu(delta - skeleton * delta)
 
     return skeleton
 
@@ -270,60 +279,112 @@ _DT_EXECUTOR = ThreadPoolExecutor(
 )
 
 
-def _compute_distance_weights(binary_mask: torch.Tensor) -> torch.Tensor:
-    """Compute inverse-radius distance weights for cbDice.
-
-    Uses Euclidean distance transform (EDT) to compute weights that give
-    higher importance to thinner structures (smaller local radius). This is
-    the key addition of cbDice over clDice.
-
-    For a neuron branch with radius r, the EDT value at the centerline is r.
-    We invert this: weight = 1/(r+1), so thin branches (r≈1) get weight ≈0.5
-    while thick soma regions (r≈10) get weight ≈0.09.
-
-    Implementation note: at B*T*N=16 with 1-2 ms per scipy call, the serial
-    loop was ~30 ms of CPU stall per cbDice forward. Parallelising the per-
-    sample calls across 4 threads (scipy releases the GIL) cuts this to
-    ~8-10 ms while producing bit-identical output (same algorithm, same
-    arguments, deterministic write order on the way out).
+def _edt_batch(mask: torch.Tensor) -> torch.Tensor:
+    """Euclidean distance transform of a batch of 2-D masks.
 
     Args:
-        binary_mask: [B, 1, H, W] binary mask (values 0 or 1)
+        mask: [N, H, W] tensor, hard (0/1). EDT is computed per sample.
 
     Returns:
-        weights: [B, 1, H, W] distance-based weights (0 for background)
+        distances: [N, H, W] float tensor on ``mask.device``; each foreground
+        pixel holds its distance to the nearest background pixel (0 on
+        background, matching scipy's convention).
+
+    Implementation note: scipy's ``distance_transform_edt`` is a C extension
+    that releases the GIL, so per-sample calls parallelise across the module
+    thread pool. Collected in submission order for deterministic output.
     """
     from scipy.ndimage import distance_transform_edt
 
-    mask_np = binary_mask.detach().cpu().numpy()
-    B, C, H, W = mask_np.shape
-    weights = np.zeros_like(mask_np, dtype=np.float32)
+    mask_np = mask.detach().cpu().numpy()
+    N = mask_np.shape[0]
+    out = np.zeros_like(mask_np, dtype=np.float32)
 
-    def _dt_one(b: int, c: int):
-        m = mask_np[b, c]
+    def _dt_one(i: int):
+        m = mask_np[i]
         if m.sum() == 0:
-            return b, c, None
-        dt = distance_transform_edt(m)
-        # Inverse radius weighting: thinner structures get higher weight.
-        # Add 1 to avoid division by zero, then invert.
-        dt_inv = 1.0 / (dt + 1.0)
-        # Normalize so weights sum to number of foreground pixels.
-        fg_count = m.sum()
-        dt_inv = dt_inv * fg_count / (dt_inv[m > 0].sum() + 1e-8)
-        return b, c, dt_inv * m  # Zero out background
+            return i, None
+        return i, distance_transform_edt(m).astype(np.float32)
 
-    # Submit all (b, c) tasks; collect in a deterministic order so the final
-    # `weights` tensor is identical across runs.
-    futures = [
-        _DT_EXECUTOR.submit(_dt_one, b, c)
-        for b in range(B) for c in range(C)
-    ]
+    futures = [_DT_EXECUTOR.submit(_dt_one, i) for i in range(N)]
     for f in futures:
-        b, c, w = f.result()
-        if w is not None:
-            weights[b, c] = w
+        i, d = f.result()
+        if d is not None:
+            out[i] = d
+    return torch.from_numpy(out).to(mask.device)
 
-    return torch.from_numpy(weights).to(binary_mask.device)
+
+def _cbdice_get_weights(
+    mask_input: torch.Tensor,
+    skel_input: torch.Tensor,
+    dim: int = 2,
+    prob_flag: bool = True,
+):
+    """Radius-normalised cbDice weight maps (faithful port of the reference).
+
+    Port of ``get_weights`` from github.com/PengchengShi1220/cbDice
+    (loss/cbdice_loss.py). Returns three maps for one side (prediction or
+    label):
+
+        q_v   = dist_map_norm * mask   — normalised distance-volume weight
+        q_sv  = skel_R_norm  * mask   — skeleton-radius weight over the mask
+        q_s   = I_norm       * skel   — inverse-radius weight on the skeleton
+
+    Radii come from the EDT of the *hard* mask; per-sample they are
+    normalised by the maximum skeleton radius. When ``prob_flag`` is True the
+    inputs are probabilities: hard supports (``>0.5``) drive the geometry
+    (under no-grad), and the returned maps are rescaled by the probabilities
+    so gradients flow — exactly as the reference does.
+
+    Args:
+        mask_input: [N, H, W]. Probabilities if ``prob_flag`` else hard 0/1.
+        skel_input: [N, H, W] skeleton, same convention as ``mask_input``.
+        dim: 2 or 3 (controls the I_norm exponent). Neurons are 2-D.
+        prob_flag: True for the prediction side, False for the label side.
+    """
+    if prob_flag:
+        mask_prob, skel_prob = mask_input, skel_input
+        mask = (mask_prob > 0.5).float()
+        skel = (skel_prob > 0.5).float()
+    else:
+        mask = mask_input
+        skel = skel_input
+
+    # Radii from the hard mask (non-differentiable geometry).
+    with torch.no_grad():
+        distances = _edt_batch(mask)          # [N, H, W], 0 on background
+        skel_radius = distances * skel        # radius along the skeleton
+
+        dist_map_norm = torch.zeros_like(distances)
+        skel_R_norm = torch.zeros_like(distances)
+        I_norm = torch.zeros_like(distances)
+        for i in range(distances.shape[0]):
+            sr = skel_radius[i]
+            sr_max = torch.clamp(sr.max(), min=1.0)
+            sr_min = torch.clamp(sr.min(), min=1.0)  # skeleton min is 0 -> 1
+            dist_map_norm[i] = distances[i].clamp(max=sr_max) / sr_max
+            skel_R_norm[i] = sr / sr_max
+            ratio = (sr_max - sr + sr_min) / sr_max
+            I_norm[i] = ratio if dim == 2 else ratio ** 2
+        I_norm = I_norm * skel  # zero off-skeleton (ref: I_norm[skel==0]=0)
+
+    if prob_flag:
+        return dist_map_norm * mask_prob, skel_R_norm * mask_prob, I_norm * skel_prob
+    return dist_map_norm * mask, skel_R_norm * mask, I_norm * skel
+
+
+def _combine_tensors(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
+    """Reference cbDice ``combine_tensors``: prefer B*C, fall back to A*C.
+
+    D = B*C everywhere, except where A is non-zero and B is zero, where it
+    takes A*C. Used to build the cbDice denominators.
+    """
+    A_C = A * C
+    B_C = B * C
+    D = B_C.clone()
+    mask_AC = (A != 0) & (B == 0)
+    D[mask_AC] = A_C[mask_AC]
+    return D
 
 
 class SoftCBDiceLoss(nn.Module):
@@ -339,13 +400,22 @@ class SoftCBDiceLoss(nn.Module):
     - cbDice: Skeleton pixels in thin structures (small local radius) receive
       higher weight via inverse-radius weighting from the EDT
 
-    Formula:
-        cbTprec = |W_t · skel(pred) · target| / |W_t · skel(pred)|
-        cbTsens = |W_p · skel(target) · pred| / |W_p · skel(target)|
-        cbDice = 2 · cbTprec · cbTsens / (cbTprec + cbTsens)
+    Formula (faithful port of PengchengShi1220/cbDice, loss/cbdice_loss.py):
+        Let get_weights(mask, skel) -> (q_v, q_sv, q_s) be the radius-
+        normalised maps (see _cbdice_get_weights). With subscripts p/l for
+        prediction/label:
 
-    Where W_t and W_p are inverse-radius distance transform weights computed
-    from the target and prediction masks respectively.
+        w_tprec = Σ(q_sp · q_vl) / Σ combine(q_spvp, q_slvl, q_sp)
+        w_tsens = Σ(q_sl · q_vp) / Σ combine(q_slvl, q_spvp, q_sl)
+        cbDice  = 2 · w_tprec · w_tsens / (w_tprec + w_tsens)
+        loss    = 1 − cbDice
+
+    Precision multiplies the *prediction* skeleton weight (q_sp) by the
+    *label* distance-volume (q_vl); sensitivity multiplies the *label*
+    skeleton weight (q_sl) by the *prediction* distance-volume (q_vp). The
+    denominators use the reference combine_tensors() merge. The reference
+    returns −cbDice (its compound wrapper adds the constant); we return the
+    equivalent 1 − cbDice so this stays a proper loss in [0, 1].
 
     Why this works better for neurons:
     - Neuron branches are thin tubular structures with varying radius
@@ -414,39 +484,37 @@ class SoftCBDiceLoss(nn.Module):
                 mode='nearest',
             )
 
-        # Compute soft skeleton for prediction (needs gradients)
-        skel_pred = soft_skel(pred_prob, self.num_iter)
+        # Collapse channel: [N, 1, H, W] -> [N, H, W].
+        y_pred_prob = pred_prob.squeeze(1)
+        y_true = (target > 0).float().squeeze(1)
 
-        # Compute soft skeleton for target (no gradients needed - saves memory)
+        # Skeletonise the HARD masks (reference behaviour): the skeleton
+        # support is non-differentiable; gradients are reinjected below by
+        # multiplying the prediction skeleton by the predicted probabilities.
         with torch.no_grad():
-            skel_target = soft_skel(target.float(), self.num_iter)
+            y_pred_hard = (y_pred_prob > 0.5).float()
+            skel_pred_hard = soft_skel(y_pred_hard.unsqueeze(1), self.num_iter).squeeze(1)
+            skel_true = soft_skel(y_true.unsqueeze(1), self.num_iter).squeeze(1)
+        skel_pred_prob = skel_pred_hard * y_pred_prob  # carries gradient
 
-        # Compute distance-transform weights (cbDice addition over clDice)
-        with torch.no_grad():
-            # Weights from target mask (for precision: weighting skel_pred)
-            weights_target = _compute_distance_weights(target)
-            # Weights from prediction mask (for sensitivity: weighting skel_target)
-            pred_binary = (pred_prob > 0.5).float()
-            weights_pred = _compute_distance_weights(pred_binary)
+        # Radius-normalised weight maps for each side (dim=2 for image data).
+        q_vl, q_slvl, q_sl = _cbdice_get_weights(y_true, skel_true, dim=2, prob_flag=False)
+        q_vp, q_spvp, q_sp = _cbdice_get_weights(
+            y_pred_prob, skel_pred_prob, dim=2, prob_flag=True,
+        )
 
-        # Weighted topology precision: how much of predicted skeleton overlaps
-        # with target, weighted by inverse radius (thin structures count more)
-        tprec_num = (weights_target * skel_pred * target).sum() + self.smooth
-        tprec_den = (weights_target * skel_pred).sum() + self.smooth
-        tprec = tprec_num / tprec_den
+        # Topology precision: prediction skeleton (q_sp) scored against the
+        # label distance-volume (q_vl); denominator merges both sides.
+        w_tprec = (torch.sum(q_sp * q_vl) + self.smooth) / (
+            torch.sum(_combine_tensors(q_spvp, q_slvl, q_sp)) + self.smooth
+        )
+        # Topology sensitivity: label skeleton (q_sl) scored against the
+        # prediction distance-volume (q_vp).
+        w_tsens = (torch.sum(q_sl * q_vp) + self.smooth) / (
+            torch.sum(_combine_tensors(q_slvl, q_spvp, q_sl)) + self.smooth
+        )
 
-        # Weighted topology sensitivity: how much of target skeleton overlaps
-        # with prediction, weighted by inverse radius
-        tsens_num = (weights_pred * skel_target * pred_prob).sum() + self.smooth
-        tsens_den = (weights_pred * skel_target).sum() + self.smooth
-        tsens = tsens_num / tsens_den
-
-        # cbDice: harmonic mean of weighted precision and sensitivity
-        cb_dice = 2.0 * tprec * tsens / (tprec + tsens + 1e-8)
-
-        # Clean up intermediate tensors
-        del skel_pred, skel_target, weights_target, weights_pred
-
+        cb_dice = 2.0 * w_tprec * w_tsens / (w_tprec + w_tsens + 1e-8)
         return 1.0 - cb_dice
 
 
