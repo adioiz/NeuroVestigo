@@ -100,9 +100,14 @@ class LossConfig:
     #     2.5× wall-clock per step.
     # Conclusion: at 20 videos we've extracted what loss tuning can give.
     # Further gains need MORE DATA, not more loss engineering. Reverted here.
+    # cbDice weight dropped 5.0 → 1.0 after the cbDice bug fix (commit d4edf6c):
+    # the repaired term is ~20× larger than the old inert one (raw ≈0.13 vs
+    # ≈0.008), so at weight 5.0 it contributed ~0.69 — ~65% of the total loss,
+    # drowning out Dice/mask. At 1.0 its contribution (~0.13) is comparable to
+    # Dice (~0.29). Baseline to beat: weight 5.0 reached val IoU 0.8473 @ ep88.
     loss_mask_weight: float = 5.0  # Focal loss
     loss_dice_weight: float = 2.0  # Shape coverage
-    loss_cbdice_weight: float = 5.0  # Skeleton topology
+    loss_cbdice_weight: float = 1.0  # Skeleton topology
     loss_supervoxel_weight: float = 0.3  # Connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
