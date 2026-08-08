@@ -6,6 +6,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from scipy import ndimage
+
+# Structuring elements for Betti computation. Digital topology requires a
+# complementary pair (Jordan-curve consistency): 8-connectivity for the
+# foreground, 4-connectivity for the background.
+_CONN8 = np.ones((3, 3), dtype=int)
+_CONN4 = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=int)
 
 
 def compute_iou(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -50,6 +57,53 @@ def compute_dice(pred: torch.Tensor, target: torch.Tensor) -> float:
     return (2 * intersection / total).item()
 
 
+def compute_betti_numbers(mask) -> Tuple[int, int]:
+    """Betti numbers (β0, β1) of a 2-D binary mask.
+
+    β0 = number of connected components (distinct objects).
+    β1 = number of holes (enclosed background regions).
+
+    For neurons these are the topology quantities IoU misses: a severed
+    branch raises β0 by 1 while barely moving IoU; a spurious enclosed gap
+    raises β1. Foreground uses 8-connectivity and background 4-connectivity
+    so the counts satisfy the Jordan-curve relation.
+
+    Args:
+        mask: 2-D array-like (torch or numpy), truthy = foreground.
+
+    Returns:
+        (beta0, beta1) as ints.
+    """
+    if isinstance(mask, torch.Tensor):
+        mask = mask.detach().cpu().numpy()
+    m = np.asarray(mask, dtype=bool)
+    if m.ndim != 2:
+        raise ValueError(f"compute_betti_numbers expects a 2-D mask, got {m.ndim}-D")
+
+    _, beta0 = ndimage.label(m, structure=_CONN8)          # foreground components
+    labels_bg, n_bg = ndimage.label(~m, structure=_CONN4)  # background components
+    if n_bg == 0:  # mask fills the frame — no background, no holes
+        return int(beta0), 0
+    # Background components touching the image border are "outside"; the rest
+    # are enclosed holes.
+    border = np.concatenate(
+        [labels_bg[0, :], labels_bg[-1, :], labels_bg[:, 0], labels_bg[:, -1]]
+    )
+    outer = set(np.unique(border)) - {0}
+    return int(beta0), int(n_bg - len(outer))
+
+
+def compute_betti_error(pred, target) -> Tuple[int, int]:
+    """Absolute Betti-number errors (|Δβ0|, |Δβ1|) between pred and target.
+
+    Lower is better; 0 means the prediction matches the ground-truth topology
+    (same number of components and holes).
+    """
+    p0, p1 = compute_betti_numbers(pred)
+    t0, t1 = compute_betti_numbers(target)
+    return abs(p0 - t0), abs(p1 - t1)
+
+
 def evaluate_batch_per_frame(
     outputs: Dict[str, torch.Tensor],
     targets: torch.Tensor,
@@ -62,22 +116,10 @@ def evaluate_batch_per_frame(
                     Empty entries are omitted (frames where no object exists).
         dices[b][t]: same for Dice.
     """
-    if "pred_masks" not in outputs:
+    aligned = _align_pred_target(outputs, targets)
+    if aligned is None:
         return [], []
-
-    pred_masks = outputs["pred_masks"]  # [B, T, N_obj, H, W]
-    pred_binary = pred_masks > 0
-
-    if pred_binary.shape[-2:] != targets.shape[-2:]:
-        B, T, N_obj, H_gt, W_gt = targets.shape
-        _, _, _, H_pred, W_pred = pred_binary.shape
-        targets_resized = torch.nn.functional.interpolate(
-            targets.float().view(B * T * N_obj, 1, H_gt, W_gt),
-            size=(H_pred, W_pred),
-            mode="nearest",
-        ).view(B, T, N_obj, H_pred, W_pred).bool()
-    else:
-        targets_resized = targets.bool()
+    pred_binary, targets_resized = aligned
 
     B, T, N_obj = pred_binary.shape[:3]
     ious_per_bt: List[List[float]] = [[] for _ in range(B)]
@@ -99,6 +141,70 @@ def evaluate_batch_per_frame(
             dices_per_bt[b].append(float(np.mean(obj_dices)) if obj_dices else float("nan"))
 
     return ious_per_bt, dices_per_bt
+
+
+def _align_pred_target(
+    outputs: Dict[str, torch.Tensor],
+    targets: torch.Tensor,
+) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+    """Binarise predictions and match the target resolution to them.
+
+    Returns (pred_binary, targets_resized), both [B, T, N_obj, H, W] bool, or
+    None when the model produced no masks. Shared by the IoU/Dice and Betti
+    per-frame evaluators so both score identical (pred, gt) pairs.
+    """
+    if "pred_masks" not in outputs:
+        return None
+
+    pred_binary = outputs["pred_masks"] > 0  # [B, T, N_obj, H, W]
+    if pred_binary.shape[-2:] != targets.shape[-2:]:
+        B, T, N_obj, H_gt, W_gt = targets.shape
+        _, _, _, H_pred, W_pred = pred_binary.shape
+        targets_resized = torch.nn.functional.interpolate(
+            targets.float().view(B * T * N_obj, 1, H_gt, W_gt),
+            size=(H_pred, W_pred),
+            mode="nearest",
+        ).view(B, T, N_obj, H_pred, W_pred).bool()
+    else:
+        targets_resized = targets.bool()
+    return pred_binary, targets_resized
+
+
+def betti_error_per_frame(
+    outputs: Dict[str, torch.Tensor],
+    targets: torch.Tensor,
+) -> Tuple[List[List[float]], List[List[float]]]:
+    """Per-(batch_item, frame) Betti-0 and Betti-1 errors vs. ground truth.
+
+    Mirrors ``evaluate_batch_per_frame``: object errors are averaged per frame,
+    and frames with no object present get a NaN sentinel so frame-index
+    alignment is preserved. Betti-0 error counts wrong number of components
+    (breaks/merges); Betti-1 error counts wrong number of holes.
+    """
+    aligned = _align_pred_target(outputs, targets)
+    if aligned is None:
+        return [], []
+    pred_binary, targets_resized = aligned
+
+    B, T, N_obj = pred_binary.shape[:3]
+    b0_per_bt: List[List[float]] = [[] for _ in range(B)]
+    b1_per_bt: List[List[float]] = [[] for _ in range(B)]
+
+    for b in range(B):
+        for t in range(T):
+            obj_b0, obj_b1 = [], []
+            for obj in range(N_obj):
+                pred = pred_binary[b, t, obj]
+                gt = targets_resized[b, t, obj]
+                if not pred.any() and not gt.any():
+                    continue
+                e0, e1 = compute_betti_error(pred, gt)
+                obj_b0.append(float(e0))
+                obj_b1.append(float(e1))
+            b0_per_bt[b].append(float(np.mean(obj_b0)) if obj_b0 else float("nan"))
+            b1_per_bt[b].append(float(np.mean(obj_b1)) if obj_b1 else float("nan"))
+
+    return b0_per_bt, b1_per_bt
 
 
 def evaluate_batch(
@@ -242,6 +348,10 @@ def validate_epoch(
     per_video_ious: Dict[str, List[float]] = defaultdict(list)
     flat_ious: List[float] = []
     flat_dices: List[float] = []
+    per_frame_betti0: Dict[int, List[float]] = defaultdict(list)
+    per_frame_betti1: Dict[int, List[float]] = defaultdict(list)
+    flat_betti0: List[float] = []
+    flat_betti1: List[float] = []
 
     # Buffer of the K worst (lowest-IoU) frames seen so far across the val set.
     # We keep a strict cap of `worst_buffer_cap` records — when full, only
@@ -278,6 +388,9 @@ def validate_epoch(
         component_count += 1
 
         ious_per_bt, dices_per_bt = evaluate_batch_per_frame(outputs, batch.masks)
+        # Topology metric — shares the same alignment, so its NaN pattern
+        # matches ious_per_bt and (b, t) indices line up.
+        betti0_per_bt, betti1_per_bt = betti_error_per_frame(outputs, batch.masks)
         for b, (ious, dices) in enumerate(zip(ious_per_bt, dices_per_bt)):
             video_name = frame_id_lists[b][0][0] if frame_id_lists[b] else "?"
             for t, (iou, dice) in enumerate(zip(ious, dices)):
@@ -288,6 +401,11 @@ def validate_epoch(
                 per_video_ious[video_name].append(iou)
                 flat_ious.append(iou)
                 flat_dices.append(dice)
+                if betti0_per_bt and not np.isnan(betti0_per_bt[b][t]):
+                    per_frame_betti0[t].append(betti0_per_bt[b][t])
+                    per_frame_betti1[t].append(betti1_per_bt[b][t])
+                    flat_betti0.append(betti0_per_bt[b][t])
+                    flat_betti1.append(betti1_per_bt[b][t])
 
                 # Worst-IoU sample tracking. Skip t==0: it always uses the GT
                 # mask as the prompt so the prediction is trivially perfect.
@@ -341,6 +459,14 @@ def validate_epoch(
     per_video_iou = {
         name: float(np.mean(vals)) for name, vals in per_video_ious.items()
     }
+    per_frame_betti0_mean = [
+        float(np.mean(per_frame_betti0[t])) if per_frame_betti0.get(t) else float("nan")
+        for t in range(T_max)
+    ]
+    per_frame_betti1_mean = [
+        float(np.mean(per_frame_betti1[t])) if per_frame_betti1.get(t) else float("nan")
+        for t in range(T_max)
+    ]
     loss_components = {
         k: v / component_count for k, v in component_sums.items()
     }
@@ -349,8 +475,15 @@ def validate_epoch(
         "val_loss": total_loss / num_batches,
         "val_iou": float(np.mean(flat_ious)) if flat_ious else 0.0,
         "val_dice": float(np.mean(flat_dices)) if flat_dices else 0.0,
+        # Topology: mean absolute Betti-number error vs. GT (lower = better).
+        # val_betti0 = component-count errors (breaks/merges); val_betti1 = hole
+        # errors. These capture connectivity that IoU/Dice are blind to.
+        "val_betti0": float(np.mean(flat_betti0)) if flat_betti0 else float("nan"),
+        "val_betti1": float(np.mean(flat_betti1)) if flat_betti1 else float("nan"),
         "per_frame_iou": per_frame_iou,
         "per_frame_dice": per_frame_dice,
+        "per_frame_betti0": per_frame_betti0_mean,
+        "per_frame_betti1": per_frame_betti1_mean,
         "per_video_iou": per_video_iou,
         "loss_components": loss_components,
     }

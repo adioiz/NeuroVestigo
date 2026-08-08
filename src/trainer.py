@@ -1286,6 +1286,11 @@ def train(config: TrainingConfig = None):
                 f"val_iou={val_metrics['val_iou']:.4f}, "
                 f"val_dice={val_metrics['val_dice']:.4f}"
             )
+            # Topology quality (lower = better): mean |Δβ0| (component breaks/
+            # merges) and |Δβ1| (hole errors) vs. GT — what IoU/Dice miss.
+            b0, b1 = val_metrics.get("val_betti0"), val_metrics.get("val_betti1")
+            if b0 is not None and not np.isnan(b0):
+                print(f"  val_betti_err: b0={b0:.3f}, b1={b1:.3f}")
             # Hypothesis A: per-component val loss (compare floors vs. train).
             if val_metrics.get("loss_components"):
                 comp_str = ", ".join(
