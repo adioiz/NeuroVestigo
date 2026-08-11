@@ -127,11 +127,24 @@ class LossConfig:
     use_supervoxel: bool = True  # Enable connectivity-preserving loss
     # Topology resolution: resolution at which topology losses are computed
     # (cbDice skeleton/EDT + supervoxel connectivity analysis).
-    # Lower = faster. 256 is 16× faster than 1024, with minimal quality loss
-    # at Run 7's per-component values (cbDice val ≈ 0.005, supervoxel ≈ 0.064).
-    # Run 9 tried 384: 2.5× slower per step and only +0.012 IoU vs Run 7
-    # baseline — not worth the wall-clock cost. Reverted to 256.
-    topology_resolution: int = 256
+    # Lower = faster. 256 is 16× faster than 1024. Run 9 tried 384: 2.5× slower
+    # per step for no IoU gain, so this sat at 256 through Run D.
+    #
+    # Raised 256 → 512 alongside the cbDice interpolation-mode fix, to retain
+    # more thin-neurite detail: the loss receives 1024² inputs, so 256 is a 4×
+    # linear downsample (1-2 px neurites go sub-pixel) where 512 is only 2×.
+    # Costs 4× the topology compute (measured 225 → 896 ms/forward at B*T*N=16).
+    #
+    # Two caveats worth recording, both measured, because they weaken the
+    # original rationale for this change:
+    #   - No aspect distortion is introduced here. augmentations.py already
+    #     resizes frames and masks to a square [1024, 1024] grid, so this
+    #     resize is square→square; the native 615×353 aspect was flattened
+    #     upstream, not by the topology resize.
+    #   - Component count (Betti-0) is preserved exactly at BOTH 256 and 512
+    #     over 18 sampled frames, so masks are not fragmenting at 256.
+    # The defensible claim is finer skeleton/EDT detail, not topology rescue.
+    topology_resolution: int = 512
 
 
 @dataclass
