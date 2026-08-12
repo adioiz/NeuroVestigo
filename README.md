@@ -18,14 +18,15 @@ The current shipping configuration is **Run D**: 25 labeled recordings (20 train
 - **LoRA+ fine-tuning** — 13.9% of parameters trained (5.56M of 39.88M), asymmetric A/B learning rates for faster convergence.
 - **Dual-rank LoRA** — rank 16 on 68 Linear layers in mask_decoder + memory_attention, rank 8 on 8 Linear layers in the last 2 Hiera trunk blocks. Inference loaders classify each tensor by regex to apply the right rank.
 - **Path B forward pass** — uses SAM 2's real `track_step` API so the memory_attention adapters actually train (Runs 1–4 silently skipped them).
-- **Topology-aware loss** — cbDice (centerline boundary Dice) emphasises thin neurite branches; supervoxel loss directly penalises split/merge connectivity errors.
+- **Topology-aware loss** — cbDice (centerline boundary Dice) emphasises thin neurite branches; supervoxel loss directly penalises split/merge connectivity errors, concentrating ~4.9M× more gradient on the few pixels that would reconnect a severed branch than on an ordinary pixel. See [what each loss term actually catches](#what-each-loss-term-actually-catches) — the terms cover different failure modes and none sees everything.
 - **B200-optimised** — bf16 + channels-last + cuDNN FlashAttention-3 + fused AdamW + (optional) `torch.compile`.
 - **Topology metrics, not just overlap** — validation reports Betti-number error (β0 = component count, β1 = holes) alongside IoU/Dice. IoU is blind to a severed neurite; β0 is not.
 - **Held-out test set** — 4 recordings are removed from the pool *before* the train/val split and can never leak in, even under the random split.
 - **Diagnostics built into the loop** — per-component loss, per-frame IoU, per-video IoU, Betti error, worst-case prediction PNG dumps.
 - **Resumable** — `train_state.pt` written every epoch lets a single logical run span multiple SLURM jobs under a 4-hour wall-clock limit.
 - **Safe defaults from `config.py`** — CLI flags only override when explicitly passed; nothing silently changes between runs. Every augmentation and loss parameter is echoed in the startup banner.
-- **Regression-tested loss and augmentation** — `tests/` pins the properties whose violation caused the three historical defects.
+- **Regression-tested loss and augmentation** — `tests/` pins the properties whose violation caused the three historical defects, and holds a whole-frame reference implementation of the supervoxel detector so future optimisations must prove bit-equality.
+- **~0.9 s/step on a B200** — the connectivity detector was quietly consuming about two-thirds of every training step in *every* run before `ba13ff7`; boxing it cut a 110-epoch run from ~29 h to ~5 h with provably identical gradients.
 
 ## Repository Connection
 
@@ -141,7 +142,7 @@ This is a **dual-rank checkpoint**: the main group is rank 16, the Hiera group i
 | `loss_supervoxel_weight` | 0.3 | small weight. Run 8 tried 2.0 → val IoU fell to 0.8229; the component sits at a structural floor and weight-pumping it does nothing. |
 | `loss_iou_weight` | 1.0 | IoU prediction calibration |
 | `loss_class_weight` | 1.0 | object-presence classifier |
-| `topology_resolution` | 512 | cbDice skeleton + supervoxel connectivity grid. Raised 256 → 512 for finer thin-neurite detail (the loss receives 1024², so 256 is a 4× downsample). Costs 4× the topology compute — measured 225 → 896 ms/forward at B·T·N=16. |
+| `topology_resolution` | 512 | cbDice skeleton + supervoxel connectivity grid. Raised 256 → 512 for finer thin-neurite detail (the loss receives 1024², so 256 is a 4× downsample). Since `ba13ff7` the only real cost here is cbDice (225 → 896 ms/forward at B·T·N=16); the supervoxel side is ~0.02 s/step. Don't lower it for speed — there is nothing left to reclaim. |
 
 **Data (`DataConfig`)**
 
@@ -319,6 +320,30 @@ Each PNG is `image | GT | prediction | overlay (red=pred, green=GT, yellow=both)
   mean b0 ≈ 0.51 vs ≈ 0.72 with cbDice disabled — a real separation on topology
   even though IoU was tied.
 
+### What each loss term actually catches
+
+The four terms are not redundant, and none of them sees everything. Measured on
+one neuron with a single defect introduced, all terms at their shipped weights:
+
+| defect | missed px | supervoxel | focal | dice | cbdice |
+|---|---|---|---|---|---|
+| none (perfect) | 0 | 0.0002 | 0.00000 | 0.0032 | 0.0000 |
+| **hole** punched in the soma | 4096 | 0.0158 | **0.00781** | **0.0415** | 0.0000 |
+| **split** through a branch | 280 | **1.8575** | 0.00053 | 0.0057 | **0.0338** |
+
+The split has **15× fewer wrong pixels** than the hole yet produces **117× more
+supervoxel loss** — that is the connectivity terms working as intended. Note
+also that the hole scores **zero critical pixels**: the supervoxel loss asks
+only "is this in the right number of pieces?", so a hole is invisible to it *by
+construction*, and cbDice is near-blind to it too. Holes are caught by focal and
+Dice instead.
+
+- **focal + Dice** → area errors: holes, dents, fat/thin boundaries
+- **supervoxel + cbDice** → connectivity errors: splits and false bridges
+
+This is why dropping cbDice barely moved IoU but visibly worsened Betti-0, and
+why an IoU-only comparison cannot tell you whether a config change helped.
+
 ## Project structure
 
 ```
@@ -345,6 +370,7 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 │   ├── test_cbdice_loss.py         # cbDice term is not inert; ordering holds
 │   ├── test_cbdice_resize.py       # perfect prediction costs exactly 0
 │   ├── test_augmentation_alignment.py  # image and mask stay aligned
+│   ├── test_supervoxel_speed.py    # detector is bit-identical to whole-frame ref
 │   └── test_betti.py               # Betti numbers on known shapes
 └── src/
     ├── config.py            # ← single source of truth for hyperparameters
@@ -389,19 +415,71 @@ images, and no loss function can compensate for that. Both are open hypotheses,
 each testable with a single run (`elastic_transform_p = 0.0` is the cheaper
 and more decisive of the two).
 
+### Performance fix — no behavioural change (`ba13ff7`)
+
+Listed separately on purpose: unlike the three defects above, this one changed
+**no number the model ever sees**, so it invalidates nothing and was safe to
+drop into a run already in progress.
+
+`_detect_critical_components_2d` scanned the whole frame once per connected
+component — a full-image `== comp_id`, dilation and `np.unique` for every
+false-negative blob, and a full-image `ndimage_label` for every false-positive
+blob. That is O(n_components × H × W), and *both* factors grow with frame area,
+so raising `topology_resolution` 256 → 512 in `c6b1b03` cost ~16×, not 4×.
+
+The fix restricts each per-component test to that component's bounding box, and
+the false-positive relabel to the parent prediction component's box. Both are
+exact — see `CODE_EXPLAINED.md` for why, including the one invariant that makes
+it sound (**component IDs are assigned globally, once, and only *read* inside
+the box**; re-labelling locally would misjudge a U-shaped neuron whose two tips
+enter the same window).
+
+| measured, per training step of 16 masks | before | after |
+|---|---|---|
+| `topology_resolution=256` | 2.59 s | 0.13 s |
+| `topology_resolution=512` | 39.78 s | **0.32 s** |
+| loss value | `0.1688096225` | `0.1688096225` |
+| gradient | — | identical, `max\|Δ\|` = **0.000e+00** |
+
+Verified bit-identical against the pre-fix implementation on 155 cases (neuron
+shapes at five resolutions, 90 pure-random masks at five densities,
+border-touching components, empty/full degenerates), and the critical-pixel
+counts match too — so it did not go quietly inert. Pinned by
+`tests/test_supervoxel_speed.py`, which keeps a whole-frame reference and
+asserts equality on every run.
+
+**The finding worth carrying forward:** the old detector was costing roughly
+**1.3 of Run D's 1.9 s/step** — about two-thirds of every training step, at 256,
+before the 512 change existed. The `topology_resolution` bump did not create
+this bottleneck, it only made it impossible to ignore. **Every run in the
+history above paid this tax.** Results are unaffected; wall-clock was not.
+
 ## Hardware
 
 The current config targets a single B200 (or any modern NVIDIA GPU with ≥8 GB):
 
-| GPU | epoch time (Run D, 25 videos, no compile) | 110-epoch wall clock |
-|---|---|---|
-| B200 | ~335 s/epoch (~1.4 s/step, 176 steps) | ~10 h → 3 chained 4-hour SLURM jobs |
-| A100 | ~2× slower | not benchmarked end-to-end |
-| Apple M-series (MPS) | seconds-to-tens-of-seconds per step | not realistic for the full Path B forward |
+Measured on a single B200, 25 videos, 176 steps/epoch, no `torch.compile`:
 
-`topology_resolution=512` costs 4× the topology compute versus 256 (225 → 896 ms
-per cbDice forward at B·T·N=16), so budget more chained jobs than the table
-above until you have measured your own step time.
+| code state | s/step | epoch | 110-epoch wall clock |
+|---|---|---|---|
+| Run D — old detector, `topology_resolution=256` | 1.9 | ~335 s | ~10 h → 3 chained jobs |
+| old detector, `topology_resolution=512` (`c6b1b03`) | 5.0 | ~950 s | ~29 h → ~8 chained jobs |
+| **current — boxed detector, 512 (`ba13ff7`)** | **~0.9** | **~165 s** | **~5 h → 2 chained jobs** |
+
+(The current row is measured over the first 100 steps of a live run; the other
+two are full-epoch averages from `training_log.json`.)
+
+Other hardware:
+
+| GPU | relative |
+|---|---|
+| A100 | ~2× slower; not benchmarked end-to-end |
+| Apple M-series (MPS) | seconds-to-tens-of-seconds per step — not realistic for the full Path B forward |
+
+`topology_resolution=512` is now essentially free: after `ba13ff7` the
+supervoxel detector costs ~0.02 s/step at 512, well under what it cost at 256
+beforehand. The remaining topology cost is cbDice (~0.3–0.5 s/step at 512),
+which is the term the 512 setting was actually raised for.
 
 `--compile-encoder --compile-decoder` shaves ~10–25% off step time after the first-call compile cost (30–90 s).
 

@@ -6,7 +6,7 @@ This document explains **every file, every function, and every important line** 
 
 # Table of Contents
 
-1. [cli.py (Entry Point)](#file-1-trainpy---entry-point)
+1. [cli.py (Entry Point)](#file-1-clipy---entry-point)
 2. [config.py (Configuration)](#file-2-configpy---configuration)
 3. [lora.py (LoRA Implementation)](#file-3-lorapy---lora-implementation)
 4. [data_utils.py (Data Containers)](#file-4-data_utilspy---data-containers)
@@ -400,8 +400,13 @@ coarse property. 256 was a 4× linear downsample of the 1024² input, which push
 critical components at this resolution and upscales the critical masks back to
 1024×1024 so gradients stay full-resolution.
 
-Cost: **4× the topology compute** — measured 225 → 896 ms per cbDice forward at
-B·T·N=16.
+Cost, as of `ba13ff7`: **cbDice only.** Measured 225 → 896 ms per cbDice forward
+at B·T·N=16, i.e. the expected 4×. The supervoxel side used to dominate this
+(2.59 → 39.78 s/step, a ~16× blow-up) but now costs ~0.02 s/step at 512 — less
+than it cost at 256 before the detector was boxed. See the ⚠️ Performance note
+under `SupervoxelLoss2D`. **Do not lower `topology_resolution` for speed;**
+there is almost nothing left to reclaim, and 256 reintroduces the sub-pixel
+neurite problem this setting exists to avoid.
 
 Two measurements that deliberately *limit* the claim here, so nobody repeats
 them as fact:
@@ -976,16 +981,110 @@ Where:
    - If removed, would split incorrectly merged regions
    - Example: A false bridge connecting two separate neurons
 
-**Algorithm (O(n) complexity via scipy.ndimage.label):**
+**Algorithm (`_detect_critical_components_2d`):**
 ```
-1. Downsample masks to 256×256 (16× fewer pixels)
-2. Label connected components using scipy.ndimage.label (C-compiled, ~100× faster than Python BFS)
-3. For each FN component: use binary_dilation to find adjacent prediction labels
-4. For each FP component: remove, relabel, check if neighbors split
-5. Upscale critical masks back to full resolution for loss application
+1. Downsample both masks to topology_resolution (512 in the shipped config)
+2. Label the PREDICTION into connected pieces — once, globally
+3. For each FN blob: dilate by 1, read which prediction pieces the ring touches.
+   >=2 distinct pieces -> filling this gap would join two separate things -> critical
+4. For each FP blob: find prediction pixels touching it, delete the blob,
+   re-trace connectivity, check whether those neighbours fell into >=2 pieces
+5. Upscale the critical masks back to full resolution as a 0/1 WEIGHT MAP
 ```
 
-**Performance:** The original implementation used pure Python BFS with nested pixel loops over 1024×1024 (1M pixels), which took ~230s/step. Replacing with scipy.ndimage.label + downsampling to 256×256 reduces this to <0.1s/step (~2000× speedup).
+### ⚠️ What this loss cannot see — a hole is not a split
+
+This is the single most important thing to understand about the term, and it is
+easy to assume otherwise. Step 3 flags a missing blob **only if its ring touches
+two or more different prediction pieces**. A hole in the middle of the soma is
+ringed entirely by *one* piece, so it is never flagged. Measured on one neuron
+with a single defect introduced:
+
+| defect | missed px | critical px | supervoxel | focal | dice | cbdice |
+|---|---|---|---|---|---|---|
+| none | 0 | 0 | 0.0002 | 0.00000 | 0.0032 | 0.0000 |
+| hole in soma | 4096 | **0** | 0.0158 | **0.00781** | **0.0415** | 0.0000 |
+| split through branch | 280 | 70 | **1.8575** | 0.00053 | 0.0057 | **0.0338** |
+
+The split has 15× fewer wrong pixels and 117× more supervoxel loss. That is the
+term doing exactly its job — it asks *"is this in the right number of pieces?"*
+and nothing else. A hole changes β1, not β0, so it is out of scope by design
+(and cbDice barely sees it either). Holes are handled by focal and Dice.
+
+Do not "fix" this by loosening the ≥2-pieces rule. It would flag every boundary
+dent in the image as critical and destroy the gradient concentration below.
+
+### How a non-differentiable detector still trains the model
+
+Step 2–4 run on **thresholded, downsampled, numpy** masks. Connected-component
+labelling has no derivative, and thresholding's is zero. That is fine — the
+detector never carries gradient. It produces a **constant weight map** that
+multiplies a BCE which *is* differentiable:
+
+```python
+base_loss_per_pixel = BCEWithLogitsLoss(reduction='none')(pred, target)  # full 1024², differentiable
+...
+loss = (1-α)·mean(BCE over non-critical)     # ~1,048,296 px share a 0.5 budget
+     + α·β·mean(BCE over neg-critical)       # ~280 px share a 0.25 budget
+     + α·(1-β)·mean(BCE over pos-critical)
+```
+
+Each bucket is normalised by **its own** pixel count. That is where the force
+comes from. Measured on the split case:
+
+```
+mean |grad| on critical pixels : 8.288e-04
+mean |grad| elsewhere          : 1.690e-10   ->  4,900,000x
+```
+
+Two effects multiply: bucket normalisation (0.25/280 vs 0.5/1048296 ≈ **1,900×**)
+and being confidently wrong (BCE's gradient is `sigmoid(logit) − target`: ~1.0 on
+a confidently wrong pixel, ~0.0003 on a confidently right one ≈ **3,000×**).
+
+So the model gets an enormous, precisely aimed shove on the handful of pixels
+that would reconnect the branch, and essentially nothing everywhere else. The
+message is not "you got 280 pixels wrong" — focal already says that, quietly —
+but *"these 280 pixels are the ones breaking the neuron in half."*
+
+### ⚠️ Performance: why the per-component loop is boxed (`ba13ff7`)
+
+Steps 3 and 4 used to run over the **whole frame for every component**: a
+full-image `== comp_id`, dilation and `np.unique` per FN blob, and a full-image
+`ndimage_label` per FP blob. With ~1000 FP blobs per mask that is
+O(n_components × H × W), and both factors grow with area — so `topology_resolution`
+256 → 512 cost ~16×, not 4× (2.59 s → 39.78 s per step of 16 masks).
+
+Now each test runs inside the component's bounding box padded by 1. **The
+invariant that makes this sound:**
+
+> Pieces are numbered **once, globally**, and the box only ever *reads* those
+> numbers — it never re-labels locally.
+
+Re-labelling inside the box is the obvious-looking shortcut and it is **wrong**.
+Consider a U-shaped neuron with a gap between its two tips:
+
+```
+█ · · · · · █     zoom into a box around the gap and the tips look like
+█ . . . . . █     TWO pieces -> "critical". But globally they are ONE
+█ █ █ █ █ █ █     piece joined at the bottom, so filling the gap only closes
+                  a loop -> NOT critical. Global IDs give the right answer.
+```
+
+For step 4 the box is the **parent prediction piece's** box, not the blob's:
+deleting pixels from piece A cannot change whether piece B elsewhere is
+connected, so the re-trace only has to cover A. That is still a real global
+trace, just over the only region where the answer can change.
+
+Verified bit-identical to the pre-fix code on 155 cases — including 90
+pure-random masks, which produce far nastier topologies than real neurons — with
+loss `0.1688096225` both ways and gradients differing by exactly `0.000e+00`.
+Pinned by `tests/test_supervoxel_speed.py`, which keeps a whole-frame reference
+implementation and asserts equality plus a scaling bound. **If you touch this
+function, that test is the contract: speed may change, answers may not.**
+
+Historical note: an even earlier version used pure-Python BFS over 1024² and
+took ~230 s/step; `scipy.ndimage.label` plus downsampling brought that to
+~2.6 s/step, and the boxing above to ~0.1 s/step.
 
 **Why this complements cbDice:**
 - cbDice: "Does the skeleton match?" (weighted centerline overlap)
@@ -2217,7 +2316,8 @@ After reading this document, you should be able to explain:
 4. **Why freeze image encoder base weights?** — General features work, full retrain would overfit with 20 videos. Only the new last-stage LoRA adapters train.
 5. **Data pipeline:** TIF → PNG (lossless), per-frame normalization, dataset stats
 6. **Augmentations:** Temporal consistency (same transform for all frames in clip); full pixel-level pipeline because `precompute_features=False`
-7. **Loss function:** Focal (handles class imbalance) + Dice (shape quality) + cbDice (skeleton topology, weight 5) + Supervoxel (connectivity, weight 0.3) + IoU pred + Object score.
+7. **Loss function:** Focal 3.0 (class imbalance) + Dice 2.0 (shape) + cbDice 0.3 (skeleton topology) + Supervoxel 0.3 (connectivity) + IoU pred + Object score. **The terms are not redundant and none sees everything:** focal/Dice catch *area* errors (holes, dents, fat boundaries); supervoxel/cbDice catch *connectivity* errors (splits, false bridges). A hole punched in a soma scores **zero** critical pixels in the supervoxel loss by construction — it asks only "right number of pieces?" — while a split with 15× fewer wrong pixels scores 117× more loss. This is why an IoU-only comparison cannot tell you whether a loss change helped.
+7b. **The supervoxel detector is non-differentiable and doesn't need to be:** it produces a constant 0/1 *weight map* over a differentiable BCE. Because each bucket is normalised by its own pixel count, a critical pixel pulls ~**4.9 million×** harder than an ordinary one (≈1,900× from bucket normalisation × ≈3,000× from being confidently wrong).
 8. **Three learning rates (LoRA+):** LoRA A (1e-4) vs LoRA B (1.6e-3, 16× higher) vs embeddings (1e-5)
 9. **Cosine schedule with floor:** 2-epoch linear warmup → cosine decay → floor at 5% of peak (GPT-3 style, half their floor)
 10. **`config.py` is the source of truth:** CLI flags only override when explicitly passed
