@@ -31,6 +31,7 @@ import torch.nn.functional as F
 import numpy as np
 from scipy.ndimage import label as ndimage_label
 from scipy.ndimage import binary_dilation as ndi_binary_dilation
+from scipy.ndimage import find_objects as ndi_find_objects
 
 
 class FocalLoss(nn.Module):
@@ -578,6 +579,19 @@ class SoftDiceCBDiceLoss(nn.Module):
 # =============================================================================
 
 
+def _pad_box(box, shape, pad: int = 1):
+    """Grow a ``find_objects`` bounding box by ``pad``, clipped to ``shape``.
+
+    One pixel of padding is exactly what a 1-pixel dilation needs, so a
+    per-component test that only looks at itself and its immediate neighbours
+    can run inside this window instead of over the whole frame.
+    """
+    return tuple(
+        slice(max(0, s.start - pad), min(n, s.stop + pad))
+        for s, n in zip(box, shape)
+    )
+
+
 def _detect_critical_components_2d(
     pred_binary: np.ndarray,
     target_binary: np.ndarray,
@@ -605,6 +619,7 @@ def _detect_critical_components_2d(
         pos_critical_mask: Mask of positively critical false positive pixels
     """
     h, w = pred_binary.shape
+    shape = (h, w)
 
     # Compute error masks
     false_neg = (target_binary > 0) & (pred_binary == 0)  # Should be 1, predicted 0
@@ -618,45 +633,71 @@ def _detect_critical_components_2d(
 
     # Label prediction components once (C-compiled, fast)
     pred_labels, _ = ndimage_label(pred_binary, structure=struct_4conn)
+    pred_boxes = ndi_find_objects(pred_labels)
 
     # ===== Negatively Critical Components (False Negatives) =====
     # For each FN connected component, check if adding it to the prediction
     # would bridge 2+ distinct prediction components (causing a split error).
-    fn_labels, n_fn = ndimage_label(false_neg, structure=struct_4conn)
+    fn_labels, _ = ndimage_label(false_neg, structure=struct_4conn)
 
-    for comp_id in range(1, n_fn + 1):
-        comp_mask = (fn_labels == comp_id)
+    for comp_id, box in enumerate(ndi_find_objects(fn_labels), start=1):
+        if box is None:
+            continue
+        # A component lies entirely inside its own bounding box, and a
+        # 1-pixel dilation cannot leave that box padded by 1 -- so the whole
+        # test is local. Working in the padded box instead of the full frame
+        # is what turns this loop from O(n_comp * H * W) into O(total area).
+        p = _pad_box(box, shape)
+        comp_mask = (fn_labels[p] == comp_id)
 
         # Dilate by 1 pixel to find adjacent prediction components
         dilated = ndi_binary_dilation(comp_mask, structure=struct_4conn)
         neighbor_region = dilated & ~comp_mask
 
         # Find distinct prediction labels adjacent to this FN component
-        adjacent_labels = np.unique(pred_labels[neighbor_region])
+        adjacent_labels = np.unique(pred_labels[p][neighbor_region])
         adjacent_labels = adjacent_labels[adjacent_labels > 0]  # Remove background
 
         if len(adjacent_labels) >= 2:
             # This FN component bridges 2+ prediction components → critical
-            neg_critical_mask[comp_mask] = 1.0
+            neg_critical_mask[p][comp_mask] = 1.0
 
     # ===== Positively Critical Components (False Positives) =====
     # For each FP connected component, check if removing it would disconnect
     # the prediction (i.e., it's a bridge between prediction components).
-    fp_labels, n_fp = ndimage_label(false_pos, structure=struct_4conn)
+    fp_labels, _ = ndimage_label(false_pos, structure=struct_4conn)
 
-    for comp_id in range(1, n_fp + 1):
-        comp_mask = (fp_labels == comp_id)
+    for comp_id, box in enumerate(ndi_find_objects(fp_labels), start=1):
+        if box is None:
+            continue
 
-        # Find prediction pixels adjacent to this FP component
-        dilated = ndi_binary_dilation(comp_mask, structure=struct_4conn)
-        neighbor_pred = dilated & ~comp_mask & (pred_binary > 0)
+        # Cheap local reject first. Isolated speckles are the overwhelming
+        # majority of FP components (~1000 per mask at 512²) and all of them
+        # die here, inside a handful of pixels.
+        p = _pad_box(box, shape)
+        comp_local = (fp_labels[p] == comp_id)
+        dilated = ndi_binary_dilation(comp_local, structure=struct_4conn)
+        neighbor_local = dilated & ~comp_local & (pred_binary[p] > 0)
 
-        if neighbor_pred.sum() < 2:
+        if neighbor_local.sum() < 2:
             continue  # Need at least 2 neighbors to potentially disconnect
 
+        # Every FP pixel is also a prediction pixel, and the component is
+        # connected, so it sits inside exactly one prediction component `pid`;
+        # every neighbour pixel is 4-adjacent to it and therefore sits in
+        # `pid` too. Connectivity among those pixels is fully determined
+        # inside pid's bounding box, so removing the component and relabelling
+        # can be done there rather than over the whole frame. Identical result,
+        # one relabel of a neuron instead of one relabel of the image.
+        pid = int(pred_labels[p][comp_local][0])
+        q = _pad_box(pred_boxes[pid - 1], shape)
+        comp_mask = (fp_labels[q] == comp_id)
+        dilated = ndi_binary_dilation(comp_mask, structure=struct_4conn)
+        neighbor_pred = dilated & ~comp_mask & (pred_binary[q] > 0)
+
         # Remove this FP component and relabel prediction
-        pred_without = pred_binary.copy()
-        pred_without[comp_mask] = 0
+        pred_without = (pred_labels[q] == pid)
+        pred_without[comp_mask] = False
         labels_without, _ = ndimage_label(pred_without, structure=struct_4conn)
 
         # Check if neighbors that were connected (through FP) are now split
@@ -665,7 +706,7 @@ def _detect_critical_components_2d(
 
         if len(neighbor_new_labels) > 1:
             # Removing this FP disconnects the prediction → critical
-            pos_critical_mask[comp_mask] = 1.0
+            pos_critical_mask[q][comp_mask] = 1.0
 
     return neg_critical_mask, pos_critical_mask
 
