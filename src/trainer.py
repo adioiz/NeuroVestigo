@@ -994,6 +994,16 @@ def train(config: TrainingConfig = None):
             shear=config.augmentation.shear,
             brightness=config.augmentation.brightness,
             contrast=config.augmentation.contrast,
+            # Previously omitted, so these silently ran at VideoAugmentation's
+            # own defaults and never appeared in the config banner.
+            scale_limit=config.augmentation.scale_limit,
+            gaussian_blur_p=config.augmentation.gaussian_blur_p,
+            gaussian_blur_sigma=config.augmentation.gaussian_blur_sigma,
+            gaussian_noise_p=config.augmentation.gaussian_noise_p,
+            gaussian_noise_std=config.augmentation.gaussian_noise_std,
+            elastic_transform_p=config.augmentation.elastic_transform_p,
+            elastic_alpha=config.augmentation.elastic_alpha,
+            elastic_sigma=config.augmentation.elastic_sigma,
             normalize_mean=norm_mean,
             normalize_std=norm_std,
         )

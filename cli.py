@@ -150,7 +150,16 @@ def cmd_train(args):
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
           f"use_supervoxel={config.loss.use_supervoxel}, "
           f"cbdice_weight={config.loss.loss_cbdice_weight}, "
-          f"supervoxel_weight={config.loss.loss_supervoxel_weight}")
+          f"supervoxel_weight={config.loss.loss_supervoxel_weight}, "
+          f"topology_resolution={config.loss.topology_resolution}")
+    a = config.augmentation
+    print(f"  aug.flip_h/v={a.horizontal_flip_p}/{a.vertical_flip_p}, "
+          f"rotation={a.rotation_degrees}, shear={a.shear}, "
+          f"scale={a.scale_limit}")
+    print(f"  aug.brightness={a.brightness}, contrast={a.contrast}, "
+          f"blur_p={a.gaussian_blur_p}, noise_p={a.gaussian_noise_p}, "
+          f"elastic_p={a.elastic_transform_p} "
+          f"(alpha={a.elastic_alpha}, sigma={a.elastic_sigma})")
     print(f"  use_memory_attention_path={config.use_memory_attention_path}")
     print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
     if config.resume_from:

@@ -6,7 +6,7 @@ Intensity transforms can optionally vary slightly per frame.
 """
 
 import random
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -14,27 +14,56 @@ import torchvision.transforms.functional as TF
 from scipy.ndimage import gaussian_filter, map_coordinates
 
 
-def elastic_transform(image: np.ndarray, alpha: float, sigma: float) -> np.ndarray:
+def make_elastic_field(
+    shape: Tuple[int, int], alpha: float, sigma: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Sample one smooth random displacement field (dx, dy) for `shape`.
+
+    Compute this ONCE per clip and pass it to every frame and every mask, so
+    the image and its label are warped identically and the clip stays
+    temporally coherent. See the note on `elastic_transform`.
     """
-    Apply elastic deformation to an image.
-
-    Args:
-        image: Input image as numpy array [H, W] or [H, W, C]
-        alpha: Intensity of deformation
-        sigma: Smoothness of deformation field
-
-    Returns:
-        Deformed image
-    """
-    shape = image.shape[:2]
-
-    # Generate random displacement fields
     dx = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
     dy = gaussian_filter((np.random.rand(*shape) * 2 - 1), sigma) * alpha
+    return dx, dy
 
-    # Create coordinate grids
+
+def _elastic_indices(shape: Tuple[int, int], dx: np.ndarray, dy: np.ndarray):
     x, y = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]))
-    indices = [np.clip(y + dy, 0, shape[0] - 1), np.clip(x + dx, 0, shape[1] - 1)]
+    return [np.clip(y + dy, 0, shape[0] - 1), np.clip(x + dx, 0, shape[1] - 1)]
+
+
+def elastic_transform(
+    image: np.ndarray,
+    alpha: float,
+    sigma: float,
+    dx: Optional[np.ndarray] = None,
+    dy: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Apply elastic deformation to an image with a GIVEN displacement field.
+
+    Args:
+        image: [H, W] or [H, W, C] array.
+        alpha, sigma: used only when dx/dy are not supplied.
+        dx, dy: displacement field from `make_elastic_field`. Pass the SAME
+            field used for the corresponding mask.
+
+    Note: dx/dy used to be optional-and-always-regenerated here, while the
+    mask path took a pre-computed field. That meant the image and its label
+    were deformed by two *different* random fields — measured at only
+    IoU ≈ 0.67 between them — so ~30% of training clips (elastic_transform_p)
+    carried labels that did not match the image, and each frame in a clip got
+    a different warp while all its masks shared one. Always pass an explicit
+    field; the fallback exists only so the function stays usable standalone.
+
+    Uses order=1 (bilinear) — correct for intensity images. Labels must go
+    through `elastic_transform_mask`, which uses order=0 (nearest) so integer
+    object IDs are not blended.
+    """
+    shape = image.shape[:2]
+    if dx is None or dy is None:
+        dx, dy = make_elastic_field(shape, alpha, sigma)
+    indices = _elastic_indices(shape, dx, dy)
 
     if image.ndim == 3:
         # Handle multi-channel images
@@ -47,10 +76,12 @@ def elastic_transform(image: np.ndarray, alpha: float, sigma: float) -> np.ndarr
 
 
 def elastic_transform_mask(mask: np.ndarray, alpha: float, sigma: float, dx: np.ndarray, dy: np.ndarray) -> np.ndarray:
-    """Apply elastic deformation to a mask using pre-computed displacement fields."""
+    """Apply elastic deformation to a mask using pre-computed displacement fields.
+
+    order=0 (nearest) keeps integer object IDs intact.
+    """
     shape = mask.shape[:2]
-    x, y = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]))
-    indices = [np.clip(y + dy, 0, shape[0] - 1), np.clip(x + dx, 0, shape[1] - 1)]
+    indices = _elastic_indices(shape, dx, dy)
     return map_coordinates(mask.astype(float), indices, order=0, mode='reflect').astype(mask.dtype)
 
 
@@ -142,12 +173,14 @@ class VideoAugmentation:
         noise_std = random.uniform(*self.gaussian_noise_std) if do_noise else 0
         do_elastic = random.random() < self.elastic_transform_p
 
-        # Pre-compute elastic displacement field (same for all frames)
+        # Pre-compute ONE elastic displacement field, shared by every frame and
+        # every mask in the clip. Both must use the same field or the label
+        # stops matching the image (and the clip stops being temporally
+        # coherent) — see the note on `elastic_transform`.
         if do_elastic and len(frames) > 0:
             # Use original frame size for displacement field
             h, w = frames[0].shape[1], frames[0].shape[2]
-            dx = gaussian_filter((np.random.rand(h, w) * 2 - 1), self.elastic_sigma) * self.elastic_alpha
-            dy = gaussian_filter((np.random.rand(h, w) * 2 - 1), self.elastic_sigma) * self.elastic_alpha
+            dx, dy = make_elastic_field((h, w), self.elastic_alpha, self.elastic_sigma)
         else:
             dx, dy = None, None
 
@@ -164,9 +197,13 @@ class VideoAugmentation:
                 frame_np = frame.permute(1, 2, 0).numpy()  # [H, W, C]
                 mask_np = mask.numpy()  # [H, W]
 
-                # Apply elastic transform
-                frame_np = elastic_transform(frame_np, self.elastic_alpha, self.elastic_sigma)
-                mask_np = elastic_transform_mask(mask_np, self.elastic_alpha, self.elastic_sigma, dx, dy)
+                # Apply elastic transform — SAME field for image and mask.
+                frame_np = elastic_transform(
+                    frame_np, self.elastic_alpha, self.elastic_sigma, dx, dy
+                )
+                mask_np = elastic_transform_mask(
+                    mask_np, self.elastic_alpha, self.elastic_sigma, dx, dy
+                )
 
                 # Convert back to tensor
                 frame = torch.from_numpy(frame_np).permute(2, 0, 1).float()

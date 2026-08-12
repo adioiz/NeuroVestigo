@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -56,6 +56,24 @@ class AugmentationConfig:
     # Intensity augmentations
     brightness: float = 0.15
     contrast: float = 0.15
+    # Scale / blur / noise / elastic. These previously lived only as
+    # VideoAugmentation defaults: the trainer never passed them, so they were
+    # active but invisible — absent from this config, from the CLI and from the
+    # startup banner. That is how a mis-implemented elastic warp (image and
+    # mask deformed by two different random fields, label/image agreement only
+    # IoU ≈ 0.67) ran unnoticed at p=0.3 for ~10 runs. Values below reproduce
+    # the defaults that were in force; they are now logged and overridable.
+    scale_limit: Tuple[float, float] = (0.85, 1.15)
+    gaussian_blur_p: float = 0.3
+    gaussian_blur_sigma: Tuple[float, float] = (0.1, 2.0)
+    gaussian_noise_p: float = 0.2
+    gaussian_noise_std: Tuple[float, float] = (0.01, 0.05)
+    # Elastic deformation. Set elastic_transform_p = 0.0 to disable — worth
+    # doing for one run to test whether label noise, not the loss recipe, set
+    # the ~0.851 val-IoU ceiling that every loss configuration converged to.
+    elastic_transform_p: float = 0.3
+    elastic_alpha: float = 50.0
+    elastic_sigma: float = 5.0
     # Normalization stats — set from stats.json (dataset-specific) by default.
     # Falls back to ImageNet stats if not overridden.
     # Use --use-dataset-stats to auto-load from stats.json (recommended).
