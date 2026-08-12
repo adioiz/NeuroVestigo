@@ -185,12 +185,29 @@ class DataConfig:
     num_frames: int = 8        # Frames per clip
     image_size: int = 1024     # SAM 2 input size (fixed!)
     max_objects: int = 3       # Max neurons tracked simultaneously
-    val_fraction: float = 0.25 # 25% for validation (5 of 20 videos at current dataset size)
+    val_fraction: float = 0.25 # 25% for validation
     val_videos: Optional[List[str]] = None  # Explicit override
+    test_videos: List[str] = [...]     # Held out BEFORE the split — never trained on
     clip_stride: int = 4       # Skip overlapping clips (1=all clips, 4=every 4th)
     cache_in_memory: bool = True       # Cache all frames/masks in RAM at init
     precompute_features: bool = False  # Off — full pixel-level augmentation enabled
 ```
+
+**Why `test_videos`?**
+
+`A71_C1, A81_C1, A12_C3_100k, A12_C1_100k_2` are removed from the pool in
+`trainer.py` *before* the train/val split runs, so they cannot reach training
+even under the random split. Pinning one of them as validation raises an error
+rather than silently leaking. Startup prints:
+
+```
+Excluding 4 held-out TEST video(s) from train/val: [...]
+```
+
+This matters for the paper: `val_iou` is the number early stopping *selects on*,
+which makes it a model-selection score and mildly optimistic. The headline
+generalisation number should come from these four recordings, which the model
+has never seen in any capacity.
 
 **Why `val_fraction = 0.25` (was 0.2)?**
 With the dataset at 20 videos in Run 7, 0.25 gives a clean 15 train / 5 val split. Mean of 5 keeps the headline IoU stable run-to-run. Earlier runs used smaller splits (2 of 12, 3 of 12, 3 of 16) and were noticeably more sensitive to individual hard videos.
@@ -243,6 +260,15 @@ class AugmentationConfig:
     shear: float = 20.0               # ±20 degrees
     brightness: float = 0.15          # ±15%
     contrast: float = 0.15            # ±15%
+    # Exposed in commit 76240c8 — see the warning below
+    scale_limit: Tuple[float, float] = (0.85, 1.15)
+    gaussian_blur_p: float = 0.3
+    gaussian_blur_sigma: Tuple[float, float] = (0.1, 2.0)
+    gaussian_noise_p: float = 0.2
+    gaussian_noise_std: Tuple[float, float] = (0.01, 0.05)
+    elastic_transform_p: float = 0.3
+    elastic_alpha: float = 50.0
+    elastic_sigma: float = 5.0
     normalize_mean: Optional[List[float]] = None  # Auto-load
     normalize_std: Optional[List[float]] = None   # Auto-load
 ```
@@ -252,7 +278,26 @@ class AugmentationConfig:
 - **Flips (p=0.5):** Neurons have no orientation preference. Flipping doubles effective dataset.
 - **Rotation (±25°):** Neurons grow in any direction. Makes model rotation-invariant.
 - **Shear (±20°):** Simulates tissue deformation.
+- **Scale (0.85–1.15):** Neurons vary in apparent size across recordings.
 - **Brightness/Contrast (±15%):** Simulates microscope illumination variation. Conservative because microscopy has specific intensity characteristics.
+- **Blur / noise:** Simulates focus drift and sensor noise.
+- **Elastic (p=0.3, α=50, σ=5):** Simulates non-rigid tissue deformation — the most biologically realistic augmentation for growing neurites, and the most dangerous to implement (see below).
+
+> **⚠️ Historical trap — the last eight fields did not exist here until commit
+> `76240c8`.** They lived only as `VideoAugmentation.__init__` defaults;
+> `trainer.py` never passed them and the banner never printed them. So five
+> augmentations — including a 30%-probability elastic warp — were silently
+> active but invisible to the config, the CLI and the logs. That is how a bug
+> that misaligned every augmented image from its own label survived ~10 runs.
+> **Any augmentation that is not in the config and not in the banner is a
+> latent correctness risk**, because nothing will ever tell you it is on.
+
+**To disable elastic** (worth one run — it tests whether label noise rather than
+the loss recipe set the ~0.851 IoU ceiling):
+
+```python
+elastic_transform_p: float = 0.0
+```
 
 ---
 
@@ -305,9 +350,9 @@ This prevents training instability.
 ```python
 @dataclass
 class LossConfig:
-    loss_mask_weight: float = 5.0       # Focal loss weight
+    loss_mask_weight: float = 3.0       # Focal loss weight
     loss_dice_weight: float = 2.0       # Dice loss weight
-    loss_cbdice_weight: float = 5.0     # cbDice for skeleton topology (bumped from 3.0 in Run 5)
+    loss_cbdice_weight: float = 0.3     # cbDice for skeleton topology — see note
     loss_supervoxel_weight: float = 0.3 # Supervoxel weight — small, re-enabled in Run 5
     loss_iou_weight: float = 1.0        # IoU prediction loss
     loss_class_weight: float = 1.0      # Object presence loss
@@ -315,11 +360,29 @@ class LossConfig:
     focal_gamma: float = 2.0
     use_cbdice: bool = True
     use_supervoxel: bool = True         # Re-enabled in Run 5 — see note below
-    topology_resolution: int = 256
+    topology_resolution: int = 512      # raised from 256 — see note
 ```
 
-**Why `loss_cbdice_weight = 5.0` (was 3.0 in Run 4, 1.0 originally)?**
-Neurons are tree-like — topology fidelity matters more than bulk pixel overlap. Diagnostic per-component logging showed the cbDice value drop from 0.056 (weight 1.0) to 0.016 (weight 3.0) to ~0.008 (weight 3.0, more training). Run 5 bumps to 5.0 because Run 4 predictions still showed broken thin branches in user inspection. The user-reported "lack of connectivity" issue is what this weight targets.
+**Why `loss_cbdice_weight = 0.3` (it was 5.0 for most of the run history)?**
+
+This weight only became meaningful after two bugs were fixed (see
+[Class: `SoftCBDiceLoss`](#class-softcbdiceloss-topology-preserving-with-boundary-weighting)).
+While the term was inert its magnitude was artificially small, so a large
+weight looked harmless. After the fixes the repaired term is roughly **20×
+larger** — at weight 5.0 it contributed ~65% of the total loss and drowned out
+Dice. The weight was reduced so its contribution (~0.3 × 0.12 ≈ 0.04) sits
+alongside Dice (~2 × 0.09 ≈ 0.18) rather than dominating it.
+
+**Do not read the historical weight sweep as an ablation of cbDice.** Weights
+5 / 1 / 0.3 / off all produced val IoU within 0.002 of each other — but they
+were all comparing contaminated signal, so what that sweep actually showed is
+that *a broken term's weight doesn't matter*.
+
+**Why `loss_mask_weight = 3.0` (was 5.0)?**
+Largely cosmetic. Focal saturates by ~epoch 3 — it down-weights well-classified
+pixels by design, and in these frames the pixel-level call is the easy part — so
+it contributes ~0.02 of the total either way. Its job is to anchor pixel
+correctness cheaply, not to drive learning.
 
 **Why `use_supervoxel = True` again?**
 Was disabled in Run 3 after sitting flat at 0.30 for many epochs. Re-enabled in Run 5 with a smaller weight (0.3 instead of 1.0) for two reasons:
@@ -328,19 +391,34 @@ Was disabled in Run 3 after sitting flat at 0.30 for many epochs. Re-enabled in 
 
 Run 7 diagnostics confirm the per-component value does move (val supervoxel ≈ 0.064 at the best epoch — well below the constant ~0.30 it sat at in Runs 1–2).
 
-**Why `topology_resolution = 256`?**
+**Why `topology_resolution = 512` (raised from 256)?**
 
-Topology losses (cbDice skeleton/EDT and supervoxel connectivity analysis) are computed at this resolution instead of the full 1024×1024. This is a 16× pixel reduction that gives a ~2000× speedup for topology losses with minimal quality impact — topology (connectivity, skeleton structure) is a coarse property that doesn't require full resolution. The supervoxel loss detects critical components at 256×256 and then upscales the critical masks back to 1024×1024 for accurate loss gradients.
+Topology losses (cbDice skeleton/EDT and supervoxel connectivity analysis) are
+computed at this resolution instead of the full 1024×1024, because topology is a
+coarse property. 256 was a 4× linear downsample of the 1024² input, which pushes
+1–2 px neurites toward sub-pixel; 512 is only 2×. The supervoxel loss detects
+critical components at this resolution and upscales the critical masks back to
+1024×1024 so gradients stay full-resolution.
 
-**Combined loss:**
+Cost: **4× the topology compute** — measured 225 → 896 ms per cbDice forward at
+B·T·N=16.
+
+Two measurements that deliberately *limit* the claim here, so nobody repeats
+them as fact:
+- **No aspect distortion is introduced by this resize.** `augmentations.py`
+  already resizes frames and masks to a square 1024², so this is square→square.
+  The native 615×353 aspect was flattened upstream, not here.
+- **Betti-0 is preserved exactly at both 256 and 512** over 18 sampled frames —
+  masks do not fragment at 256. The defensible claim is finer skeleton/EDT
+  detail, not topology rescue.
+
+**Combined loss (current):**
 ```
-L_total = 5·L_focal + 2·L_dice + 1·L_cbDice + 1·L_supervoxel + 1·L_iou + 1·L_class
+L_total = 3·L_focal + 2·L_dice + 0.3·L_cbDice + 0.3·L_supervoxel + 1·L_iou + 1·L_class
 ```
 
-**Why these weights?**
-- **Focal (5.0)**: Pixel accuracy is the primary objective, but reduced from 20 to balance with topology losses
-- **Dice (2.0)**: Region-level overlap is important for shape matching
-- **cbDice + Supervoxel (1.0 each)**: Topology preservation for thin neuron branches
+Note the logged `loss_components` are **raw and unweighted** — multiply by the
+weight above to get each term's real contribution.
 
 **Focal loss parameters:**
 - `alpha = 0.25`: Balances foreground/background
@@ -780,14 +858,28 @@ Dice = 2 × |A ∩ B| / (|A| + |B|)
 
 cbDice (Shi et al., MICCAI 2024) extends clDice (Shit et al., CVPR 2021) by adding distance-transform-based boundary weighting. The key improvement: thinner structures get higher weight via inverse-radius weighting from the Euclidean distance transform (EDT).
 
-**Formula:**
+**Formula (faithful port of the reference implementation):**
+
+`get_weights(mask, skel)` returns three radius-normalised maps — a normalised
+distance-volume `q_v`, a skeleton-radius map `q_sv`, and an inverse-radius
+skeleton weight `q_s`. With subscripts `p`/`l` for prediction/label:
+
 ```
-cbTprec = |W_t · skel(pred) · target| / |W_t · skel(pred)|   (weighted skeleton precision)
-cbTsens = |W_p · skel(target) · pred| / |W_p · skel(target)| (weighted skeleton sensitivity)
-cbDice = 2 × cbTprec × cbTsens / (cbTprec + cbTsens)
+w_tprec = Σ(q_sp · q_vl) / Σ comb(q_spvp, q_slvl, q_sp)
+w_tsens = Σ(q_sl · q_vp) / Σ comb(q_slvl, q_spvp, q_sl)
+cbDice  = 2 · w_tprec · w_tsens / (w_tprec + w_tsens)
+loss    = 1 − cbDice
 ```
 
-Where W_t and W_p are inverse-radius distance transform weights. For a structure with local radius r, the weight is 1/(r+1) — thin dendrites (r≈1) get weight ≈0.5, thick soma (r≈10) gets weight ≈0.09.
+Precision scores the *prediction's* skeleton against the *label's*
+distance-volume; sensitivity does the reverse. `comb` is the reference's
+`combine_tensors` merge (prefer `B·C`, fall back to `A·C` where `A≠0, B=0`).
+Skeletons are taken on the **hard** masks with gradients reinjected through the
+predicted probabilities. The reference returns `−cbDice`; we return the
+equivalent `1 − cbDice` so the term stays a proper loss in [0, 1].
+
+Thin structures dominate by construction: for local radius `r`, `q_s` scales as
+`(R − r + r_min)/R`, so thin dendrites outweigh the thick soma.
 
 **Why this matters for neurons:**
 - Neuron branches are thin tubular structures with varying radius
@@ -795,7 +887,34 @@ Where W_t and W_p are inverse-radius distance transform weights. For a structure
 - Breaking a thin branch gets heavily penalized (both skeleton loss AND high weight from small radius)
 - cbDice automatically upweights errors on thin branches that standard clDice would treat equally
 
-**Performance optimization:** cbDice downsamples masks to `topology_resolution` (default 256×256) before computing skeletons and EDT. This is a 16× pixel reduction that gives ~100× speedup for the EDT computation and ~16× for soft_skel, with minimal quality loss since topology is a coarse property. Gradients flow through the bilinear interpolation used for downsampling.
+**Performance:** masks are downsampled to `topology_resolution` (512) before
+skeletons and EDT. Gradients flow through the bilinear interpolation.
+
+### ⚠️ Two bugs lived here — read before modifying
+
+Both were verified by measurement and are now pinned by
+`tests/test_cbdice_loss.py` and `tests/test_cbdice_resize.py`.
+
+**1. The term was inert (fixed in `d4edf6c`).** An in-house paraphrase paired
+each skeleton with the weight map of its *own* mask. Since
+`_compute_distance_weights` zeroed the weights off-mask, the extra `· target`
+factor in the numerator was redundant — numerator and denominator were the
+*same sum*, so `w_tprec ≡ 1.0` for every possible input. Measured on a synthetic
+neuron: the loss moved by **3e-6** while Dice fell **0.34**. Severing a branch,
+deleting a branch and inventing a branch all scored identically.
+
+**2. The resize manufactured error (fixed in `c6b1b03`).** The prediction was
+resized `bilinear` and the target `nearest`. On a *bit-identical* pair the two
+grids then disagreed on 100–400+ pixels, which the loss scored as topology
+error: a **perfect prediction cost 0.008–0.085 instead of 0**. Both sides are
+now resized bilinear and the target re-binarised at 0.5, which drives the
+perfect-prediction loss to exactly `0.0000` at 256, 384 and 512.
+
+**The invariant to preserve:** a prediction identical to the target must cost
+exactly zero, and the loss must still order `perfect < severed < missing-one <
+missing-two`. If you change the resize, the weighting, or the skeletoniser, run
+both test files — the first bug made the loss *constant* and the second made it
+*non-zero on perfect input*, and neither was visible in the training curves.
 
 ---
 
@@ -811,6 +930,9 @@ class SupervoxelLoss2D(nn.Module):
         self.alpha = alpha    # Balance: topology vs standard loss
         self.beta = beta      # Balance: split vs merge errors
         self.topology_resolution = topology_resolution  # Downsample for speed
+        # NOTE: this signature default (256) is NOT what training uses.
+        # LossConfig.topology_resolution = 512 is passed explicitly. The two
+        # differ — if you construct this class directly you get 256.
 
     def forward(self, pred, target):
         # 1. Compute base BCE loss at FULL resolution (for accurate gradients)
@@ -1302,6 +1424,56 @@ def __call__(self, frames, masks):
 **CRITICAL:** All frames in a clip get the SAME random parameters.
 
 If frame 3 is flipped, frame 4 must also be flipped. Otherwise the model sees physically impossible motion (neuron jumps to mirror position between frames).
+
+There is a second, equally strict rule that is easier to break:
+
+**CRITICAL:** the frame and its mask must get the SAME geometric transform.
+
+Every spatial op above is applied to `frame` and `mask_3d` on adjacent lines
+with shared parameters, which makes the pairing obvious — and that is deliberate.
+The only transform that did *not* follow the pattern is the one that broke.
+
+### ⚠️ The elastic bug (fixed in `76240c8`)
+
+`elastic_transform()` used to sample its **own** random displacement field
+internally, while `elastic_transform_mask()` took the clip's pre-computed field
+as an argument. The call site passed `dx, dy` only to the mask:
+
+```python
+# BROKEN — image and mask warped by two different random fields
+frame_np = elastic_transform(frame_np, alpha, sigma)              # samples its own
+mask_np  = elastic_transform_mask(mask_np, alpha, sigma, dx, dy)  # uses the clip's
+```
+
+Two failures at once, both invisible in any training curve:
+
+1. **Spatial:** the label no longer matched the image. Measured agreement
+   between the two deformations on real masks: **IoU 0.573–0.711 (mean 0.668)**
+   — the model was trained against a label ~33% wrong relative to the image it
+   was shown.
+2. **Temporal:** because `elastic_transform()` was called *inside* the per-frame
+   loop, each of the 8 frames got a **different** warp while all 8 masks shared
+   one — breaking exactly the frame-to-frame coherence that Path B's
+   memory-attention exists to learn.
+
+At `elastic_transform_p=0.3` this affected ~30% of training clips in every run
+up to that commit. The fix is a single shared field per clip:
+
+```python
+dx, dy = make_elastic_field((h, w), alpha, sigma)   # ONCE per clip
+...
+frame_np = elastic_transform(frame_np, alpha, sigma, dx, dy)       # order=1
+mask_np  = elastic_transform_mask(mask_np, alpha, sigma, dx, dy)   # order=0
+```
+
+Agreement goes **0.668 → 0.983**; the residual is the intended bilinear
+(`order=1`, correct for intensity) vs nearest (`order=0`, keeps integer object
+IDs unblended) boundary difference. Pinned by
+`tests/test_augmentation_alignment.py`.
+
+**Validation is unaffected.** `VideoValidationTransform` is resize + normalize
+only, so every reported val metric — across the whole run history — was measured
+on clean data. The corruption was training-side only.
 
 ---
 
@@ -1873,6 +2045,58 @@ Dice is always ≥ IoU for the same prediction.
 **Why both metrics?**
 - IoU is stricter, better for model comparison
 - Dice is standard in medical imaging literature, makes results comparable to published work
+
+**Why neither is sufficient here.** Both are *overlap* measures, and overlap is
+close to blind to connectivity. A dendrite severed in the middle loses ~1% of
+its pixels — IoU barely twitches — but biologically it is the difference between
+"one cell with a long process" and "two fragments". That is what the next
+function is for.
+
+---
+
+## Functions: `compute_betti_numbers()` and `compute_betti_error()`
+
+```python
+def compute_betti_numbers(mask) -> Tuple[int, int]:
+    _, beta0 = ndimage.label(m, structure=_CONN8)          # components
+    labels_bg, n_bg = ndimage.label(~m, structure=_CONN4)  # background
+    # background regions touching the border are "outside"; the rest are holes
+    return beta0, n_bg - n_border_touching
+```
+
+**Betti numbers** describe shape topologically:
+
+- **β0 = number of connected components.** One neuron = 1. A severed neurite
+  makes it 2.
+- **β1 = number of enclosed holes.** A solid blob = 0, an annulus = 1.
+
+They are invariant to stretching and bending — they change only when something
+is *cut* or *closed*, which is exactly the property overlap metrics lack.
+
+**Connectivity pairing matters:** the foreground uses 8-connectivity and the
+background 4-connectivity. This complementary pair is required for digital
+topology to satisfy the Jordan-curve property; using the same connectivity for
+both produces paradoxes (diagonal lines that both separate and don't separate
+the plane).
+
+`compute_betti_error()` reports the **absolute error vs ground truth**,
+`(|Δβ0|, |Δβ1|)`, which is what validation logs as `val_betti_err: b0=..., b1=...`.
+Lower is better; 0 means the prediction is topologically correct.
+
+**How to read it.** b0 ≈ 0.48 means roughly one component error per two frames
+(a break or a spurious fragment). Two practical cautions, both learned by
+measurement:
+
+- **It is noisy per-validation** — ±0.05–0.09 observed while IoU sat constant.
+  Compare the **mean over the last ~10 validations**, and treat differences
+  under ~0.1 as noise.
+- **It is the metric that separated configurations when IoU could not.** cbDice
+  at 0.3 gave mean b0 ≈ 0.51 versus ≈ 0.72 with cbDice disabled — a clear gap —
+  while the two were tied on IoU to within 0.004.
+
+Implementation note: `betti_error_per_frame()` reuses `_align_pred_target()`,
+the same helper the IoU/Dice path uses, so both metrics score identical
+`(pred, gt)` pairs and their NaN patterns line up.
 
 ---
 

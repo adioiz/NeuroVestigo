@@ -7,7 +7,9 @@ NVIDIA B200 (Blackwell) and small datasets (~20 videos).
 
 This repository fine-tunes SAM2 (Segment Anything Model 2) for neuron segmentation using **LoRA+** (Low-Rank Adaptation with asymmetric A/B learning rates) plus topology-preserving losses tailored to tree-like neurite structures.
 
-The shipping configuration is **Run 7**: 20 videos (15 train / 5 val), dual-rank LoRA (rank 16 on decoder + memory_attention, rank 8 on the last 2 Hiera trunk blocks), the full memory_attention forward pass ("Path B"), and a 6-component loss including cbDice and supervoxel. Run 7 reaches **val IoU 0.8401 / Dice 0.9117** at epoch 88.
+The current shipping configuration is **Run D**: 25 labeled recordings (20 train / 5 val / 4 held-out test), dual-rank LoRA (rank 16 on decoder + memory_attention, rank 8 on the last 2 Hiera trunk blocks), the full memory_attention forward pass ("Path B"), and a 6-component loss including cbDice and supervoxel. Run D reaches **val IoU 0.8520 / Dice 0.9188** at epoch 84, up from Run 7's 0.8401.
+
+> **Read [Correctness fixes](#correctness-fixes) before interpreting any run before Run D.** Three defects — an inert cbDice term, a resampling artefact inside cbDice, and an elastic augmentation that misaligned images from their labels — were found and fixed after most of the run history below was recorded. They do not invalidate reported validation numbers (validation was never augmented), but they do explain why sweeping the loss weights produced differences too small to call.
 
 **For labeling/annotation**, use the companion [neurons-labeling](../neurons-labeling/) repository.
 
@@ -18,9 +20,12 @@ The shipping configuration is **Run 7**: 20 videos (15 train / 5 val), dual-rank
 - **Path B forward pass** — uses SAM 2's real `track_step` API so the memory_attention adapters actually train (Runs 1–4 silently skipped them).
 - **Topology-aware loss** — cbDice (centerline boundary Dice) emphasises thin neurite branches; supervoxel loss directly penalises split/merge connectivity errors.
 - **B200-optimised** — bf16 + channels-last + cuDNN FlashAttention-3 + fused AdamW + (optional) `torch.compile`.
-- **Diagnostics built into the loop** — per-component loss, per-frame IoU, per-video IoU, worst-case prediction PNG dumps.
+- **Topology metrics, not just overlap** — validation reports Betti-number error (β0 = component count, β1 = holes) alongside IoU/Dice. IoU is blind to a severed neurite; β0 is not.
+- **Held-out test set** — 4 recordings are removed from the pool *before* the train/val split and can never leak in, even under the random split.
+- **Diagnostics built into the loop** — per-component loss, per-frame IoU, per-video IoU, Betti error, worst-case prediction PNG dumps.
 - **Resumable** — `train_state.pt` written every epoch lets a single logical run span multiple SLURM jobs under a 4-hour wall-clock limit.
-- **Safe defaults from `config.py`** — CLI flags only override when explicitly passed; nothing silently changes between runs.
+- **Safe defaults from `config.py`** — CLI flags only override when explicitly passed; nothing silently changes between runs. Every augmentation and loss parameter is echoed in the startup banner.
+- **Regression-tested loss and augmentation** — `tests/` pins the properties whose violation caused the three historical defects.
 
 ## Repository Connection
 
@@ -129,14 +134,14 @@ This is a **dual-rank checkpoint**: the main group is rank 16, the Hiera group i
 
 | field | value | notes |
 |---|---|---|
-| `loss_mask_weight` (focal) | 5.0 | pixel-level loss |
-| `loss_dice_weight` | 2.0 | region overlap |
-| `loss_cbdice_weight` | 5.0 | skeleton topology — strengthened in Run 5 to push connectivity in tree-like neurons |
+| `loss_mask_weight` (focal) | 3.0 | pixel-level loss. Saturates by ~epoch 3 (focal down-weights well-classified pixels by design) and contributes ~0.02 of the total thereafter — 3 vs 5 is not a meaningful lever. |
+| `loss_dice_weight` | 2.0 | region overlap — carries most of the gradient |
+| `loss_cbdice_weight` | 0.3 | skeleton topology. Was 5.0 while the term was inert; after the fixes it is ~20× larger in magnitude, so the weight was reduced. See [Correctness fixes](#correctness-fixes). |
 | `use_supervoxel` | True | **re-enabled in Run 5** at small weight (0.3) once Path B made the connectivity signal actually learnable |
-| `loss_supervoxel_weight` | 0.3 | small weight; diagnostics confirmed the per-component value actually moves under Path B |
+| `loss_supervoxel_weight` | 0.3 | small weight. Run 8 tried 2.0 → val IoU fell to 0.8229; the component sits at a structural floor and weight-pumping it does nothing. |
 | `loss_iou_weight` | 1.0 | IoU prediction calibration |
 | `loss_class_weight` | 1.0 | object-presence classifier |
-| `topology_resolution` | 256 | cbDice skeleton + supervoxel connectivity are computed at 256×256 (16× fewer pixels than 1024); ~2000× faster than full-res with minimal topology quality loss |
+| `topology_resolution` | 512 | cbDice skeleton + supervoxel connectivity grid. Raised 256 → 512 for finer thin-neurite detail (the loss receives 1024², so 256 is a 4× downsample). Costs 4× the topology compute — measured 225 → 896 ms/forward at B·T·N=16. |
 
 **Data (`DataConfig`)**
 
@@ -146,17 +151,44 @@ This is a **dual-rank checkpoint**: the main group is rank 16, the Hiera group i
 | `num_frames` | 8 | clip length (B×T = 16, GPU-friendly) |
 | `max_objects` | 3 | per clip |
 | `batch_size` | 2 | small for generalization on a small dataset |
-| `val_fraction` | 0.25 | 5 of 20 videos held out (stable mean) |
-| `val_videos` | None | when set, overrides val_fraction with explicit list. Run 7 default: `A91_C1_2, A31_C1, A52_C2, A22_C2, A42_C1` |
-| `precompute_features` | False | full augmentation pipeline (rotation, shear, brightness, contrast) is enabled |
-| `clip_stride` | 4 | dataset stride between clip starts |
-| `cache_in_memory` | True | all frames cached at startup |
+| `val_fraction` | 0.25 | fraction held out when `val_videos` is not set |
+| `val_videos` | None | when set, overrides val_fraction with an explicit list. **Pin this** — comparing runs against a shifting val set makes every delta meaningless. Standard set: `A91_C1_2, A31_C1, A52_C2, A22_C2, A42_C1` |
+| `test_videos` | `A71_C1, A81_C1, A12_C3_100k, A12_C1_100k_2` | held-out **test** set, removed from the pool *before* the train/val split so it cannot leak in even under the random split. Pinning one of these as val raises an error. Reserved for final benchmarking only. |
+| `precompute_features` | False | full augmentation pipeline enabled (see `AugmentationConfig`) |
+| `clip_stride` | 4 | stride between clip **start** frames. With `num_frames=8` and ~72-frame videos this gives ~17 clips/video and covers every frame with overlap. Stride 2 roughly doubles clips/epoch but the added clips share 6 of 8 frames — redundancy, not new information. |
+| `cache_in_memory` | True | all frames + masks cached at startup. Note the printed MB figure counts frames only; masks are stored `int64` and add ~65% more. |
+
+**Augmentation (`AugmentationConfig`)**
+
+All spatial parameters are sampled **once per clip** and applied identically to
+every frame and every mask — temporal consistency is the whole point, since
+Path B is learning frame-to-frame propagation. Validation uses
+`VideoValidationTransform` (resize + normalize only, **no augmentation**), so
+validation metrics are never affected by anything in this table.
+
+| field | value | notes |
+|---|---|---|
+| `horizontal_flip_p` / `vertical_flip_p` | 0.5 / 0.5 | |
+| `rotation_degrees` | 25.0 | |
+| `shear` | 20.0 | |
+| `scale_limit` | (0.85, 1.15) | random zoom |
+| `brightness` / `contrast` | 0.15 / 0.15 | |
+| `gaussian_blur_p` | 0.3 | sigma ∈ (0.1, 2.0) |
+| `gaussian_noise_p` | 0.2 | std ∈ (0.01, 0.05) |
+| `elastic_transform_p` | 0.3 | alpha 50.0, sigma 5.0. Set to **0.0** to disable. |
+
+Before commit `76240c8` these eight fields did not exist in the config: they ran
+at hardcoded `VideoAugmentation` defaults, were not passed by the trainer, and
+never appeared in the banner — which is how a broken elastic warp went unnoticed
+for ~10 runs. They are now logged on startup and overridable.
 
 **Training (`TrainingConfig`)**
 
 | field | value | notes |
 |---|---|---|
-| `num_epochs` | 90 | Run 7: 20 videos, dual-rank LoRA, 5% LR floor — ~6.5 h on a single B200 |
+| `num_epochs` | 90 | Runs since Run 7 use `--epochs 110`. Peak val IoU consistently lands around **epoch 72–84**, with the LR-floor tail (epoch ~95+) contributing nothing — early stopping cuts it. |
+| `early_stopping_patience` | 10 | validation checks without improvement |
+| `val_every_n_epochs` | 2 | |
 | `use_memory_attention_path` | True | use SAM 2's real `track_step` API for temporal propagation (Path B). Runs 1–4 silently skipped memory_attention; Run 5 turned this on and jumped val IoU from ~0.7755 to ~0.8295 |
 
 **Forward-pass architecture**
@@ -202,10 +234,10 @@ The simplified previous-mask-as-prompt path (used in Runs 1–4) is retained as 
 | `--clip-stride N` | None (config) | override clip stride |
 | `--no-precompute` | False | force precompute_features=False |
 | `--no-cache` | False | force cache_in_memory=False |
-| `--no-cbdice` | False | disable cbDice loss |
-| `--no-supervoxel` | False | disable supervoxel loss (already off by default) |
-| `--no-topology` | False | disable BOTH cbDice and supervoxel |
-| `--supervoxel-weight F` | None (config) | override supervoxel weight (only if you re-enable it) |
+| `--no-cbdice` | False | disable cbDice loss only |
+| `--no-supervoxel` | False | disable supervoxel loss only (it is **on** by default at weight 0.3) |
+| `--no-topology` | False | disable BOTH cbDice and supervoxel — don't use this for a cbDice ablation, it changes two variables |
+| `--supervoxel-weight F` | None (config) | override supervoxel weight |
 | `--use-imagenet-stats` | False | use ImageNet mean/std instead of dataset stats.json |
 | `--compile-encoder` | False | `torch.compile` the image encoder |
 | `--compile-decoder` | False | `torch.compile` the SAM mask decoder |
@@ -237,16 +269,22 @@ Submit the script repeatedly until `num_epochs` is reached (or early stopping tr
 
 ## What gets logged
 
-Each epoch prints (Run 7 best-epoch numbers, epoch 88):
+Each epoch prints (Run D best-epoch numbers, epoch 84):
 
 ```
-Epoch 88/90: train_loss=..., time=~260s, ~3.4s/step
+Epoch 84/110: train_loss=0.3474, time=~337s, ~1.4s/step
   Validating...
-  val_loss=..., val_iou=0.8401, val_dice=0.9117
-  val_loss_components: mask=0.009, dice=0.096, cbdice=0.004, supervoxel=0.064, ...
-  per_frame_iou: t0=0.946, t1=0.837, t2=0.825, t3=0.828, t4=0.827, t5=0.819, t6=0.818, t7=0.822
-  per_video_iou: A91_C1_2=0.793, A31_C1=0.873, A52_C2=0.844, A22_C2=0.840, A42_C1=0.850
+  val_loss=0.2522, val_iou=0.8520, val_dice=0.9188
+  val_betti_err: b0=0.476, b1=0.235
+  val_loss_components: mask=0.007, dice=0.089, cbdice=0.117, supervoxel=0.059, ...
+  per_frame_iou: t0=0.950, t1=0.848, t2=0.835, t3=0.843, t4=0.840, t5=0.832, t6=0.829, t7=0.837
+  per_video_iou: A91_C1_2=0.807, A31_C1=0.883, A52_C2=0.861, A22_C2=0.847, A42_C1=0.861
 ```
+
+**Reading `val_loss_components`:** these are **raw, unweighted** values. The
+total applies the config weights, so a component's real contribution is
+`raw × weight`. Comparing a raw component across runs with different weights —
+or across the cbDice fixes — is not meaningful.
 
 Plus, every validation epoch saves the **6 worst-IoU prediction PNGs** to:
 
@@ -258,14 +296,28 @@ Each PNG is `image | GT | prediction | overlay (red=pred, green=GT, yellow=both)
 
 ## Key metrics — what to look for
 
-| metric | good range | Run 7 best | meaning |
+| metric | good range | Run D best | meaning |
 |---|---|---|---|
-| `val_iou` | 0.80–0.85 | 0.8401 | aggregate intersection-over-union across all val frames |
-| `val_dice` | 0.88–0.92 | 0.9117 | aggregate Dice across all val frames |
-| per-frame `t0` IoU | 0.90–0.95 | 0.946 | prompt frame — should be high |
-| per-frame `t7` IoU | 0.78–0.85 | 0.822 | last frame after propagation chain |
-| `t0 - t7` drop | < 0.15 | 0.124 | how much IoU you lose along the chain |
+| `val_iou` | 0.80–0.86 | 0.8520 | aggregate intersection-over-union across all val frames |
+| `val_dice` | 0.88–0.92 | 0.9188 | aggregate Dice across all val frames |
+| `val_betti_err` b0 | lower is better | 0.476 | mean \|Δβ0\| — **component-count errors** (breaks, spurious fragments). The metric IoU cannot see: a severed neurite costs ~1% of pixels but is a biological failure. |
+| `val_betti_err` b1 | lower is better | 0.235 | mean \|Δβ1\| — hole-count errors |
+| per-frame `t0` IoU | 0.90–0.95 | 0.950 | prompt frame — should be high |
+| per-frame `t7` IoU | 0.78–0.85 | 0.837 | last frame after propagation chain |
+| `t0 - t7` drop | < 0.15 | 0.113 | how much IoU you lose along the chain |
 | train/val loss gap | small or closed | — | open gap = overfitting; closed gap can also mean under-fitting |
+
+**Two things worth knowing before you compare runs:**
+
+- **IoU has been saturated at ~0.851 ± 0.002 across five loss configurations**
+  (cbDice 5 / 1 / 0.3 / off, plus supervoxel sweeps). Treat any IoU difference
+  below ~0.005 as noise, and don't read a config change as an improvement on
+  that basis alone.
+- **Betti error is noisy per-validation** (±0.05–0.09 observed at constant IoU).
+  Compare the **mean over the last ~10 validations**, not the best-epoch value,
+  and treat differences under ~0.1 as noise. On that basis, cbDice at 0.3 gave
+  mean b0 ≈ 0.51 vs ≈ 0.72 with cbDice disabled — a real separation on topology
+  even though IoU was tied.
 
 ## Project structure
 
@@ -286,11 +338,19 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
 │   └── val_samples/epoch_NNN/    # worst-IoU prediction dumps
 ├── training_data/
 │   └── stats.json
+├── benchmark/               # competitor comparison + test-set evaluation
+│   ├── data.py              # TEST_VIDEOS definition
+│   └── eval_masks.py        # reported IoU / Dice / clDice / cbDice metrics
+├── tests/                   # regression tests for the historical defects
+│   ├── test_cbdice_loss.py         # cbDice term is not inert; ordering holds
+│   ├── test_cbdice_resize.py       # perfect prediction costs exactly 0
+│   ├── test_augmentation_alignment.py  # image and mask stay aligned
+│   └── test_betti.py               # Betti numbers on known shapes
 └── src/
     ├── config.py            # ← single source of truth for hyperparameters
     ├── lora.py              # LoRA+ adapter implementation
     ├── trainer.py           # training loop
-    ├── evaluate.py          # validation + per-frame/per-video metrics
+    ├── evaluate.py          # validation + per-frame/per-video/Betti metrics
     ├── neuron_dataset.py    # PyTorch Dataset
     ├── augmentations.py     # video augmentation
     ├── loss_fns.py          # focal, dice, cbDice, supervoxel
@@ -298,15 +358,50 @@ Fine-tune-SAM2-model-for-Neurons-segmentation/
     └── data_utils.py        # batched data containers
 ```
 
+Run the tests with:
+
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE PYTHONPATH=. python tests/test_cbdice_loss.py
+```
+
+(or `pytest tests/` if pytest is installed).
+
+## Correctness fixes
+
+Three defects were found after most of the run history was recorded. Each was
+verified by measurement before and after, and each is now pinned by a test.
+**Validation was never augmented and never used the training loss, so all
+reported val IoU/Dice numbers remain valid** — but the *conclusions* drawn from
+loss-weight sweeps do not.
+
+| # | defect | measured impact | fixed in |
+|---|---|---|---|
+| 1 | **cbDice was inert.** Each skeleton was paired with the weight map of its *own* mask, whose support is zero off-mask, so the precision numerator and denominator were the same sum: `w_tprec ≡ 1.0` for every input. | Loss varied by 3e-6 while Dice fell 0.34. Replaced with a faithful port of the reference implementation; the term now orders correctly (perfect < severed < missing-one < missing-two). | `d4edf6c` |
+| 2 | **cbDice resize artefact.** Prediction resized `bilinear`, target `nearest` — a bit-identical pair then disagreed on 100–400+ pixels, scored as topology error. | A **perfect** prediction cost 0.008–0.085 instead of 0. Now exactly 0.0000 at 256/384/512. `topology_resolution` also raised 256 → 512. | `c6b1b03` |
+| 3 | **Elastic augmentation misaligned image and label.** `elastic_transform()` sampled a fresh random field per call while the mask used the clip's pre-computed one, so image and label were warped differently — and every frame in a clip got a different warp while all its masks shared one. | Image/label agreement only **IoU 0.668**; ~30% of training clips affected (`elastic_transform_p=0.3`) in every run to date. Now **0.983** (residual is the intended bilinear-vs-nearest boundary difference). | `76240c8` |
+
+**Why this matters for interpretation.** Defects 1 and 2 mean the cbDice weight
+sweep (5 / 1 / 0.3 / off) was comparing contaminated signal — cbDice was never
+cleanly tested, which is the most likely reason those runs all landed within
+noise of each other. Defect 3 is a candidate explanation for the ~0.851 IoU
+ceiling itself: ~30% of clips carried labels ~33% wrong relative to their
+images, and no loss function can compensate for that. Both are open hypotheses,
+each testable with a single run (`elastic_transform_p = 0.0` is the cheaper
+and more decisive of the two).
+
 ## Hardware
 
 The current config targets a single B200 (or any modern NVIDIA GPU with ≥8 GB):
 
-| GPU | epoch time (Run 7, no compile) | 90-epoch wall clock |
+| GPU | epoch time (Run D, 25 videos, no compile) | 110-epoch wall clock |
 |---|---|---|
-| B200 | ~260 s/epoch | ~6.5 h → 2 chained 4-hour SLURM jobs |
-| A100 | ~2× slower | not benchmarked end-to-end at Run 7 scale |
+| B200 | ~335 s/epoch (~1.4 s/step, 176 steps) | ~10 h → 3 chained 4-hour SLURM jobs |
+| A100 | ~2× slower | not benchmarked end-to-end |
 | Apple M-series (MPS) | seconds-to-tens-of-seconds per step | not realistic for the full Path B forward |
+
+`topology_resolution=512` costs 4× the topology compute versus 256 (225 → 896 ms
+per cbDice forward at B·T·N=16), so budget more chained jobs than the table
+above until you have measured your own step time.
 
 `--compile-encoder --compile-decoder` shaves ~10–25% off step time after the first-call compile cost (30–90 s).
 
