@@ -123,9 +123,28 @@ class LossConfig:
     # ≈0.008), so at weight 5.0 it contributed ~0.69 — ~65% of the total loss,
     # drowning out Dice/mask. At 1.0 its contribution (~0.13) is comparable to
     # Dice (~0.29). Baseline to beat: weight 5.0 reached val IoU 0.8473 @ ep88.
-    loss_mask_weight: float = 3.0  # Focal loss
+    #
+    # Weight history and what each setting actually bought (val IoU, 25 videos):
+    #   focal 5 / cbDice 1.0  → 0.8534 @ep72   (cbDice still had the resize bug)
+    #   focal 3 / cbDice 0.3  → 0.8520 @ep84   (Run D, shipped)
+    #   focal 3 / cbDice 0.3  → 0.8498 @ep54   (+ cbDice resize fix)
+    #   focal 3 / cbDice 0.3  → 0.8529 @ep92   (+ resize fix + elastic fix)
+    # Every one of these is inside the ±0.003 run-to-run band. Nine
+    # configurations and three genuine correctness fixes have not moved val IoU
+    # off ~0.852. Treat any weight change as a topology experiment, not an
+    # accuracy one, and read it on b0/b1 — never on IoU.
+    #
+    # ⚠️ Weights are NOT proportional to influence. Measured share of the
+    # weighted gradient norm at the operating point (IoU 0.63-0.69):
+    #     supervoxel (0.3) ≈ 75%   dice (2.0) ≈ 15%   cbdice ≈ 5%   focal ≈ 4%
+    # The supervoxel term normalises each bucket by its own pixel count, so a
+    # handful of critical pixels pull ~4.9e6× harder than an ordinary one. That
+    # is why it dominates at weight 0.3, and why pushing it UP has failed twice
+    # (Run 9: 0.5 → 0.8346; Run 8: 2.0 → 0.8229). If you test supervoxel, test
+    # it downward.
+    loss_mask_weight: float = 5.0  # Focal loss
     loss_dice_weight: float = 2.0  # Shape coverage
-    loss_cbdice_weight: float = 0.3  # Skeleton topology
+    loss_cbdice_weight: float = 1.0  # Skeleton topology
     loss_supervoxel_weight: float = 0.3  # Connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
