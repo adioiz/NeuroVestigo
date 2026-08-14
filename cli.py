@@ -71,6 +71,8 @@ def cmd_train(args):
         config.val_max_batches = args.val_samples
     if args.patience is not None:
         config.early_stopping_patience = args.patience
+    if args.seed is not None:
+        config.seed = args.seed
 
     # ----- LoRA -----
     if args.lora_rank is not None:
@@ -113,6 +115,8 @@ def cmd_train(args):
     if args.use_imagenet_stats:
         config.augmentation.normalize_mean = [0.485, 0.456, 0.406]
         config.augmentation.normalize_std = [0.229, 0.224, 0.225]
+    if args.elastic_transform_p is not None:
+        config.augmentation.elastic_transform_p = args.elastic_transform_p
 
     # ----- Loss -----
     if args.no_cbdice or args.no_topology:
@@ -161,7 +165,8 @@ def cmd_train(args):
           f"elastic_p={a.elastic_transform_p} "
           f"(alpha={a.elastic_alpha}, sigma={a.elastic_sigma})")
     print(f"  use_memory_attention_path={config.use_memory_attention_path}")
-    print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}")
+    print(f"  batch_size={config.batch_size}, num_epochs={config.num_epochs}, "
+          f"seed={config.seed}, patience={config.early_stopping_patience}")
     if config.resume_from:
         print(f"  resume_from={config.resume_from}")
     if config.compile_encoder or config.compile_decoder:
@@ -211,6 +216,30 @@ def main():
     p_train.add_argument("--val-every", type=int, default=None, help="Validate every N epochs")
     p_train.add_argument("--val-samples", type=int, default=None, help="Max validation batches (0 = all)")
     p_train.add_argument("--patience", type=int, default=None, help="Early stopping patience")
+    p_train.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed (default 42 from config.py). Change it to repeat a "
+            "configuration under a different draw and measure run-to-run "
+            "variance -- without which no small metric difference between two "
+            "single runs can be read. NOTE: when data.val_videos is set (it is "
+            "by default) the seed does NOT move the train/val split, so seed "
+            "repeats stay comparable."
+        ),
+    )
+    p_train.add_argument(
+        "--elastic-transform-p",
+        type=float,
+        default=None,
+        metavar="P",
+        help=(
+            "Probability of applying the elastic warp (default 0.3). Pass 0.0 "
+            "to disable it entirely -- the ablation that isolates how much the "
+            "augmentation itself contributes, now that it is correctly aligned."
+        ),
+    )
     p_train.add_argument(
         "--use-imagenet-stats",
         action="store_true",
