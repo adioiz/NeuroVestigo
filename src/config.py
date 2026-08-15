@@ -128,7 +128,19 @@ class LossConfig:
     #   focal 5 / cbDice 1.0  → 0.8534 @ep72   (cbDice still had the resize bug)
     #   focal 3 / cbDice 0.3  → 0.8520 @ep84   (Run D, shipped)
     #   focal 3 / cbDice 0.3  → 0.8498 @ep54   (+ cbDice resize fix)
-    #   focal 3 / cbDice 0.3  → 0.8529 @ep92   (+ resize fix + elastic fix)
+    #   focal 3 / cbDice 0.3  → 0.8529 @ep92   (+ resize fix + elastic fix)  ← BEST
+    #   focal 5 / cbDice 1.0  → 0.8517 @ep104  (all fixes; WORSE on every metric)
+    #
+    # ⚠️ Raising cbDice HURTS topology. Matched tails (ep84-104, n=11), all fixes:
+    #     cbDice 0.3 → IoU 0.8524, b0 0.631, b1 0.223
+    #     cbDice 1.0 → IoU 0.8510, b0 0.755, b1 0.337   (b1 is +5.6x the scatter)
+    # Sorted by how much correctly-computed cbDice influences training, b0 rises
+    # monotonically: 0.513 (0.3 + resize bug) → 0.631 (0.3 fixed) → 0.755 (1.0).
+    # So the b0 regression after the resize fix was not the fix breaking
+    # something -- it was cbDice starting to work. Likely cause: cbDice
+    # optimises SOFT-skeleton overlap (five openings, a crude proxy), and
+    # pushing it rewards predictions whose skeleton matches while their
+    # component structure does not. Do not raise this weight.
     # Every one of these is inside the ±0.003 run-to-run band. Nine
     # configurations and three genuine correctness fixes have not moved val IoU
     # off ~0.852. Treat any weight change as a topology experiment, not an
@@ -142,9 +154,9 @@ class LossConfig:
     # is why it dominates at weight 0.3, and why pushing it UP has failed twice
     # (Run 9: 0.5 → 0.8346; Run 8: 2.0 → 0.8229). If you test supervoxel, test
     # it downward.
-    loss_mask_weight: float = 5.0  # Focal loss
+    loss_mask_weight: float = 3.0  # Focal loss
     loss_dice_weight: float = 2.0  # Shape coverage
-    loss_cbdice_weight: float = 1.0  # Skeleton topology
+    loss_cbdice_weight: float = 0.3  # Skeleton topology
     loss_supervoxel_weight: float = 0.3  # Connectivity preservation
     loss_iou_weight: float = 1.0  # IoU prediction loss
     loss_class_weight: float = 1.0  # Object score loss
