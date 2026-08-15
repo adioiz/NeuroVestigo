@@ -1024,10 +1024,19 @@ def train(config: TrainingConfig = None):
         clip_stride=config.data.clip_stride,
         cache_in_memory=config.data.cache_in_memory,
     )
+    # Validation clip length is pinned separately so that changing num_frames
+    # does not silently change what val_iou measures. per_frame_iou is reported
+    # as t0..t{val_frames-1}, and the aggregate is an average over that chain,
+    # so a longer chain lowers val_iou mechanically.
+    val_frames = config.data.val_num_frames or config.data.num_frames
+    if val_frames != config.data.num_frames:
+        print(f"Validation clip length pinned to {val_frames} frames "
+              f"(training clips are {config.data.num_frames}) — val_iou stays "
+              f"comparable to runs at num_frames={val_frames}")
     val_dataset = NeuronVideoDataset(
         data_dir=config.data.training_data_dir,
         video_names=val_videos,
-        num_frames=config.data.num_frames,
+        num_frames=val_frames,
         max_objects=config.data.max_objects,
         transform=val_transform,
         clip_stride=config.data.clip_stride,

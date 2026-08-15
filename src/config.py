@@ -26,6 +26,14 @@ class DataConfig:
     """Directory containing converted training data (PNG images + PNG masks)"""
     training_data_dir: str = "training_data"
     num_frames: int = 8 # Number of frames per training clip
+    # Frames per VALIDATION clip. None = follow num_frames.
+    # Pin this when experimenting with num_frames: val_iou is measured over a
+    # propagation chain of this length, so raising num_frames alone silently
+    # lengthens the chain validation has to survive and the number stops being
+    # comparable to earlier runs (it would drop for a purely mechanical reason,
+    # not because the model got worse). Keep it at 8 to stay comparable with the
+    # 0.8529 baseline while training on longer clips.
+    val_num_frames: Optional[int] = None
     image_size: int = 1024 # Image size for SAM 2 (must match pretrained config)
     max_objects: int = 3 # Maximum objects per clip
     val_fraction: float = 0.25 # Validation split (fraction of videos held out → 5 of 20)

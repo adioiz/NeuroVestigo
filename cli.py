@@ -85,6 +85,8 @@ def cmd_train(args):
         config.data.training_data_dir = args.data_dir
     if args.num_frames is not None:
         config.data.num_frames = args.num_frames
+    if args.val_num_frames is not None:
+        config.data.val_num_frames = args.val_num_frames
     if args.clip_stride is not None:
         config.data.clip_stride = args.clip_stride
     if args.no_cache:
@@ -148,7 +150,9 @@ def cmd_train(args):
           f"weight_decay={config.optimizer.weight_decay}")
     print(f"  data.precompute_features={config.data.precompute_features}, "
           f"clip_stride={config.data.clip_stride}, "
-          f"num_frames={config.data.num_frames}")
+          f"num_frames={config.data.num_frames}, "
+          f"val_num_frames={config.data.val_num_frames or config.data.num_frames}"
+          f"{' (pinned)' if config.data.val_num_frames else ''}")
     if config.data.val_videos:
         print(f"  data.val_videos={config.data.val_videos} (overrides val_fraction)")
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
@@ -210,7 +214,20 @@ def main():
     p_train.add_argument("--lora-b-lr-ratio", type=float, default=None, help="LoRA+ B/A learning rate ratio")
     p_train.add_argument("--base-lr", type=float, default=None, help="Base learning rate for non-LoRA params")
     p_train.add_argument("--warmup-epochs", type=int, default=None)
-    p_train.add_argument("--num-frames", type=int, default=None)
+    p_train.add_argument("--num-frames", type=int, default=None,
+                         help="Frames per TRAINING clip (default 8)")
+    p_train.add_argument(
+        "--val-num-frames",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Frames per VALIDATION clip; defaults to --num-frames. Pin this to "
+            "8 when raising --num-frames, otherwise val_iou is measured over a "
+            "longer propagation chain and drops for a purely mechanical reason "
+            "-- the number would no longer be comparable to the 0.8529 baseline."
+        ),
+    )
     p_train.add_argument("--data-dir", type=str, default=None)
     p_train.add_argument("--checkpoint-dir", type=str, default=None)
     p_train.add_argument("--val-every", type=int, default=None, help="Validate every N epochs")
