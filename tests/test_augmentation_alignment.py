@@ -68,7 +68,18 @@ def test_elastic_field_is_deterministic_given_field():
 
 def test_clip_stays_aligned_and_temporally_consistent():
     """End-to-end: with elastic forced on, every frame must match its mask
-    and all frames must receive the SAME spatial warp."""
+    and all frames must receive the SAME spatial warp.
+
+    Threshold rationale: the clip contains a 3-px-wide neurite, and the image
+    is resampled with order=1 while the mask uses order=0 -- a deliberate
+    difference (you cannot interpolate a label). On a structure that thin, that
+    alone costs ~10% IoU, so correct behaviour measures ~0.87-0.90 here and an
+    earlier 0.90 threshold sat right on top of it, failing ~2 runs in 3. The
+    defect this guards against measured 0.668, so 0.80 separates them with
+    margin on both sides. The seed makes the warp deterministic; without it the
+    field is redrawn per run and the result wanders across any threshold.
+    """
+    np.random.seed(0)
     frames, masks = _synthetic_clip()
     aug = VideoAugmentation(
         image_size=128,
@@ -90,7 +101,7 @@ def test_clip_stays_aligned_and_temporally_consistent():
         inter = torch.logical_and(fb, mb).sum().item()
         union = torch.logical_or(fb, mb).sum().item()
         ious.append(inter / union if union else 1.0)
-    assert min(ious) > 0.90, f"frame/mask misaligned within clip: IoUs={ious}"
+    assert min(ious) > 0.80, f"frame/mask misaligned within clip: IoUs={ious}"
 
     # All masks in the clip must be identical -> one shared warp, not per-frame.
     for mk in out_masks[1:]:
