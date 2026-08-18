@@ -19,6 +19,23 @@ class LoRAConfig:
     hiera_last_stage: bool = True
     hiera_rank: int = 8
     hiera_alpha: float = 16.0  # keeps alpha/rank = 2.0 like the main LoRA
+    # How many TRAILING Hiera trunk blocks to adapt. Default 2 = stage 3 only
+    # (blocks 10-11 of 12), which is the historical behaviour.
+    #
+    # Why raising this is the best-motivated capacity experiment left: with a
+    # ground-truth prompt the model scores t0 = 0.947, but the very next frame
+    # drops to 0.843 and then stays essentially flat (-0.0012 IoU/frame out to
+    # t15). The deficit is therefore not temporal drift -- it is LOCALISING the
+    # neuron without being told where it is, which is an encoder/memory
+    # representation problem, not a mask-decoding one. The decoder already gets
+    # 68 layers at rank 16; the encoder gets 8 layers at rank 8, and 10 of its
+    # 12 blocks are untouched. That asymmetry points the wrong way for the
+    # failure mode we actually have.
+    #
+    # hiera_blocks=4 reaches blocks 8-11, picking up block 9 -- a GLOBAL
+    # attention block (trunk global_att_blocks = [5, 7, 9]) that attends over
+    # the whole image instead of a local window.
+    hiera_blocks: int = 2
 
 
 @dataclass

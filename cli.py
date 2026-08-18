@@ -79,6 +79,12 @@ def cmd_train(args):
         config.lora.rank = args.lora_rank
     if args.lora_alpha is not None:
         config.lora.alpha = args.lora_alpha
+    if args.hiera_rank is not None:
+        config.lora.hiera_rank = args.hiera_rank
+    if args.hiera_alpha is not None:
+        config.lora.hiera_alpha = args.hiera_alpha
+    if args.hiera_blocks is not None:
+        config.lora.hiera_blocks = args.hiera_blocks
 
     # ----- Data -----
     if args.data_dir is not None:
@@ -144,7 +150,8 @@ def cmd_train(args):
           f"lora.dropout={config.lora.dropout}")
     print(f"  lora.hiera_last_stage={config.lora.hiera_last_stage}, "
           f"hiera_rank={config.lora.hiera_rank}, "
-          f"hiera_alpha={config.lora.hiera_alpha}")
+          f"hiera_alpha={config.lora.hiera_alpha}, "
+          f"hiera_blocks={config.lora.hiera_blocks}")
     print(f"  optimizer.lora_lr={config.optimizer.lora_lr:.1e}, "
           f"base_lr={config.optimizer.base_lr:.1e}, "
           f"weight_decay={config.optimizer.weight_decay}")
@@ -210,6 +217,25 @@ def main():
     p_train.add_argument("--batch-size", type=int, default=None)
     p_train.add_argument("--lora-rank", type=int, default=None)
     p_train.add_argument("--lora-alpha", type=float, default=None)
+    p_train.add_argument(
+        "--hiera-blocks",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Adapt the last N Hiera trunk blocks (default 2 = stage 3 only, "
+            "blocks 10-11 of 12). N=4 also reaches blocks 8-9, including "
+            "block 9 which uses GLOBAL attention. Aimed at the t0->t1 cliff: "
+            "the model scores 0.947 with a GT prompt and 0.843 without, then "
+            "stays flat, so the deficit is localising the neuron unprompted -- "
+            "an encoder problem. The decoder already has 68 layers at rank 16 "
+            "while the encoder has 8 at rank 8."
+        ),
+    )
+    p_train.add_argument("--hiera-rank", type=int, default=None,
+                         help="LoRA rank for the Hiera encoder blocks (default 8)")
+    p_train.add_argument("--hiera-alpha", type=float, default=None,
+                         help="LoRA alpha for the Hiera encoder blocks (default 16 = 2x rank)")
     p_train.add_argument("--lora-lr", type=float, default=None, help="LoRA A matrix learning rate")
     p_train.add_argument("--lora-b-lr-ratio", type=float, default=None, help="LoRA+ B/A learning rate ratio")
     p_train.add_argument("--base-lr", type=float, default=None, help="Base learning rate for non-LoRA params")

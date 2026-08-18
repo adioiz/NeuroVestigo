@@ -100,6 +100,41 @@ HIERA_LAST_STAGE_LORA_TARGETS = [
 ]
 
 
+def hiera_trailing_block_targets(num_blocks_total: int, num_adapt: int) -> List[str]:
+    """LoRA patterns for the LAST ``num_adapt`` Hiera trunk blocks.
+
+    The block indices are derived from the trunk actually loaded rather than
+    hardcoded, so this stays correct if the backbone is swapped. For
+    sam2.1-hiera-tiny the trunk is ``stages: [1, 2, 7, 2]`` = 12 blocks:
+
+        stage 0 -> block 0       (96-dim)
+        stage 1 -> blocks 1-2    (192-dim)
+        stage 2 -> blocks 3-9    (384-dim)   global attention at 5, 7, 9
+        stage 3 -> blocks 10-11  (768-dim)
+
+    num_adapt=2 reproduces HIERA_LAST_STAGE_LORA_TARGETS exactly (stage 3
+    only). num_adapt=4 reaches back into stage 2 and picks up block 9, which
+    is a GLOBAL-attention block -- it attends over the whole image rather than
+    a local window, which is the computation that has to localise a neuron
+    when no ground-truth prompt is available. Note the two stages differ in
+    width (384 vs 768), so a given rank buys proportionally more capacity in
+    stage 3 than in stage 2.
+
+    Four Linear layers are matched per block (attn.qkv, attn.proj,
+    mlp.layers.0, mlp.layers.1). The block-level ``proj`` that Hiera inserts
+    at a stage transition is deliberately NOT matched, matching the previous
+    behaviour.
+    """
+    if num_adapt <= 0:
+        return []
+    lo = max(0, num_blocks_total - num_adapt)
+    idx = "|".join(str(i) for i in range(lo, num_blocks_total))
+    return [
+        rf"(model\.)?image_encoder\.trunk\.blocks\.({idx})\.attn\.(qkv|proj)",
+        rf"(model\.)?image_encoder\.trunk\.blocks\.({idx})\.mlp\.layers\.\d+",
+    ]
+
+
 def _matches_any_pattern(name: str, patterns: List[str]) -> bool:
     """Check if a module name matches any of the target patterns."""
     return any(re.fullmatch(p, name) for p in patterns)
