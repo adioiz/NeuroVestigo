@@ -435,11 +435,25 @@ class SoftCBDiceLoss(nn.Module):
         MICCAI 2024. https://github.com/PengchengShi1220/cbDice
     """
 
-    def __init__(self, num_iter: int = 5, smooth: float = 1.0, topology_resolution: int = 256):
+    def __init__(self, num_iter: int = 5, smooth: float = 1.0, topology_resolution: int = 256,
+                 skeleton_fn=None):
+        """skeleton_fn overrides how masks are skeletonised (default: soft_skel).
+
+        The loss keeps soft_skel, which is what the reference cbDice does. The
+        skeleton is taken under no_grad here, so this is fidelity to the
+        reference rather than a differentiability requirement -- which means an
+        EVALUATION caller may legitimately substitute an exact skeleton. Doing
+        so matters: soft_skel is five openings and cannot fully erode a thick
+        soma, and the resulting bias is method-dependent (measured on real
+        predictions, exact-vs-soft moves Omnipose +0.169 but mu-SAM -0.004), so
+        a metric built on it distorts the gaps between methods. See
+        benchmark/eval_masks.cbdice_score.
+        """
         super().__init__()
         self.num_iter = num_iter
         self.smooth = smooth
         self.topology_resolution = topology_resolution
+        self.skeleton_fn = skeleton_fn if skeleton_fn is not None else soft_skel
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Compute cbDice loss.
@@ -503,8 +517,8 @@ class SoftCBDiceLoss(nn.Module):
         # multiplying the prediction skeleton by the predicted probabilities.
         with torch.no_grad():
             y_pred_hard = (y_pred_prob > 0.5).float()
-            skel_pred_hard = soft_skel(y_pred_hard.unsqueeze(1), self.num_iter).squeeze(1)
-            skel_true = soft_skel(y_true.unsqueeze(1), self.num_iter).squeeze(1)
+            skel_pred_hard = self.skeleton_fn(y_pred_hard.unsqueeze(1), self.num_iter).squeeze(1)
+            skel_true = self.skeleton_fn(y_true.unsqueeze(1), self.num_iter).squeeze(1)
         skel_pred_prob = skel_pred_hard * y_pred_prob  # carries gradient
 
         # Radius-normalised weight maps for each side (dim=2 for image data).
