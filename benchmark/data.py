@@ -14,6 +14,7 @@ the single source of truth for "which sequences exist and where".
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 
@@ -82,17 +83,49 @@ class Dataset:
 
     # -- loading -----------------------------------------------------------
     def gt_path(self, name: str) -> str:
+        """Absolute path to the GT mask TIF from the manifest.
+
+        May not exist off this Mac -- the manifest stores absolute paths into
+        an external SSD and a sibling checkout. Use load_gt(), which falls back
+        to the prepared PNGs. Kept for callers that genuinely want the TIF.
+        """
         return self.entries[name]["mask_tif"]
+
+    def prepared_mask_dir(self, name: str) -> str:
+        return os.path.join(REPO, "training_data", "masks", name)
 
     def image_path(self, name: str) -> str:
         return self.entries[name]["image_tif"]
 
     def load_gt(self, name: str) -> np.ndarray:
+        """GT stack [T,H,W].
+
+        Prefers the manifest TIF, but falls back to the prepared per-frame PNGs
+        in training_data/masks/<name>/. The manifest holds ABSOLUTE paths into
+        /Volumes/Adi-SSD and a sibling neurons-labeling checkout, so on the
+        cluster the TIF is simply absent -- while training_data/ is rsynced
+        there and is what run_sam3.py itself reads. Without this, scoring only
+        ever worked on the laptop.
+        """
         import tifffile
-        m = tifffile.imread(self.gt_path(name))
-        if m.ndim == 2:
-            m = m[None]
-        return m.astype(np.int32)
+        tif = self.gt_path(name)
+        if os.path.exists(tif):
+            m = tifffile.imread(tif)
+            if m.ndim == 2:
+                m = m[None]
+            return m.astype(np.int32)
+
+        d = self.prepared_mask_dir(name)
+        files = sorted(glob.glob(os.path.join(d, "*.png")))
+        if not files:
+            raise FileNotFoundError(
+                f"no ground truth for {name!r}: manifest TIF {tif!r} is absent "
+                f"and no prepared PNGs in {os.path.relpath(d, REPO)}/. "
+                f"Run `python cli.py prepare` for this recording, or score on a "
+                f"machine where the manifest paths resolve."
+            )
+        from PIL import Image
+        return np.stack([np.array(Image.open(f)) for f in files]).astype(np.int32)
 
     def load_image(self, name: str) -> np.ndarray | None:
         """Raw image stack, or None if the SSD path is not currently mounted."""
