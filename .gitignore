@@ -37,3 +37,10 @@ gpu-checkpoints/
 # Symlinks to neurons-labeling repo
 labeled_masks
 labeled_coordinates
+
+# Benchmark: scripts ARE tracked; heavy artefacts are not.
+# benchmark/ totals ~7.6 GB — 5.9 GB of competitor virtualenvs and 1.7 GB of
+# prediction TIFFs. `git add benchmark/` would try to commit all of it.
+benchmark/competitors/
+benchmark/predictions/
+benchmark/__pycache__/

@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""
+data.py -- manifest-driven access to the neuron sequences for the benchmark.
+
+Ground-truth masks live in the neuron-labeling repo; the raw image stacks live
+on an external SSD. Both are resolved through `data_manifest.json`, so this is
+the single source of truth for "which sequences exist and where".
+
+    from benchmark.data import Dataset
+    ds = Dataset()
+    for name in ds.split("val"):
+        gt = ds.load_gt(name)          # (T, H, W) int32 label stack
+        img = ds.load_image(name)      # (T, H, W) or None if the SSD isn't mounted
+"""
+from __future__ import annotations
+
+import json
+import os
+
+import numpy as np
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MANIFEST = os.path.join(REPO, "data_manifest.json")
+CONFIG = os.path.join(REPO, "gpu-checkpoints", "training_config.json")
+
+# True held-out TEST set: videos whose masks exist in neurons-labeling but were
+# NEVER prepared into training_data, so the shipped (25-video) model never saw them.
+# A71_C1 / A81_C1 are entirely new series (cleanest); A12_C3_100k / A12_C1_100k_2 are
+# new fields from the same 100k batch (mild same-sample caveat).
+# NOTE: these must be `prepare`d into training_data/{images,masks}/<name>/ before use.
+# (The earlier `_100k` test set was WRONG: the shipped model DID train on those.)
+TEST_VIDEOS = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2"]
+
+
+class Dataset:
+    def __init__(self, manifest: str = MANIFEST, config: str = CONFIG):
+        with open(manifest) as f:
+            entries = json.load(f)
+        self.entries = {e["name"]: e for e in entries}
+        self.val_videos: list[str] = []
+        if os.path.exists(config):
+            with open(config) as f:
+                self.val_videos = json.load(f)["data"].get("val_videos", [])
+
+    # -- listing -----------------------------------------------------------
+    def all(self) -> list[str]:
+        return sorted(self.entries)
+
+    def split(self, which: str = "val") -> list[str]:
+        """'test' -> true held-out set (post-training-manifest _100k batch);
+        'val' -> model-selection videos; 'train' -> the 15 actually trained on;
+        'all' -> everything."""
+        if which == "all":
+            return self.all()
+        test = [n for n in TEST_VIDEOS if n in self.entries]
+        val = [n for n in self.val_videos if n in self.entries]
+        if which == "test":
+            return test
+        if which == "val":
+            return val
+        if which == "train":
+            return [n for n in self.all() if n not in set(val) | set(test)]
+        raise ValueError(f"unknown split '{which}'")
+
+    # -- loading -----------------------------------------------------------
+    def gt_path(self, name: str) -> str:
+        return self.entries[name]["mask_tif"]
+
+    def image_path(self, name: str) -> str:
+        return self.entries[name]["image_tif"]
+
+    def load_gt(self, name: str) -> np.ndarray:
+        import tifffile
+        m = tifffile.imread(self.gt_path(name))
+        if m.ndim == 2:
+            m = m[None]
+        return m.astype(np.int32)
+
+    def load_image(self, name: str) -> np.ndarray | None:
+        """Raw image stack, or None if the SSD path is not currently mounted."""
+        import tifffile
+        p = self.image_path(name)
+        if not os.path.exists(p):
+            return None
+        img = tifffile.imread(p)
+        return img if img.ndim == 3 else img[None]
+
+    def available(self, name: str) -> dict[str, bool]:
+        return {"gt": os.path.exists(self.gt_path(name)),
+                "image": os.path.exists(self.image_path(name))}
+
+
+if __name__ == "__main__":
+    ds = Dataset()
+    print(f"manifest: {len(ds.all())} sequences")
+    print(f"val split ({len(ds.split('val'))}): {ds.split('val')}")
+    print(f"train split ({len(ds.split('train'))} sequences)")
+    print("\nper-sequence availability (val):")
+    for n in ds.split("val"):
+        a = ds.available(n)
+        gt = ds.load_gt(n) if a["gt"] else None
+        shape = gt.shape if gt is not None else "-"
+        labels = np.unique(gt).tolist() if gt is not None else "-"
+        print(f"  {n:<12} gt={a['gt']!s:<5} img={a['image']!s:<5} "
+              f"shape={shape} labels={labels}")
