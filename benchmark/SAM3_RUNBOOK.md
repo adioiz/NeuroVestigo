@@ -56,9 +56,22 @@ are still gated — access has not been granted yet, so stop.
 python -c "import sys, sam3, torch, tifffile; print(sys.version.split()[0], torch.__version__, torch.version.cuda)"
 ```
 
-**Check:** Python **3.12.x**, torch ≥2.7, CUDA ≥12.6. If Python says 3.9, the
-env is not active. If `tifffile` is missing: `pip install tifffile` (safe here —
-`sam3-env` is isolated).
+**Check:** Python **3.12.x**, torch ≥2.7, CUDA ≥12.6, numpy **1.26.x**.
+If Python says 3.9, the env is not active.
+
+If anything is missing, install the three extras SAM 3 does not pull in itself —
+**pinned, all in one resolve**:
+
+```bash
+pip install "numpy>=1.26,<2" "tifffile<2025" "setuptools<81"
+```
+
+Do NOT `pip install tifffile` unpinned. The 2026 build hard-requires
+`numpy>=2.1`, so pip silently upgrades numpy and breaks SAM 3's own `numpy<2`
+pin — the package installs, then `import sam3` fails or misbehaves. A 2024
+build reads exactly the same TIFFs. `setuptools<81` is for `pkg_resources`,
+which `sam3/model_builder.py` imports: Python 3.12 venvs ship no setuptools and
+81+ removed it.
 
 And confirm the SCORING env has its own deps, without installing anything into it:
 
@@ -198,7 +211,9 @@ choice of prompt mode are on the record rather than asserted.
 | GT file not found when scoring | manifest holds absolute Mac paths; `load_gt` falls back to `training_data/masks/<name>/`, so that recording needs `cli.py prepare` |
 | `unexpected propagate response` | Stage 1 guesses were wrong; fix `_iter_results()` |
 | foreground fraction `0.0000` everywhere | prompts not reaching the model; re-run Stage 1 |
-| `ModuleNotFoundError: tifffile` | `pip install tifffile` inside `sam3-env` |
+| `ModuleNotFoundError: tifffile` | install the pinned trio in Stage 0 |
+| `ModuleNotFoundError: pkg_resources` | `setuptools<81` missing in `sam3-env` |
+| `sam3 0.1.0 requires numpy<2 ... you have numpy 2.x` | something pulled numpy up; re-run the pinned install |
 | `ModuleNotFoundError: skimage` when scoring | you are scoring in `sam3-env`; score in `neurotrack-env` |
 | `huggingface-cli` prints a deprecation notice and exits | use `hf` (`hf auth login`, `hf download`) |
 
