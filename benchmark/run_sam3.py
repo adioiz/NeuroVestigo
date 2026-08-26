@@ -396,6 +396,9 @@ def main():
     ap.add_argument("--use-fa3", action="store_true",
                     help="enable Flash Attention 3; off by default because "
                          "flash_attn_interface is not installed in sam3-env")
+    ap.add_argument("--no-cudnn", action="store_true",
+                    help="disable cuDNN; use if conv2d raises "
+                         "CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH")
     ap.add_argument("--use-rope-real", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="real-valued RoPE (SAM 3's default). The 64 'missing "
@@ -415,6 +418,19 @@ def main():
     if not torch.cuda.is_available():
         print("[warn] SAM 3 requires CUDA 12.6+; no CUDA device visible. "
               "This will very likely fail -- run it on the cluster.")
+    try:
+        cudnn_v = torch.backends.cudnn.version()
+    except Exception as e:
+        cudnn_v = f"? ({e})"
+    print(f"[env] torch {torch.__version__}  cuda {torch.version.cuda}  "
+          f"cudnn {cudnn_v}")
+    if args.no_cudnn:
+        # CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH means libcudnn.so and its
+        # sublibraries come from different installs. Falling back to PyTorch's
+        # own conv kernels is a kernel-selection change, not a model change:
+        # slower, same arithmetic, so benchmark numbers stay comparable.
+        torch.backends.cudnn.enabled = False
+        print("[env] cuDNN disabled -- conv2d uses PyTorch kernels (slower)")
     # build_sam3_video_predictor returns Sam3VideoPredictorMultiGPU (it wants an
     # NCCL group); build_sam3_predictor is the documented single-process entry.
     from sam3.model_builder import build_sam3_predictor
