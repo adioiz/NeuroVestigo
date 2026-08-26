@@ -116,28 +116,45 @@ accepts. **Send that output to Claude before going further.**
 
 ## Stage 2 — sweep prompt modes on VALIDATION only
 
-SAM 3 cannot take a mask prompt (its predictor accepts text, points and boxes —
-see `sam3/model/sam3_base_predictor.py`), so it cannot receive the frame-0 mask
-our model and zero-shot SAM 2 get. That is a property of the model, not a
-handicap imposed on it. Its closest analogue is the box prompt, which is exactly
-what micro-SAM receives.
+`Sam3VideoPredictor.add_prompt` accepts text, points and boxes but not a mask,
+so on this path SAM 3 cannot receive the frame-0 mask our model and zero-shot
+SAM 2 get. Its closest analogue is the box prompt, which is exactly what
+micro-SAM receives.
+
+> **Unresolved, and it matters.** `--probe` also found
+> `Sam3TrackerPredictor.add_new_mask` and
+> `Sam3VideoTrackingMultiplexDemo.add_new_masks` — a SAM 2-style tracking path
+> that looks mask-promptable. If it can be driven standalone (`build_tracker`
+> takes `with_backbone=False`, so this is not obviously easy), SAM 3.1 could be
+> benchmarked with the same frame-0 mask as everything else and the protocol
+> asymmetry below disappears. Settle this before the paper claims SAM 3 cannot
+> take a mask.
 
 Sweep on val, adopt the winner, apply it unchanged to test — the same rule every
 other competitor here was tuned under.
 
 ```bash
-for m in box-every box-first points-every text; do
-  python benchmark/run_sam3.py --mode $m \
+for m in box-every box-first points-every points-first text; do
+  python benchmark/run_sam3.py --mode $m --no-cudnn \
     --videos A91_C1_2 A31_C1 A52_C2 A22_C2 A42_C1
 done
 ```
 
 Writes `benchmark/predictions/sam3_<mode>/<video>.tif` (hyphens stripped:
-`box-every` → `sam3_boxevery`).
+`box-every` → `sam3_boxevery`). About a minute per mode, model load included.
 
-**Check:** four directories, five `.tif` each. The runner prints a foreground
-fraction per video — if it is `0.0000` everywhere, the prompts are not reaching
-the model and Stage 1 was wrong.
+`--no-cudnn` is required on dgx-b200-02: see the cuDNN row in Troubleshooting.
+
+**Check:** five directories, five `.tif` each. The runner prints a foreground
+fraction per video — `0.0000` everywhere means prompts are not reaching the
+model; near `1.0000` means a thresholding problem.
+
+**Calibration.** On A71_C1, `box-first` gave foreground 0.0009 against a GT
+foreground of 0.0330 — precision 0.89, recall 0.024. SAM 3.1 segments the soma
+accurately and misses the arbour, which is what a box around a thin branching
+structure invites: the box is mostly background, so the model takes the compact
+object inside it. Expect the point modes to do better, and do not read a verdict
+off `box-first` alone.
 
 ---
 
@@ -147,7 +164,7 @@ Scoring runs in **`neurotrack-env`** (see rule 2). `conda run` avoids
 switching your shell and cannot accidentally pip-install into it:
 
 ```bash
-for m in boxevery boxfirst pointsevery text; do
+for m in boxevery boxfirst pointsevery pointsfirst text; do
   conda run -n neurotrack-env python benchmark/score.py \
     --pred-dir benchmark/predictions/sam3_$m \
     --model sam3_$m --split val --cbdice --skip-first-frame
@@ -219,6 +236,10 @@ choice of prompt mode are on the record rather than asserted.
 | `ModuleNotFoundError: tifffile` | install the four pinned extras in Stage 0 |
 | `ModuleNotFoundError: pkg_resources` | `setuptools<81` missing in `sam3-env` |
 | `ModuleNotFoundError: einops` | SAM 3 does not declare it; install the four pinned extras in Stage 0 |
+| `CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH` | two cuDNN installs on the library path; pass `--no-cudnn` (conv **and** SDPA), or fix `LD_LIBRARY_PATH` |
+| `expand(-1, B, -1)` ... `existing size (0)` | truncated propagation empties the tracker; do not set `max_frame_num_to_track` |
+| `init_state() got an unexpected keyword` | handled by the `_filter_init_state_kwargs` shim; the `[shim]` line confirms it engaged |
+| `AssertionError` at `sam3_multiplex_tracking.py:1717` | prompts must be normalised to [0,1] |
 | `sam3 0.1.0 requires numpy<2 ... you have numpy 2.x` | something pulled numpy up; re-run the Stage 0 pinned install |
 | `ModuleNotFoundError: skimage` when scoring | you are scoring in `sam3-env`; score in `neurotrack-env` |
 | `huggingface-cli` prints a deprecation notice and exits | use `hf` (`hf auth login`, `hf download`) |
