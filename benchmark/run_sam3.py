@@ -171,74 +171,155 @@ def probe():
 
 
 # ----------------------------------------------------------------------- driver
+def _to_numpy(x):
+    if hasattr(x, "detach"):
+        x = x.detach().cpu()
+    return np.asarray(x)
+
+
+def _binarize(raw):
+    """SAM 3 returns binary masks, but be defensive about what a given build
+    hands back: `> 0` on a [0,1] probability map marks EVERY pixel foreground,
+    which produces a full-frame prediction and a plausible-looking score rather
+    than an error."""
+    m = _to_numpy(raw)
+    if m.dtype == bool:
+        return m
+    if np.issubdtype(m.dtype, np.floating):
+        finite = m[np.isfinite(m)]
+        if (finite.size and finite.min() >= 0.0 and finite.max() <= 1.0
+                and not np.isin(finite, (0.0, 1.0)).all()):
+            return m >= 0.5                      # probabilities
+        return m > 0.0                           # logits
+    return m > 0
+
+
+def _resize_stack(masks, H, W):
+    """Model-resolution masks -> label resolution, nearest neighbour."""
+    if masks.shape[-2:] == (H, W):
+        return masks
+    out = np.zeros((masks.shape[0], H, W), bool)
+    for i, m in enumerate(masks):
+        img = Image.fromarray(m.astype(np.uint8) * 255)
+        out[i] = np.array(img.resize((W, H), Image.NEAREST)) > 127
+    return out
+
+
 def run_video(predictor, frames_dir, gts, mode, text, npoints):
     """One recording. Returns a [T,H,W] uint8 stack.
 
-    Uses the session API documented in the SAM 3 README:
-        handle_request(type="start_session", ...)
-        handle_request(type="add_prompt", session_id=..., frame_index=..., ...)
-        handle_request(type="propagate_in_video", session_id=...)
-    If a call name is wrong on your build, `--probe` prints the right one and
-    only the three handle_request calls below need changing.
+    Request names and keys are the ones `--probe` and the build_sam3_predictor
+    docstring confirm on this build:
+
+        handle_request({"type": "start_session", "resource_path": <dir>})
+        handle_request({"type": "add_prompt", "session_id":.., "frame_index":.., ..})
+        handle_stream_request({"type": "propagate_in_video", ..})   -> generator
+
+    Two defaults in Sam3BasePredictor bite if left alone:
+    `add_prompt(rel_coordinates=True)` would read our pixel boxes as normalised
+    coordinates, and `propagate_in_video(propagation_direction="both")` walks
+    the clip forwards and then backwards, writing every frame twice.
     """
     H, W = gts[0].shape
     T = len(gts)
 
-    resp = predictor.handle_request(request=dict(
-        type="start_session", path=frames_dir))
+    resp = predictor.handle_request(
+        {"type": "start_session", "resource_path": frames_dir})
     sid = resp["session_id"]
 
-    prompt_frames = [0] if mode.endswith("first") or mode == "text" else range(T)
-    for t in prompt_frames:
-        g = gts[t]
-        if not g.any():
-            continue
-        req = dict(type="add_prompt", session_id=sid, frame_index=int(t))
-        if mode == "text":
-            req["text"] = text
-        elif mode.startswith("box"):
-            req["bounding_boxes"] = [gt_box_xywh(g)]
-            req["bounding_box_labels"] = [1]
-        elif mode.startswith("points"):
-            pts, labs = gt_points(g, npoints)
-            if not pts:
+    try:
+        prompt_frames = [0] if mode.endswith("first") or mode == "text" else range(T)
+        n_prompted = 0
+        for t in prompt_frames:
+            g = gts[t]
+            if not g.any():
                 continue
-            req["points"] = pts
-            req["point_labels"] = labs
-        predictor.handle_request(request=req)
+            req = {"type": "add_prompt", "session_id": sid, "frame_index": int(t),
+                   "rel_coordinates": False}     # ours are pixels, not normalised
+            if mode == "text":
+                req["text"] = text
+            elif mode.startswith("box"):
+                req["bounding_boxes"] = [gt_box_xywh(g)]
+                req["bounding_box_labels"] = [1]
+                req["obj_id"] = 1                # every box refines ONE track
+            elif mode.startswith("points"):
+                pts, labs = gt_points(g, npoints)
+                if not pts:
+                    continue
+                req["points"] = pts
+                req["point_labels"] = labs
+                req["obj_id"] = 1
+            predictor.handle_request(req)
+            n_prompted += 1
+        if n_prompted == 0:
+            raise RuntimeError(f"no prompt accepted for {frames_dir}")
 
-    out = np.zeros((T, H, W), np.uint8)
-    resp = predictor.handle_request(request=dict(
-        type="propagate_in_video", session_id=sid))
+        out = np.zeros((T, H, W), np.uint8)
+        stream = predictor.handle_stream_request({
+            "type": "propagate_in_video",
+            "session_id": sid,
+            "propagation_direction": "forward",
+            "start_frame_index": 0,
+        })
 
-    for frame_idx, obj_ids, mask_logits in _iter_results(resp, predictor, sid):
-        if frame_idx >= T:
-            continue
-        masks = np.asarray(mask_logits)
-        masks = (masks > 0).reshape(-1, H, W)
-        if mode == "text":                       # not target-aware -> union match
-            inst = np.zeros((H, W), np.int32)
-            for i, m in enumerate(masks, 1):
-                inst[m] = i
-            out[frame_idx] = match_to_target(inst, gts[frame_idx]).astype(np.uint8)
-        else:
-            out[frame_idx] = np.any(masks, axis=0).astype(np.uint8)
-    predictor.handle_request(request=dict(type="close_session", session_id=sid))
+        seen = 0
+        for frame_idx, _obj_ids, raw in _iter_results(stream):
+            if frame_idx >= T:
+                continue
+            masks = _binarize(raw)
+            masks = masks.reshape(-1, *masks.shape[-2:])
+            masks = _resize_stack(masks, H, W)
+            seen += 1
+            if mode == "text":                   # not target-aware -> union match
+                inst = np.zeros((H, W), np.int32)
+                for i, m in enumerate(masks, 1):
+                    inst[m] = i
+                out[frame_idx] = match_to_target(inst, gts[frame_idx]).astype(np.uint8)
+            else:
+                out[frame_idx] = np.any(masks, axis=0).astype(np.uint8)
+
+        if seen == 0:
+            raise RuntimeError(
+                f"propagation returned no frames for {frames_dir}: the session "
+                "most likely loaded zero frames. Check that SAM 3's video "
+                "loader accepts a directory of .png on this build.")
+    finally:
+        try:
+            predictor.handle_request({"type": "close_session", "session_id": sid})
+        except Exception:
+            pass
     return out
 
 
-def _iter_results(resp, predictor, sid):
-    """SAM 3 may return results inline or as a generator; handle both."""
-    if hasattr(resp, "__iter__") and not isinstance(resp, dict):
-        yield from resp
-        return
-    if isinstance(resp, dict) and "results" in resp:
-        for r in resp["results"]:
-            yield r["frame_index"], r.get("obj_ids"), r["masks"]
-        return
-    raise RuntimeError(
-        f"unexpected propagate response: {type(resp)} {list(resp)[:8] if hasattr(resp,'__iter__') else ''}\n"
-        "Run `python benchmark/run_sam3.py --probe` and adjust _iter_results.")
+_MASK_KEYS = ("out_binary_masks", "binary_masks", "pred_masks", "masks")
+
+
+def _iter_results(stream):
+    """handle_stream_request yields {"frame_index":.., "outputs": {..}}; the
+    docstring example reads the mask straight off the item, so some builds
+    flatten it. Accept either, and fail loudly rather than silently empty."""
+    for item in stream:
+        if not isinstance(item, dict):
+            raise RuntimeError(f"unexpected propagate item: {type(item)}")
+        fi = item.get("frame_index", item.get("frame_idx"))
+        payload = item.get("outputs")
+        masks = obj_ids = None
+        for c in (payload, item):
+            if not isinstance(c, dict):
+                continue
+            for k in _MASK_KEYS:
+                if k in c:
+                    masks, obj_ids = c[k], c.get("obj_ids")
+                    break
+            if masks is not None:
+                break
+        if fi is None or masks is None:
+            raise RuntimeError(
+                f"unexpected propagate payload; item keys={sorted(item)} "
+                f"outputs keys="
+                f"{sorted(payload) if isinstance(payload, dict) else type(payload)}\n"
+                "Run `python benchmark/run_sam3.py --probe` and adjust _MASK_KEYS.")
+        yield int(fi), obj_ids, masks
 
 
 def main():
@@ -256,6 +337,11 @@ def main():
     ap.add_argument("--checkpoint", default=None,
                     help="path or HF id; defaults to the repo's own default")
     ap.add_argument("--limit-frames", type=int, default=None)
+    ap.add_argument("--version", default="sam3.1", choices=["sam3.1", "sam3"],
+                    help="SAM 3 weights to benchmark (3.1 is the stronger default)")
+    ap.add_argument("--use-fa3", action="store_true",
+                    help="enable Flash Attention 3; off by default because "
+                         "flash_attn_interface is not installed in sam3-env")
     ap.add_argument("--out-dir", default=None)
     args = ap.parse_args()
 
@@ -269,17 +355,18 @@ def main():
     if not torch.cuda.is_available():
         print("[warn] SAM 3 requires CUDA 12.6+; no CUDA device visible. "
               "This will very likely fail -- run it on the cluster.")
-    try:
-        from sam3.model.build_sam import build_sam3_video_predictor
-    except Exception:
-        from sam3 import build_sam3_video_predictor
-    kw = {"ckpt_path": args.checkpoint} if args.checkpoint else {}
-    predictor = build_sam3_video_predictor(**kw)
+    # build_sam3_video_predictor returns Sam3VideoPredictorMultiGPU (it wants an
+    # NCCL group); build_sam3_predictor is the documented single-process entry.
+    from sam3.model_builder import build_sam3_predictor
+    kw = {"version": args.version, "use_fa3": args.use_fa3}
+    if args.checkpoint:
+        kw["checkpoint_path"] = args.checkpoint
+    predictor = build_sam3_predictor(**kw)
 
     out_dir = args.out_dir or os.path.join(
         REPO, "benchmark", "predictions", f"sam3_{args.mode.replace('-', '')}")
     os.makedirs(out_dir, exist_ok=True)
-    print(f"SAM 3  mode={args.mode}  out={out_dir}")
+    print(f"SAM 3  version={args.version}  mode={args.mode}  out={out_dir}")
 
     for v in args.videos:
         frames_dir = os.path.join(DATA, "images", v)

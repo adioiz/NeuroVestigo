@@ -212,14 +212,37 @@ choice of prompt mode are on the record rather than asserted.
 | `TypeError: 'NoneType' object is not iterable` in a split | `data.val_videos` is null in `gpu-checkpoints/training_config.json` |
 | `--split test` scores nothing, no error | the four test recordings are missing from `data_manifest.json` |
 | GT file not found when scoring | manifest holds absolute Mac paths; `load_gt` falls back to `training_data/masks/<name>/`, so that recording needs `cli.py prepare` |
-| `unexpected propagate response` | Stage 1 guesses were wrong; fix `_iter_results()` |
-| foreground fraction `0.0000` everywhere | prompts not reaching the model; re-run Stage 1 |
+| `unexpected propagate payload` | mask key differs on this build; add it to `_MASK_KEYS` |
+| `propagation returned no frames` | the session loaded 0 frames — SAM 3's loader may not accept a `.png` directory |
+| foreground fraction `0.0000` everywhere | prompts not reaching the model; re-run `--probe` |
+| foreground fraction near `1.0000` | masks came back as probabilities and were thresholded at 0; `_binarize` should catch this |
 | `ModuleNotFoundError: tifffile` | install the four pinned extras in Stage 0 |
 | `ModuleNotFoundError: pkg_resources` | `setuptools<81` missing in `sam3-env` |
 | `ModuleNotFoundError: einops` | SAM 3 does not declare it; install the four pinned extras in Stage 0 |
 | `sam3 0.1.0 requires numpy<2 ... you have numpy 2.x` | something pulled numpy up; re-run the Stage 0 pinned install |
 | `ModuleNotFoundError: skimage` when scoring | you are scoring in `sam3-env`; score in `neurotrack-env` |
 | `huggingface-cli` prints a deprecation notice and exits | use `hf` (`hf auth login`, `hf download`) |
+
+## Confirmed SAM 3 API (verified by `--probe`, 2026-08-26)
+
+Not guesses any more — read off `Sam3BasePredictor` on the installed build.
+
+| | |
+|---|---|
+| builder | `sam3.model_builder.build_sam3_predictor(version="sam3.1")` |
+| avoid | `build_sam3_video_predictor` — returns `Sam3VideoPredictorMultiGPU`, wants an NCCL group |
+| start | `handle_request({"type":"start_session","resource_path":<dir>})` |
+| prompt | `handle_request({"type":"add_prompt","session_id":..,"frame_index":..,..})` |
+| propagate | `handle_stream_request({...})` — a **generator**, yields `{"frame_index","outputs"}` |
+| masks | `out_binary_masks`, already thresholded at `output_prob_thresh` (0.5) |
+
+Two defaults that produce wrong numbers rather than errors, both now overridden
+explicitly in `run_video()`:
+
+- `add_prompt(rel_coordinates=True)` — pixel boxes would be read as normalised
+  coordinates, putting every prompt off-frame.
+- `propagate_in_video(propagation_direction="both")` — walks forward then
+  backward, writing every frame twice.
 
 ## Note for the paper
 
