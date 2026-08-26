@@ -312,8 +312,10 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints):
             "session_id": sid,
             "propagation_direction": "forward",
             "start_frame_index": 0,
-            # the loader reads the whole directory; stop at the frames we score
-            "max_frame_num_to_track": T,
+            # No max_frame_num_to_track: truncating propagation drives the
+            # tracker's object set to empty and SAM 3 then crashes in
+            # _prepare_memory_conditioned_features on a 0-sized batch dim.
+            # Frames past T are discarded below; a full clip costs ~2s.
         })
 
         seen = 0
