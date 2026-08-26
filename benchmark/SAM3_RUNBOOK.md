@@ -26,7 +26,14 @@ there downgrades numpy and breaks training. SAM 3 lives in `sam3-env`, alone.
 This already happened once into the system Python 3.9 — harmless there, fatal
 in `neurotrack-env`.
 
-**2. The SAM 3 API calls in `run_video()` are INFERRED.**
+**2. Two environments, and they are not interchangeable.**
+`run_sam3.py` runs in `sam3-env` (it needs SAM 3, plus `tifffile`).
+`score.py` runs in `neurotrack-env` — it does not need SAM 3, and clDice/cbDice
+go through `skimage.morphology.skeletonize`, so it must run in the SAME
+environment that scored every other competitor or the SAM 3 row is not
+comparable to them.
+
+**3. The SAM 3 API calls in `run_video()` are INFERRED.**
 The public README documents only the text-prompt video path, so
 `start_session` / `add_prompt` / `propagate_in_video` are educated guesses.
 Stage 1 (`--probe`) exists to check them. Do not skip to Stage 2 — a wrong
@@ -46,11 +53,18 @@ du -sh ~/.cache/huggingface/hub/models--facebook--sam3
 are still gated — access has not been granted yet, so stop.
 
 ```bash
-python -c "import sys, sam3, torch; print(sys.version.split()[0], torch.__version__, torch.version.cuda)"
+python -c "import sys, sam3, torch, tifffile; print(sys.version.split()[0], torch.__version__, torch.version.cuda)"
 ```
 
 **Check:** Python **3.12.x**, torch ≥2.7, CUDA ≥12.6. If Python says 3.9, the
-env is not active.
+env is not active. If `tifffile` is missing: `pip install tifffile` (safe here —
+`sam3-env` is isolated).
+
+And confirm the SCORING env has its own deps, without installing anything into it:
+
+```bash
+conda run -n neurotrack-env python -c "import tifffile, skimage, numpy; print(tifffile.__version__, skimage.__version__, numpy.__version__)"
+```
 
 If `sam3-env` is gone (cluster rebuild, purged home):
 
@@ -113,9 +127,13 @@ the model and Stage 1 was wrong.
 
 ## Stage 3 — score the sweep and pick the winner
 
+Scoring runs in **`neurotrack-env`** (see rule 2). `conda run` avoids
+switching your shell and cannot accidentally pip-install into it:
+
 ```bash
 for m in boxevery boxfirst pointsevery text; do
-  python benchmark/score.py --pred-dir benchmark/predictions/sam3_$m \
+  conda run -n neurotrack-env python benchmark/score.py \
+    --pred-dir benchmark/predictions/sam3_$m \
     --model sam3_$m --split val --cbdice --skip-first-frame
 done
 cat benchmark/results/val/summary.csv
@@ -151,7 +169,8 @@ Run **one** mode here. Sweeping on test is what the val split exists to prevent.
 `MODE` here is the stripped form (`boxevery`, not `box-every`):
 
 ```bash
-python benchmark/score.py --pred-dir benchmark/predictions/sam3_MODE \
+conda run -n neurotrack-env python benchmark/score.py \
+  --pred-dir benchmark/predictions/sam3_MODE \
   --model sam3 --split test --cbdice --skip-first-frame
 cat benchmark/results/test/summary.csv
 ```
@@ -179,6 +198,8 @@ choice of prompt mode are on the record rather than asserted.
 | GT file not found when scoring | manifest holds absolute Mac paths; `load_gt` falls back to `training_data/masks/<name>/`, so that recording needs `cli.py prepare` |
 | `unexpected propagate response` | Stage 1 guesses were wrong; fix `_iter_results()` |
 | foreground fraction `0.0000` everywhere | prompts not reaching the model; re-run Stage 1 |
+| `ModuleNotFoundError: tifffile` | `pip install tifffile` inside `sam3-env` |
+| `ModuleNotFoundError: skimage` when scoring | you are scoring in `sam3-env`; score in `neurotrack-env` |
 | `huggingface-cli` prints a deprecation notice and exits | use `hf` (`hf auth login`, `hf download`) |
 
 ## Note for the paper
