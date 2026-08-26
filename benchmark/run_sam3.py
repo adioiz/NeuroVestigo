@@ -206,6 +206,18 @@ def _resize_stack(masks, H, W):
     return out
 
 
+def _norm_box(box, H, W):
+    """Pixel xywh -> normalised xywh, clipped: the assert is inclusive of 1.0."""
+    x, y, w, h = box
+    return [float(np.clip(v, 0.0, 1.0))
+            for v in (x / W, y / H, w / W, h / H)]
+
+
+def _norm_point(pt, H, W):
+    x, y = pt
+    return [float(np.clip(x / W, 0.0, 1.0)), float(np.clip(y / H, 0.0, 1.0))]
+
+
 def _filter_init_state_kwargs(predictor):
     """Make the documented start_session request work on SAM 3.1.
 
@@ -271,19 +283,22 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints):
             g = gts[t]
             if not g.any():
                 continue
+            # SAM 3.1's multiplex add_prompt asserts boxes lie in [0,1]
+            # (sam3_multiplex_tracking.py:1717): coordinates are normalised,
+            # and rel_coordinates=False does not buy a pixel path.
             req = {"type": "add_prompt", "session_id": sid, "frame_index": int(t),
-                   "rel_coordinates": False}     # ours are pixels, not normalised
+                   "rel_coordinates": True}
             if mode == "text":
                 req["text"] = text
             elif mode.startswith("box"):
-                req["bounding_boxes"] = [gt_box_xywh(g)]
+                req["bounding_boxes"] = [_norm_box(gt_box_xywh(g), H, W)]
                 req["bounding_box_labels"] = [1]
                 req["obj_id"] = 1                # every box refines ONE track
             elif mode.startswith("points"):
                 pts, labs = gt_points(g, npoints)
                 if not pts:
                     continue
-                req["points"] = pts
+                req["points"] = [_norm_point(pt, H, W) for pt in pts]
                 req["point_labels"] = labs
                 req["obj_id"] = 1
             predictor.handle_request(req)
@@ -297,6 +312,8 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints):
             "session_id": sid,
             "propagation_direction": "forward",
             "start_frame_index": 0,
+            # the loader reads the whole directory; stop at the frames we score
+            "max_frame_num_to_track": T,
         })
 
         seen = 0
