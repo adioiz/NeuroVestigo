@@ -430,7 +430,19 @@ def main():
         # own conv kernels is a kernel-selection change, not a model change:
         # slower, same arithmetic, so benchmark numbers stay comparable.
         torch.backends.cudnn.enabled = False
-        print("[env] cuDNN disabled -- conv2d uses PyTorch kernels (slower)")
+        # SDPA picks its backend separately from torch.backends.cudnn, so the
+        # flag above does not cover attention -- it has its own cuDNN path.
+        off = []
+        if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+            torch.backends.cuda.enable_cudnn_sdp(False)
+            off.append("sdpa")
+        for name in ("enable_flash_sdp", "enable_mem_efficient_sdp"):
+            fn = getattr(torch.backends.cuda, name, None)
+            if fn:                               # keep the non-cuDNN paths on
+                fn(True)
+        print("[env] cuDNN disabled for conv"
+              + (" and attention" if off else "")
+              + " -- PyTorch kernels (slower, same math)")
     # build_sam3_video_predictor returns Sam3VideoPredictorMultiGPU (it wants an
     # NCCL group); build_sam3_predictor is the documented single-process entry.
     from sam3.model_builder import build_sam3_predictor
