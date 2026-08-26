@@ -97,37 +97,77 @@ def match_to_target(inst_mask, gt):
 def probe():
     """Print the ACTUAL SAM 3 API on this machine.
 
-    The public README documents only the text-prompt path for video, so the
-    exact call names below are inferred. Run this FIRST: it prints the request
-    types and prompt keys the installed build really accepts, so the runner can
-    be corrected in one edit instead of guessed at.
+    Meta documents only the text-prompt path for video, and the module layout
+    differs from the public README (the real entry points live in
+    `sam3.model_builder`, not `sam3.model.build_sam`). So discover rather than
+    guess: this walks the installed package, finds every build_* factory and
+    every predictor class, and prints the request types and prompt keys the
+    build really accepts.
     """
+    import importlib
     import inspect
+    import pkgutil
+    import re
+
     import sam3
-    print("sam3 from:", os.path.dirname(sam3.__file__))
-    print("sam3 version:", getattr(sam3, "__version__", "?"))
-    try:
-        from sam3.model.build_sam import build_sam3_video_predictor
-    except Exception:
-        from sam3 import build_sam3_video_predictor          # fallback location
-    print("\nbuild_sam3_video_predictor signature:")
-    print("  ", inspect.signature(build_sam3_video_predictor))
-    try:
-        from sam3.model import sam3_base_predictor as bp
-        src = inspect.getsource(bp)
-        import re
-        print("\nrequest types handled:",
-              sorted(set(re.findall(r"type\s*==\s*[\"']([a-z_]+)[\"']", src))))
-        print("prompt keys read:",
-              sorted(set(re.findall(r"request\.get\(\s*[\"']([a-z_]+)[\"']", src))))
-        for name, obj in inspect.getmembers(bp, inspect.isclass):
-            meths = [m for m, _ in inspect.getmembers(obj, inspect.isfunction)
-                     if any(k in m for k in ("prompt", "propagate", "session",
-                                             "request", "track"))]
+    root = os.path.dirname(sam3.__file__)
+    print("sam3 from :", root)
+    print("version   :", getattr(sam3, "__version__", "?"))
+
+    # -- every build_* factory, wherever it lives
+    print("\n--- factories ---")
+    mods = [sam3]
+    for m in pkgutil.iter_modules([root]):
+        if m.name.startswith("_"):
+            continue
+        try:                       # a sibling module may assert/raise on import
+            mods.append(importlib.import_module(f"sam3.{m.name}"))
+        except BaseException as e:
+            print(f"  [skip] sam3.{m.name}: {type(e).__name__}: {e}")
+    for mod in mods:
+        for name, obj in inspect.getmembers(mod, inspect.isfunction):
+            if name.startswith("build_"):
+                try:
+                    sig = inspect.signature(obj)
+                except (ValueError, TypeError):
+                    sig = "(?)"
+                print(f"  {mod.__name__}.{name}{sig}")
+
+    # -- predictor classes and their prompt/propagate methods
+    print("\n--- predictor classes ---")
+    for m in pkgutil.walk_packages([root], prefix="sam3."):
+        if not any(k in m.name for k in ("predictor", "build", "video")):
+            continue
+        try:
+            mod = importlib.import_module(m.name)
+        except BaseException as e:
+            print(f"  [skip] {m.name}: {type(e).__name__}: {e}")
+            continue
+        for name, obj in inspect.getmembers(mod, inspect.isclass):
+            if obj.__module__ != m.name:
+                continue
+            meths = [n for n, _ in inspect.getmembers(obj, inspect.isfunction)
+                     if any(k in n for k in ("prompt", "propagate", "session",
+                                             "request", "track", "add_"))]
             if meths:
-                print(f"\n{name}: {meths}")
-    except Exception as e:
-        print("could not introspect base predictor:", e)
+                print(f"  {m.name}.{name}: {meths}")
+
+    # -- what request dicts actually carry
+    print("\n--- request types / prompt keys (scanned from source) ---")
+    types, keys = set(), set()
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            try:
+                src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            except Exception:
+                continue
+            types |= set(re.findall(r"type\s*==\s*[\"\']([a-z_]+)[\"\']", src))
+            keys |= set(re.findall(r"request\.get\(\s*[\"\']([a-z_]+)[\"\']", src))
+            keys |= set(re.findall(r"request\[[\"\']([a-z_]+)[\"\']\]", src))
+    print("  request types:", sorted(types))
+    print("  prompt keys  :", sorted(keys))
 
 
 # ----------------------------------------------------------------------- driver
