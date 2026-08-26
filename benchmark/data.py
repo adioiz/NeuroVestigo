@@ -32,6 +32,13 @@ CONFIG = os.path.join(REPO, "gpu-checkpoints", "training_config.json")
 TEST_VIDEOS = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2"]
 
 
+def config_hint() -> str:
+    """Why the val split might be empty, said once, in the place it is raised."""
+    return (f"no data.val_videos in {os.path.relpath(CONFIG, REPO)} "
+            f"(it is written by training and may be null when the run used "
+            f"val_fraction instead of an explicit list)")
+
+
 class Dataset:
     def __init__(self, manifest: str = MANIFEST, config: str = CONFIG):
         with open(manifest) as f:
@@ -40,7 +47,12 @@ class Dataset:
         self.val_videos: list[str] = []
         if os.path.exists(config):
             with open(config) as f:
-                self.val_videos = json.load(f)["data"].get("val_videos", [])
+                # `or []`, not a .get default: the key is PRESENT-but-null in a
+                # config written by a run that used val_fraction instead of an
+                # explicit list, so the default never fires and val_videos would
+                # become None -- split("val") then died with
+                # "TypeError: 'NoneType' object is not iterable".
+                self.val_videos = json.load(f)["data"].get("val_videos") or []
 
     # -- listing -----------------------------------------------------------
     def all(self) -> list[str]:
@@ -57,6 +69,12 @@ class Dataset:
         if which == "test":
             return test
         if which == "val":
+            if not val:
+                raise RuntimeError(
+                    f"the 'val' split is empty: {config_hint()}\n"
+                    "Pass --videos explicitly, or point CONFIG at a "
+                    "training_config.json whose data.val_videos is set."
+                )
             return val
         if which == "train":
             return [n for n in self.all() if n not in set(val) | set(test)]

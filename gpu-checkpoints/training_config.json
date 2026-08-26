@@ -15,7 +15,13 @@
     "image_size": 1024,
     "max_objects": 3,
     "val_fraction": 0.25,
-    "val_videos": null,
+    "val_videos": [
+      "A91_C1_2",
+      "A31_C1",
+      "A52_C2",
+      "A22_C2",
+      "A42_C1"
+    ],
     "clip_stride": 4,
     "cache_in_memory": true,
     "precompute_features": false
@@ -55,7 +61,7 @@
     "topology_resolution": 256
   },
   "batch_size": 2,
-  "num_epochs": 90,
+  "num_epochs": 110,
   "num_workers": 2,
   "seed": 42,
   "use_amp": true,
