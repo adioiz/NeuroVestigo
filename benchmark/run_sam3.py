@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import inspect
 import os
 import sys
 
@@ -205,6 +206,42 @@ def _resize_stack(masks, H, W):
     return out
 
 
+def _filter_init_state_kwargs(predictor):
+    """Make the documented start_session request work on SAM 3.1.
+
+    Sam3BasePredictor.start_session always forwards offload_video_to_cpu and
+    offload_state_to_cpu to model.init_state, but the 3.1 multiplex model's
+    init_state accepts neither -> TypeError before a single frame is read.
+    add_prompt and propagate_in_video in that same file already filter their
+    kwargs against the model signature; start_session simply does not. Apply
+    the same filtering here rather than forking their predictor.
+
+    Drops are reported, and dropping a kwarg that carries actual information
+    (resource_path) is an error, not a silent no-op.
+    """
+    model = predictor.model
+    orig = model.init_state
+    try:
+        params = inspect.signature(orig).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return                                   # takes **kwargs, nothing to do
+    valid = set(params)
+
+    def init_state(*args, **kwargs):
+        dropped = sorted(set(kwargs) - valid)
+        if "resource_path" in dropped:
+            raise RuntimeError(
+                "model.init_state does not accept resource_path "
+                f"(accepts: {sorted(valid)}); the session would load no video.")
+        if dropped:
+            print(f"    [shim] init_state: dropped unsupported {dropped}")
+        return orig(*args, **{k: v for k, v in kwargs.items() if k in valid})
+
+    model.init_state = init_state
+
+
 def run_video(predictor, frames_dir, gts, mode, text, npoints):
     """One recording. Returns a [T,H,W] uint8 stack.
 
@@ -342,6 +379,12 @@ def main():
     ap.add_argument("--use-fa3", action="store_true",
                     help="enable Flash Attention 3; off by default because "
                          "flash_attn_interface is not installed in sam3-env")
+    ap.add_argument("--use-rope-real", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="real-valued RoPE (SAM 3's default). The 64 'missing "
+                         "keys' at load are the freqs_cis buffers, which are "
+                         "recomputed; use --no-use-rope-real to rule that out "
+                         "if scores look implausible")
     ap.add_argument("--out-dir", default=None)
     args = ap.parse_args()
 
@@ -358,10 +401,12 @@ def main():
     # build_sam3_video_predictor returns Sam3VideoPredictorMultiGPU (it wants an
     # NCCL group); build_sam3_predictor is the documented single-process entry.
     from sam3.model_builder import build_sam3_predictor
-    kw = {"version": args.version, "use_fa3": args.use_fa3}
+    kw = {"version": args.version, "use_fa3": args.use_fa3,
+          "use_rope_real": args.use_rope_real}
     if args.checkpoint:
         kw["checkpoint_path"] = args.checkpoint
     predictor = build_sam3_predictor(**kw)
+    _filter_init_state_kwargs(predictor)
 
     out_dir = args.out_dir or os.path.join(
         REPO, "benchmark", "predictions", f"sam3_{args.mode.replace('-', '')}")
