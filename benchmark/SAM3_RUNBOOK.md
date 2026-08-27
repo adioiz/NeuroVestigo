@@ -271,7 +271,11 @@ explicitly in `run_video()`:
 Chosen on validation, applied unchanged to test.
 
 **Test (n=4):** IoU **0.4712** · Dice 0.5953 · clDice 0.5921 · cbDice 0.6018
-Eighth of thirteen methods; ours is 0.7599.
+Eighth of fourteen methods; ours is 0.7599.
+
+**Language-only row.** `--mode text --text cells --max-num-objects 64`,
+also chosen on validation (0.4192): test IoU **0.2002** · Dice 0.2779 ·
+clDice 0.2901 · cbDice 0.2600. Twelfth of fourteen.
 
 ### Fairness sweep — everything that was tried
 
@@ -287,6 +291,8 @@ reported. This is SAM 3.1's.
 | version | sam3.1 (stronger) | used throughout |
 | text + points | — | **forbidden by the model** (`sam3_multiplex_tracking.py:2710`) |
 | text + box | "neuron" | 0.0275 vs 0.0272 without — no effect |
+| text phrase (12) | **cells 0.3938**, cell 0.2920, "a cell" 0.1667; 0.0000 for neuron, nerve cell, gray neuron, bright cell, fluorescent cell, white worm, branching structure, thin white line, bright spot, tree, root, blob, object |
+| `max_num_objects` | 16 → 0.3938, 32 → 0.4132, **64 → 0.4192**; the default cap was discarding the target |
 
 Validation IoU by prompt mode (npoints=3): points-every 0.5786, box-every
 0.0272, box-first 0.0248, points-first 0.0000, text 0.0000.
@@ -300,6 +306,25 @@ It still produces bit-identical masks at 0.3/0.5/0.7 on the concept path AND
 the tracker path. With a visual prompt and an `obj_id`, masks come from the
 tracker decoder at its own logit boundary; the threshold gates concept-detection
 confidence, and on this data the detector finds nothing (hence text = 0.0000).
+
+### Vocabulary, not blindness
+
+"neuron" produces zero detections; "cells" reaches 0.3938 on validation.
+Crucially **"blob" and "object" also produce zero**, so this is not a generic
+"something is here" detector firing on any prompt -- SAM 3.1 has a learned
+*cell* concept that transfers to fluorescence microscopy and lacks a *neuron*
+one. Modifiers destroy it ("bright cell" -> 0.0000) and even the article
+matters ("a cell" -> 0.1667).
+
+`raw_fg` and `inst/frame` (printed by the runner) separate "the detector found
+nothing" from "it found things, none of them the target". Both occur: every
+zero-scoring phrase has `inst/frame=0.0`, while A42_C1 under "cell" has the
+highest raw foreground of any recording (0.1099) and IoU 0.0011.
+
+Language-prompted performance is also wildly unstable across recordings of the
+same preparation: on test, A81_C1 scores 0.5430 while A12_C1_100k_2 scores
+0.0000 with essentially no detections at all (raw_fg 0.0004). That variance is
+itself the finding.
 
 ### Two results that matter more than the ranking
 
