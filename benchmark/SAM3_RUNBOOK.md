@@ -265,6 +265,68 @@ explicitly in `run_video()`:
 - `propagate_in_video(propagation_direction="both")` — walks forward then
   backward, writing every frame twice.
 
+## RESULTS (complete, 2026-08-27)
+
+**Reported configuration:** SAM 3.1, `--mode points-every --npoints 10`.
+Chosen on validation, applied unchanged to test.
+
+**Test (n=4):** IoU **0.4712** · Dice 0.5953 · clDice 0.5921 · cbDice 0.6018
+Eighth of thirteen methods; ours is 0.7599.
+
+### Fairness sweep — everything that was tried
+
+Every other competitor here gets a hyperparameter sweep before its number is
+reported. This is SAM 3.1's.
+
+| knob | values tried | result |
+|---|---|---|
+| prompt mode | box-every, box-first, points-every, points-first, text | points-every wins by 20x |
+| `npoints` | 3, 5, 10, 15, 20, 30 | interior optimum at **10** (0.6341); degrades past it, 30 collapses to 0.3684 |
+| `output_prob_thresh` | 0.3, 0.5, 0.7 | **no effect on either path** — verified plumbed link-by-link, see below |
+| `use_rope_real` | True / False | 0.5786 vs 0.5795 — noise; the 64 missing `freqs_cis` keys are benign |
+| version | sam3.1 (stronger) | used throughout |
+| text + points | — | **forbidden by the model** (`sam3_multiplex_tracking.py:2710`) |
+| text + box | "neuron" | 0.0275 vs 0.0272 without — no effect |
+
+Validation IoU by prompt mode (npoints=3): points-every 0.5786, box-every
+0.0272, box-first 0.0248, points-first 0.0000, text 0.0000.
+
+### Why `output_prob_thresh` is inert, and why that is a finding
+
+Not an unswept knob. The chain was checked at every link: `handle_stream_request`
+forwards it to `propagate_in_video`, which forwards it to the model, and both
+`add_prompt` and `propagate_in_video` on `Sam3MultiplexTracking*` declare it.
+It still produces bit-identical masks at 0.3/0.5/0.7 on the concept path AND
+the tracker path. With a visual prompt and an `obj_id`, masks come from the
+tracker decoder at its own logit boundary; the threshold gates concept-detection
+confidence, and on this data the detector finds nothing (hence text = 0.0000).
+
+### Two results that matter more than the ranking
+
+**Zero-shot SAM 2 beats SAM 3.1 by 0.24** (0.6392 vs 0.4712). Architectural,
+not a tuning artefact: SAM 2's video predictor accepts a mask and starts on the
+exact target; SAM 3.1's video path is concept-driven and refuses masks, so the
+most it can be given is points.
+
+**`points-first` scores 0.0000.** That is the like-for-like comparison against
+our protocol — one prompt on frame 0. SAM 3.1's 0.4712 required ground-truth
+points on all 73-93 frames. The supervision asymmetry runs against SAM 3.1's
+favour, not ours; say so explicitly or a reviewer will assume the opposite.
+
+**Caveat to state:** clDice peaks at 5 points (0.8182) and falls at 10 (0.7813)
+while IoU rises. Selection was on IoU, consistent with every other competitor —
+state that rule rather than letting it look chosen after the fact.
+
+### Still open
+
+`Sam3TrackerPredictor.add_new_mask` and
+`Sam3VideoTrackingMultiplexDemo.add_new_masks` exist. The winning point path
+already routes through that tracker ("Running SAM2 propagation for objects
+[1]"), so a frame-0 MASK prompt may be reachable — which would allow a fully
+matched comparison instead of a disclosed asymmetry. Untested.
+
+---
+
 ## Note for the paper
 
 Whatever the number turns out to be, state the protocol asymmetry plainly:
