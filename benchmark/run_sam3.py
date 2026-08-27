@@ -36,6 +36,7 @@ import argparse
 import glob
 import inspect
 import os
+import re
 import sys
 
 import numpy as np
@@ -396,6 +397,10 @@ def main():
                              "points-first", "text"])
     ap.add_argument("--text", default="neuron",
                     help="concept prompt for --mode text")
+    ap.add_argument("--text-sweep", nargs="+", default=None,
+                    help="try several concept phrases in ONE process (the "
+                         "checkpoint is loaded once); writes each to "
+                         "benchmark/predictions/sam3_text_<slug>/")
     ap.add_argument("--npoints", type=int, default=3)
     ap.add_argument("--checkpoint", default=None,
                     help="path or HF id; defaults to the repo's own default")
@@ -475,23 +480,34 @@ def main():
     predictor = build_sam3_predictor(**kw)
     _filter_init_state_kwargs(predictor)
 
-    out_dir = args.out_dir or os.path.join(
-        REPO, "benchmark", "predictions", f"sam3_{args.mode.replace('-', '')}")
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"SAM 3  version={args.version}  mode={args.mode}  out={out_dir}")
+    # One checkpoint load serves every phrase: --text-sweep would otherwise
+    # spend most of its wall clock re-reading 3.5GB from disk.
+    phrases = args.text_sweep or [args.text]
+    for phrase in phrases:
+        if args.text_sweep:
+            slug = re.sub(r"\W+", "_", phrase.strip()).strip("_").lower()
+            out_dir = os.path.join(REPO, "benchmark", "predictions",
+                                   f"sam3_text_{slug}")
+        else:
+            out_dir = args.out_dir or os.path.join(
+                REPO, "benchmark", "predictions",
+                f"sam3_{args.mode.replace('-', '')}")
+        os.makedirs(out_dir, exist_ok=True)
+        print(f"SAM 3  version={args.version}  mode={args.mode}  "
+              f"text={phrase!r}  out={out_dir}")
 
-    for v in args.videos:
-        frames_dir = os.path.join(DATA, "images", v)
-        n = len(load_frames(v, args.limit_frames))
-        gts = load_gt(v, n)
-        print(f"  {v}: {n} frames ...", flush=True)
-        stack = run_video(predictor, frames_dir, gts, args.mode,
-                          args.text, args.npoints,
-                          prob_thresh=args.output_prob_thresh,
-                          with_text=args.with_text)
-        p = os.path.join(out_dir, f"{v}.tif")
-        tifffile.imwrite(p, stack)
-        print(f"    -> {p}  (fg={float((stack>0).mean()):.4f})")
+        for v in args.videos:
+            frames_dir = os.path.join(DATA, "images", v)
+            n = len(load_frames(v, args.limit_frames))
+            gts = load_gt(v, n)
+            print(f"  {v}: {n} frames ...", flush=True)
+            stack = run_video(predictor, frames_dir, gts, args.mode,
+                              phrase, args.npoints,
+                              prob_thresh=args.output_prob_thresh,
+                              with_text=args.with_text)
+            p = os.path.join(out_dir, f"{v}.tif")
+            tifffile.imwrite(p, stack)
+            print(f"    -> {p}  (fg={float((stack>0).mean()):.4f})")
 
 
 if __name__ == "__main__":
