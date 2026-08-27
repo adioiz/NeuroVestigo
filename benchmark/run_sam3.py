@@ -254,7 +254,8 @@ def _filter_init_state_kwargs(predictor):
     model.init_state = init_state
 
 
-def run_video(predictor, frames_dir, gts, mode, text, npoints):
+def run_video(predictor, frames_dir, gts, mode, text, npoints,
+              prob_thresh=0.5, with_text=False):
     """One recording. Returns a [T,H,W] uint8 stack.
 
     Request names and keys are the ones `--probe` and the build_sam3_predictor
@@ -287,10 +288,15 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints):
             # (sam3_multiplex_tracking.py:1717): coordinates are normalised,
             # and rel_coordinates=False does not buy a pixel path.
             req = {"type": "add_prompt", "session_id": sid, "frame_index": int(t),
-                   "rel_coordinates": True}
+                   "rel_coordinates": True,
+                   "output_prob_thresh": prob_thresh}
             if mode == "text":
                 req["text"] = text
-            elif mode.startswith("box"):
+            elif with_text:
+                # SAM 3 is a promptable *concept* model: text plus visual
+                # exemplars is its intended usage, not either alone.
+                req["text"] = text
+            if mode.startswith("box"):
                 req["bounding_boxes"] = [_norm_box(gt_box_xywh(g), H, W)]
                 req["bounding_box_labels"] = [1]
                 req["obj_id"] = 1                # every box refines ONE track
@@ -312,6 +318,7 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints):
             "session_id": sid,
             "propagation_direction": "forward",
             "start_frame_index": 0,
+            "output_prob_thresh": prob_thresh,
             # No max_frame_num_to_track: truncating propagation drives the
             # tracker's object set to empty and SAM 3 then crashes in
             # _prepare_memory_conditioned_features on a 0-sized batch dim.
@@ -398,6 +405,13 @@ def main():
     ap.add_argument("--use-fa3", action="store_true",
                     help="enable Flash Attention 3; off by default because "
                          "flash_attn_interface is not installed in sam3-env")
+    ap.add_argument("--output-prob-thresh", type=float, default=0.5,
+                    help="mask probability threshold (SAM 3 default 0.5). The "
+                         "analogue of cellpose's cellprob_threshold; lower is "
+                         "more permissive and thin neurites live here")
+    ap.add_argument("--with-text", action="store_true",
+                    help="send --text alongside box/point prompts (SAM 3's "
+                         "intended text+exemplar usage) instead of either alone")
     ap.add_argument("--no-cudnn", action="store_true",
                     help="disable cuDNN; use if conv2d raises "
                          "CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH")
@@ -466,7 +480,9 @@ def main():
         gts = load_gt(v, n)
         print(f"  {v}: {n} frames ...", flush=True)
         stack = run_video(predictor, frames_dir, gts, args.mode,
-                          args.text, args.npoints)
+                          args.text, args.npoints,
+                          prob_thresh=args.output_prob_thresh,
+                          with_text=args.with_text)
         p = os.path.join(out_dir, f"{v}.tif")
         tifffile.imwrite(p, stack)
         print(f"    -> {p}  (fg={float((stack>0).mean()):.4f})")
