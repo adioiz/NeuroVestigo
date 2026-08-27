@@ -424,6 +424,11 @@ def main():
     ap.add_argument("--use-fa3", action="store_true",
                     help="enable Flash Attention 3; off by default because "
                          "flash_attn_interface is not installed in sam3-env")
+    ap.add_argument("--max-num-objects", type=int, default=16,
+                    help="tracked-object cap (SAM 3 default 16). Text mode "
+                         "saturates it -- logs show 19 detections per frame "
+                         "against a cap of 16 -- so the target can be among "
+                         "those discarded")
     ap.add_argument("--output-prob-thresh", type=float, default=0.5,
                     help="mask probability threshold (SAM 3 default 0.5). The "
                          "analogue of cellpose's cellprob_threshold; lower is "
@@ -488,7 +493,8 @@ def main():
     # NCCL group); build_sam3_predictor is the documented single-process entry.
     from sam3.model_builder import build_sam3_predictor
     kw = {"version": args.version, "use_fa3": args.use_fa3,
-          "use_rope_real": args.use_rope_real}
+          "use_rope_real": args.use_rope_real,
+          "max_num_objects": args.max_num_objects}
     if args.checkpoint:
         kw["checkpoint_path"] = args.checkpoint
     predictor = build_sam3_predictor(**kw)
