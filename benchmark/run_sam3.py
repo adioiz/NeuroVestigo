@@ -429,6 +429,12 @@ def main():
         return
     if not args.videos:
         raise SystemExit("--videos is required unless --probe")
+    if args.with_text and args.mode.startswith("points"):
+        raise SystemExit(
+            "--with-text cannot be combined with a points mode: SAM 3.1 asserts "
+            "'When points are provided, text_str and boxes_xywh must be None' "
+            "(sam3_multiplex_tracking.py:2710). The prompt types are mutually "
+            "exclusive on the interactive path; try --mode box-every instead.")
 
     import torch
     if not torch.cuda.is_available():
