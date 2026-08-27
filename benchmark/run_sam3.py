@@ -273,6 +273,11 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints,
     """
     H, W = gts[0].shape
     T = len(gts)
+    # Raw detector activity, BEFORE target matching. In text mode the union
+    # match keeps only instances overlapping the target, so a 0.0000 result
+    # cannot otherwise distinguish "found nothing" from "found things, none
+    # of them the target neuron" -- different claims about the model.
+    stats = {"raw_fg": 0.0, "n_inst": 0, "frames": 0}
 
     resp = predictor.handle_request(
         {"type": "start_session", "resource_path": frames_dir})
@@ -334,6 +339,10 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints,
             masks = masks.reshape(-1, *masks.shape[-2:])
             masks = _resize_stack(masks, H, W)
             seen += 1
+            if frame_idx < T:
+                stats["raw_fg"] += float(np.any(masks, axis=0).mean())
+                stats["n_inst"] += int(masks.shape[0])
+                stats["frames"] += 1
             if mode == "text":                   # not target-aware -> union match
                 inst = np.zeros((H, W), np.int32)
                 for i, m in enumerate(masks, 1):
@@ -352,7 +361,12 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints,
             predictor.handle_request({"type": "close_session", "session_id": sid})
         except Exception:
             pass
-    return out
+    if stats["frames"]:
+        stats["raw_fg"] /= stats["frames"]
+        stats["inst_per_frame"] = stats["n_inst"] / stats["frames"]
+    else:
+        stats["inst_per_frame"] = 0.0
+    return out, stats
 
 
 _MASK_KEYS = ("out_binary_masks", "binary_masks", "pred_masks", "masks")
@@ -501,13 +515,15 @@ def main():
             n = len(load_frames(v, args.limit_frames))
             gts = load_gt(v, n)
             print(f"  {v}: {n} frames ...", flush=True)
-            stack = run_video(predictor, frames_dir, gts, args.mode,
-                              phrase, args.npoints,
-                              prob_thresh=args.output_prob_thresh,
-                              with_text=args.with_text)
+            stack, st = run_video(predictor, frames_dir, gts, args.mode,
+                                  phrase, args.npoints,
+                                  prob_thresh=args.output_prob_thresh,
+                                  with_text=args.with_text)
             p = os.path.join(out_dir, f"{v}.tif")
             tifffile.imwrite(p, stack)
-            print(f"    -> {p}  (fg={float((stack>0).mean()):.4f})")
+            print(f"    -> {p}  (fg={float((stack>0).mean()):.4f}  "
+                  f"raw_fg={st['raw_fg']:.4f}  "
+                  f"inst/frame={st['inst_per_frame']:.1f})")
 
 
 if __name__ == "__main__":
