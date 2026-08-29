@@ -290,21 +290,29 @@ time-lapse microscopy}}
 %---------------------------------------------------------------------
 \begin{abstract}
 \noindent
-\todo{Abstract}
-
-% 1. Context  - label-free live imaging is how neuronal development is watched;
-%               neurite morphology is the readout, and it is measured by hand.
-% 2. Problem  - segmenters recover the soma but fragment or delete thin
-%               neurites; none hold single-neuron identity across a movie;
-%               area metrics (IoU/Dice) conceal exactly this failure.
-% 3. Approach - dual-rank LoRA+ adaptation of SAM 2 (5.56 M / 39.9 M
-%               parameters, 13.9 %) with a connectivity-preserving objective;
-%               one frame-0 annotation propagates through the sequence.
-% 4. Result   - held-out: cbDice 0.847, clDice 0.940, Dice 0.857, IoU 0.752.
-% 5. Fairness - every competitor run in its own most favourable mode.
-% 6. Impact   - neurite-level quantification at one-annotation cost.
-%
-% Do NOT open with "we fine-tuned SAM 2" - open with the capability gap.
+Neurite outgrowth is read from label-free time-lapse microscopy, where
+phototoxicity rules out fluorescent reporters and morphology must be
+recovered from phase contrast alone. That recovery is still done by hand.
+Existing segmenters resolve the high-contrast soma but fragment or delete
+the one- to two-pixel-wide neurites that carry the biological signal; none
+preserve the identity of a single neuron across a multi-day recording; and
+area-based scores conceal precisely this failure, since a severed branch
+costs a handful of pixels while invalidating the morphology it defines.
+We present \todo{NAME}, a parameter-efficient adaptation of the promptable
+video model SAM\,2 \cite{ravi2025sam2} to label-free phase contrast.
+Dual-rank LoRA+ updates $5.56$\,M of $39.9$\,M weights ($13.9\,\%$), trained
+under a connectivity-preserving objective that penalizes topological breaks
+alongside pixel error and backpropagated through an undetached memory bank,
+so that drift across frames is optimized rather than merely measured. A
+single annotated mask at frame~0 propagates through the whole sequence.
+On four strictly held-out recordings ($328$ propagated frames) the model
+reaches cbDice $0.851$, clDice $0.943$, Dice $0.861$ and IoU $0.760$,
+exceeding six competing methods---each run in its own most favorable
+mode---on every metric, and it degrades least over time (cbDice falls
+$0.069$ from the first to the last quartile of a recording, against $0.126$
+for the nearest baseline). The model ships inside \texttt{neurons-labeling},
+the napari plug-in used to build the dataset, and we release all
+twenty-nine annotated recordings.
 \end{abstract}
 
 \noindent\textbf{Keywords:} neuron segmentation; cell tracking;
