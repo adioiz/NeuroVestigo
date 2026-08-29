@@ -1223,14 +1223,10 @@ margin of this magnitude is highly significant for targets as diminutive and
 intricately branched as these; because the object occupies only a minimal
 percentage of the frame, a single pixel of boundary error along a neurite
 disproportionately degrades the overall score. Furthermore, the
-propagation never fails outright: across the 328 evaluated frames the lowest
-per-frame IoU our model records is $0.550$, and no frame falls below $0.3$.
-Every competing method has frames that do --- six for zero-shot SAM\,2,
-thirty-two for $\mu$SAM, eighty-three for SAM\,3.1 and one hundred and
-eighty-nine for Omnipose --- and Cellpose-SAM returns an empty mask on three.
-Figure~\ref{fig:qualitative} shows the same contrast at three time points of
-a single recording: as the arbour extends, the competing methods lose the
-thin distal branches that our model retains.
+propagation never fails outright: the lowest per-frame IoU our model records
+across the 328 evaluated frames is $0.550$, and no frame falls below $0.3$,
+which is not true of any competing method
+(Figure~\ref{fig:qualitative}).
 
 
 
