@@ -478,25 +478,109 @@ the plug-in return as new training data.}
 \section{Related work}
 \label{sec:related}
 
-\todo{Four families, and why none solves this task.
-(i) Generalist cell segmenters --- Cellpose \cite{stringer2021cellpose} and
-its SAM-based successor \cite{pachitariu2025cellposesam} predict centroid
-flow fields; StarDist \cite{schmidt2018stardist} uses star-convex polygons
-that cannot represent a branched filament at all. Both target compact cells.
-(ii) Morphology-specialised --- Omnipose \cite{cutler2022omnipose} replaces
-the centroid field with a boundary-distance field precisely to handle
-elongated and branched shapes, but is object-centric and single-frame.
-(iii) Domain-specialised --- NeuroQuantify \cite{chen2024neuroquantify}
-segments cells and neurites in phase contrast, but semantically and per
-frame, with no notion of cell identity.
-(iv) Foundation models --- SAM \cite{kirillov2023sam}, SAM\,2
-\cite{ravi2025sam2}, $\mu$SAM \cite{archit2025microsam} and CellSAM
-\cite{israel2025cellsam} bring strong priors but are topology-blind.
-(v) Trackers --- DeepSea \cite{zargari2023deepsea} and Trackastra
-\cite{gallusser2024trackastra} link per-frame masks, so their connectivity
-is upper-bounded by the segmenter that feeds them.
-The gap: no method combines topology-preserving training, temporal identity
-and neuron/phase-contrast specialisation.}
+\paragraph{Generalist cell segmentation.}
+Modern cell segmentation is dominated by methods that learn a shape
+representation and recover instances from it. Cellpose
+\cite{stringer2021cellpose} predicts a vector field flowing towards each
+cell's centre and assembles instances by following those flows to their
+sinks; its recent successor replaces the encoder with a SAM backbone and
+extends the training corpus \cite{pachitariu2025cellposesam}. StarDist
+\cite{schmidt2018stardist} instead represents a cell as a star-convex
+polygon, a parameterisation that is efficient precisely because it assumes a
+compact object. Both descend from the encoder--decoder segmentation
+architecture that U-Net established for biomedical images
+\cite{ronneberger2015unet}. The assumption they share is compactness: a
+centroid flow presumes every pixel of an object has an unambiguous direction
+towards a single centre, and a star-convex polygon cannot represent a process
+that branches or curves back on itself. A neuron violates both.
+
+\paragraph{Elongated and branched morphologies.}
+Omnipose \cite{cutler2022omnipose} was developed to remove exactly this
+assumption, replacing the centroid field with a distance field measured to
+the object boundary so that filamentous bacteria of arbitrary length are
+recovered correctly. It is the closest existing method to our shape regime,
+and we benchmark against it. It remains, however, object-centric and
+single-frame: it segments the objects present in an image without any notion
+of which object is which, or of the same object at a later time.
+NeuroQuantify \cite{chen2024neuroquantify} is closer still in domain,
+segmenting cells and neurites in phase contrast, but its output is semantic
+rather than instance-level --- it labels neurite pixels rather than a given
+neuron's neurite pixels. Where per-neuron morphology is required, the
+established practice remains manual tracing in NeuronJ
+\cite{meijering2004neuronj} or Simple Neurite Tracer
+\cite{longair2011snt}, and automatic tracing in this modality is
+acknowledged to be unsolved \cite{liu2022neurontracing}.
+
+\paragraph{Promptable foundation models.}
+The Segment Anything Model \cite{kirillov2023sam} reframed segmentation as a
+promptable task: rather than learning a fixed set of classes, the model
+returns whatever object a point, box or mask indicates. SAM\,2
+\cite{ravi2025sam2} extends this to video by adding a memory bank, so that a
+prompt supplied on one frame conditions the prediction on all subsequent
+frames --- the property this work depends on. Adaptations to microscopy
+follow the same pattern: $\mu$SAM \cite{archit2025microsam} retrains SAM on
+light- and electron-microscopy corpora and is used interactively, and CellSAM
+\cite{israel2025cellsam} pairs SAM with a cell detector to remove the prompt.
+More recently SAM\,3 has generalised the prompt itself from a geometric
+indication to a concept expressed in language. These models bring priors
+learned at a scale no laboratory dataset can match, but they are trained on
+objects whose boundaries are salient, and none is trained to preserve the
+connectivity of a structure that is one or two pixels wide.
+
+\paragraph{Tracking and temporal identity.}
+Maintaining cell identity through a recording is conventionally treated as a
+second stage: a segmenter produces per-frame masks and a tracker links them,
+an arrangement the Cell Tracking Challenge has standardised and benchmarked
+\cite{maska2023ctc}. DeepSea \cite{zargari2023deepsea} and Trackastra
+\cite{gallusser2024trackastra} are recent instances, the latter learning
+associations with a transformer over segmented objects. The decomposition is
+effective when the segmentation is reliable, but it is also its limitation:
+a linker cannot restore a branch its segmenter never produced, so the
+connectivity of the final trajectory is bounded above by the per-frame
+segmenter. Propagating a mask through a memory, as SAM\,2 does, avoids the
+decomposition entirely, and it is the reason we adapt a video model rather
+than pair a segmenter with a tracker.
+
+\paragraph{Topology-preserving objectives.}
+That overlap losses are indifferent to connectivity is well established, and
+several objectives have been proposed to correct it. Persistent-homology
+losses \cite{hu2019topology} match the topological features of prediction and
+target directly. clDice \cite{shit2021cldice} compares soft skeletons rather
+than regions, making a break expensive in proportion to the centreline it
+removes; cbDice \cite{shi2024cbdice} adds a radius weighting so that a thin
+branch outweighs a thick one. The supervoxel loss
+\cite{grim2025supervoxel} takes a complementary route, identifying the
+individual error components whose presence or absence splits or merges an
+object and concentrating the gradient on them. We adopt the last two rather
+than propose a new one; what is specific to this work is the setting in which
+they are applied --- a video model propagating a single identity --- and the
+finding, reported in Section~\ref{sec:res:ablation}, that their influence on
+training is far more asymmetric than their nominal weights suggest.
+
+\paragraph{Parameter-efficient adaptation.}
+Adapting a large pretrained model on a small corpus is a general problem, and
+low-rank adaptation \cite{hu2022lora} is its standard answer: the update to
+each weight matrix is constrained to a low-rank subspace, which both reduces
+the trainable parameter count and regularises the adaptation. LoRA+
+\cite{hayou2024loraplus} corrects an optimisation asymmetry in the original
+formulation by assigning the two factors separate learning rates. These are
+established techniques and we claim no contribution to them; we note only
+that the constraint is doing useful work here for a reason that is
+particular to this setting, namely that twenty-five annotated recordings are
+too few to fine-tune an encoder estimated from a corpus several orders of
+magnitude larger.
+
+\paragraph{The gap.}
+Each family addresses one requirement of this task and omits the others.
+Generalist and morphology-specialised segmenters model shape but not
+identity through time; trackers model identity but inherit their
+connectivity from a segmenter; foundation video models propagate identity
+but are not trained to preserve thin structure; and topology-preserving
+objectives supply that training signal but have not, to our knowledge and
+based on a systematic search, been combined with temporal propagation in a
+promptable video model, nor applied to individual neurons in label-free
+phase contrast. It is that combination, rather than any of its ingredients,
+that this work contributes.
 
 %=====================================================================
 \section{Methods}
@@ -618,7 +702,7 @@ evaluated under a geometry it did not see.
 
 \paragraph{Adapted and frozen components.}
 Adaptation is allocated by parameter mass, so that training remains feasible
-on a single GPU; in total we update 13.9\,\% of the model parameters. The
+on a single GPU. The
 image encoder's 27{,}219{,}136 pretrained parameters are frozen in full:
 its representations of edges, texture and contrast are generic and were
 estimated from a corpus several orders of magnitude larger than ours, and
@@ -1405,8 +1489,7 @@ Section~\ref{sec:met:model} and evaluated using the established protocol.
 \emph{Adaptation.} Base SAM\,2 and our model share a backbone, prompt
 formulation, and inference procedure, differing exclusively in the learned
 adapters. As shown in Table~\ref{tab:main}, this parameter-efficient
-adaptation --- updating just $13.9\,\%$ of the total parameters --- yields an
-absolute performance gain of $+0.121$ IoU and $+0.093$ cbDice.
+adaptation yields an absolute performance gain of $+0.121$ IoU and $+0.093$ cbDice.
 
 \emph{Temporal horizon.} Expanding the training clip length from eight to
 sixteen frames doubles the temporal receptive field over which gradients
