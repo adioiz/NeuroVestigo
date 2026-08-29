@@ -491,7 +491,15 @@ measuring distance to the object boundary rather than to a centre, and is the
 closest existing method to our shape regime, but it is object-centric and
 single-frame. NeuroQuantify \cite{chen2024neuroquantify} is closest in
 domain, segmenting neurites in phase contrast, but semantically rather than
-per cell. Where per-neuron morphology is required the established practice
+per cell. NeuriteTracker \cite{fusco2016neuritetracker} is closest in
+task: it segments and tracks neurite morphodynamics across a time-lapse,
+assigning each cell a label through the sequence by graph association, and it
+remains a reference point in this literature. It depends, however, on
+fluorescence --- neurons are transfected with a nuclear marker for detection
+and an F-actin marker for the neurites --- which is exactly the labelling a
+multi-day acquisition forgoes, and its segmentation is a hand-designed
+pipeline rather than a learned one, with no objective that penalises breaking
+a branch. Where per-neuron morphology is required the established practice
 remains manual tracing \cite{meijering2004neuronj,longair2011snt}, and
 automatic tracing in this modality is acknowledged to be unsolved
 \cite{liu2022neurontracing}.
