@@ -108,23 +108,52 @@ def find_tracker():
 
 # ---------------------------------------------------------------- stage B
 def build(factories, classes, ckpt):
-    """Try each plausible construction path; report every failure verbatim."""
+    """Try each plausible construction path; report every failure verbatim.
+
+    Real signature (from stage A of the first run on the cluster):
+        build_tracker(apply_temporal_disambiguation: bool,
+                      with_backbone: bool = False, compile_mode=None)
+    apply_temporal_disambiguation is REQUIRED and positional -- omitting it was
+    what made the first probe report "no construction path worked". with_backbone
+    defaults to False, which leaves the tracker without an image encoder and
+    expecting cached_features, so True is what we want for a standalone run.
+    """
     attempts = []
     for k, f in factories.items():
-        for kw in ({"with_backbone": True}, {}, {"with_backbone": False}):
-            attempts.append((f"{k}({', '.join(f'{a}={b}' for a, b in kw.items())})",
-                             lambda f=f, kw=kw: f(**kw)))
-    # the documented video predictor may expose the tracker as an attribute
+        for atd in (False, True):
+            for wb in (True, False):
+                attempts.append((f"{k}(apply_temporal_disambiguation={atd}, with_backbone={wb})",
+                                 lambda f=f, a=atd, w=wb: f(a, with_backbone=w)))
+
     def via_video():
         from sam3.model_builder import build_sam3_video_predictor
         vp = build_sam3_video_predictor()
-        for attr in ("tracker", "_tracker", "video_tracker", "sam2_tracker"):
-            if hasattr(vp, attr):
-                print(f"    (found .{attr} on the video predictor)")
-                return getattr(vp, attr)
-        raise RuntimeError(f"no tracker attribute on {type(vp).__name__}; "
-                           f"has {[a for a in dir(vp) if 'track' in a.lower()]}")
-    attempts.append(("build_sam3_video_predictor().<tracker attr>", via_video))
+        seen = set()
+        def walk(o, path, depth=0):
+            if depth > 3 or id(o) in seen:
+                return None
+            seen.add(id(o))
+            for a in dir(o):
+                if a.startswith("__"):
+                    continue
+                try:
+                    v = getattr(o, a)
+                except BaseException:
+                    continue
+                if hasattr(v, "add_new_mask") or hasattr(v, "add_new_masks"):
+                    print(f"    (found mask-accepting tracker at .{path}{a})")
+                    return v
+                if hasattr(v, "__dict__") and not callable(v):
+                    r = walk(v, f"{path}{a}.", depth + 1)
+                    if r is not None:
+                        return r
+            return None
+        t = walk(vp, "")
+        if t is None:
+            raise RuntimeError(f"no mask-accepting tracker reachable from "
+                               f"{type(vp).__name__} within 3 levels")
+        return t
+    attempts.append(("build_sam3_video_predictor() -> nested tracker", via_video))
 
     for label, fn in attempts:
         print(f"  trying {label} ...")
@@ -139,52 +168,79 @@ def build(factories, classes, ckpt):
 
 # ---------------------------------------------------------------- stages C-E
 def drive(tracker, frames_dir, gt):
+    """Stages C-E, using the signatures stage A actually reported:
+
+        init_state(video_height=None, video_width=None, num_frames=None,
+                   video_path=None, cached_features=None, ...)
+        add_new_mask(inference_state, frame_idx, obj_id, mask,
+                     add_mask_to_memory=False)
+        propagate_in_video(inference_state, start_frame_idx,
+                           max_frame_num_to_track, reverse, ...)
+
+    Two details matter. add_mask_to_memory defaults to False, which would seed
+    the prompt WITHOUT putting it in the memory bank -- the opposite of our
+    protocol, so it is passed True. And propagate_in_video's first four
+    arguments are all required, with no defaults.
+    """
+    H, W = gt.shape[1:]
+    T = len(gt)
+
     print("  init_state ...")
     state = None
-    for kw in ({"video_path": frames_dir}, {"video_path": frames_dir, "async_loading_frames": False}):
+    for kw in ({"video_path": frames_dir},
+               {"video_path": frames_dir, "video_height": H, "video_width": W,
+                "num_frames": T},
+               {"video_height": H, "video_width": W, "num_frames": T}):
         try:
-            state = tracker.init_state(**kw); print("    OK"); break
+            state = tracker.init_state(**kw)
+            print(f"    OK with {sorted(kw)}")
+            break
         except BaseException as e:
-            print(f"    {type(e).__name__}: {str(e)[:160]}")
+            print(f"    {type(e).__name__}: {str(e)[:170]}")
     if state is None:
-        print("  STOP: cannot initialise state -- report this output.")
+        print("  STOP at C: cannot initialise state. Paste this output back.")
         return False
 
-    print("  add_new_mask(frame 0) ...")
+    print("  add_new_mask(frame 0, add_mask_to_memory=True) ...")
     ok = False
-    for kw in ({"inference_state": state, "frame_idx": 0, "obj_id": 1, "mask": gt[0]},
-               {"inference_state": state, "frame_idx": 0, "obj_id": 1, "mask": gt[0].astype(np.uint8)}):
+    import torch
+    m0 = gt[0]
+    for cast, lbl in ((lambda m: torch.from_numpy(m.astype("bool")), "torch bool"),
+                      (lambda m: torch.from_numpy(m.astype("uint8")), "torch uint8"),
+                      (lambda m: m.astype("bool"), "numpy bool")):
         try:
-            tracker.add_new_mask(**kw); print("    OK"); ok = True; break
+            tracker.add_new_mask(inference_state=state, frame_idx=0, obj_id=1,
+                                 mask=cast(m0), add_mask_to_memory=True)
+            print(f"    OK ({lbl})"); ok = True; break
         except BaseException as e:
-            print(f"    {type(e).__name__}: {str(e)[:200]}")
+            print(f"    [{lbl}] {type(e).__name__}: {str(e)[:170]}")
     if not ok:
-        print("  STOP: the tracker exists but will not take a mask -- that is the")
-        print("  answer, and the paper's claim stands. Report this output.")
+        print("  STOP at D: the tracker exists but will not take a mask. That is")
+        print("  the answer and the paper's claim stands. Paste this output back.")
         return False
 
     print("  propagate_in_video ...")
-    try:
-        n = 0
-        for frame_idx, obj_ids, logits in tracker.propagate_in_video(state):
-            m = np.asarray(logits.detach().cpu() if hasattr(logits, "detach") else logits)
-            m = (m > 0).reshape(-1, *m.shape[-2:])
-            fg = float(np.any(m, 0).mean())
-            iou = None
-            if frame_idx < len(gt):
+    for mx, lbl in ((T, f"max_frame_num_to_track={T}"), (None, "max_frame_num_to_track=None")):
+        try:
+            n = 0
+            for frame_idx, obj_ids, logits in tracker.propagate_in_video(
+                    state, start_frame_idx=0, max_frame_num_to_track=mx, reverse=False):
+                m = logits.detach().cpu().numpy() if hasattr(logits, "detach") else np.asarray(logits)
+                m = (m > 0).reshape(-1, *m.shape[-2:])
                 a = np.any(m, 0)
-                if a.shape == gt[frame_idx].shape:
+                iou = None
+                if frame_idx < T and a.shape == gt[frame_idx].shape:
                     u = (a | gt[frame_idx]).sum()
                     iou = (a & gt[frame_idx]).sum() / u if u else float("nan")
-            print(f"    frame {frame_idx:>3}  objs={len(obj_ids)}  fg={fg:.4f}"
-                  + (f"  IoU={iou:.3f}" if iou is not None else ""))
-            n += 1
-        print(f"  OK -- {n} frames propagated from a MASK prompt")
-        return True
-    except BaseException as e:
-        print(f"    {type(e).__name__}: {str(e)[:200]}")
-        traceback.print_exc(limit=3)
-        return False
+                print(f"    frame {frame_idx:>3}  objs={len(obj_ids)}  fg={float(a.mean()):.4f}"
+                      + (f"  IoU={iou:.3f}" if iou is not None else ""))
+                n += 1
+            print(f"  OK -- {n} frames propagated from a MASK prompt ({lbl})")
+            return True
+        except BaseException as e:
+            print(f"    [{lbl}] {type(e).__name__}: {str(e)[:200]}")
+    traceback.print_exc(limit=3)
+    return False
 
 
 def main():
