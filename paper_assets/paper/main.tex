@@ -315,63 +315,89 @@ live-cell imaging
 \section{Introduction}
 \label{sec:intro}
 
-A neuron acquires its function from its shape. During development and after
-injury it extends neurites that branch, retract and re-extend until they
-reach their targets, and the resulting arbour determines what the cell
-connects to \cite{dotti1988polarity,lowery2009growthcone}. The same process
-underlies repair, where regrowth in the injured central nervous system is
-limited and what governs it remains an open question
-\cite{sofroniew2018spinal,he2016axon}. Growth is guided rather than
-autonomous, by chemical gradients, by the topography and stiffness of the
-substrate, and by contact with neighbouring cells
+Neuronal function is fundamentally defined by cellular morphology. During
+both development and post-injury regeneration, neurons exhibit highly
+dynamic structural behaviors---extending, branching, and retracting neurites
+to reach specific targets---ultimately forming the arborized networks that
+dictate synaptic connectivity \cite{dotti1988polarity,lowery2009growthcone}.
+This structural dynamism is critical for neural repair; however, axonal
+regrowth in the central nervous system is severely restricted, and its
+governing mechanisms remain an active area of investigation
+\cite{sofroniew2018spinal,he2016axon}. Crucially, neurite outgrowth is not
+an autonomous process; rather, it is tightly regulated by external spatial
+and environmental cues, including chemotactic gradients, substrate
+topography, mechanical stiffness, and intercellular contact
 \cite{shefi2005twophase,baranes2012topographic,marcus2017interactions}.
-Studying it means watching one neuron over days, and fluorescence is a poor
-instrument for that: reporters perturb the cell they report on, and repeated
-excitation is phototoxic. Label-free phase contrast avoids both.
+Investigating these morphodynamics necessitates the continuous, longitudinal
+observation of individual neurons over multi-day timeframes. For such
+extended acquisitions, fluorescence microscopy is fundamentally inadequate:
+exogenous reporters can perturb the endogenous cellular mechanisms they are
+meant to highlight, and repeated excitation induces cumulative
+phototoxicity. Label-free phase-contrast microscopy circumvents these
+constraints, providing a non-invasive modality essential for continuous,
+long-term biological observation.
 
-What such a recording measures is not a shape but a rate --- how fast each
-neurite elongates, when it pauses or retracts, and when it branches
-\cite{odde1996stochastic,ren2016growthcone,wissnergross2011largescale}. Two
-properties of that measurement make it expensive. Growth is phasic rather
-than steady, so a rate averaged over a recording conceals the transitions
-that carry the signal and resolving them requires every frame. And it is
-heterogeneous: in these recordings growth rates differ between branch classes
-on average, yet the difference does not survive comparison across biological
-replicates, so variability rather than hierarchy dominates and a conclusion
-rests on many neurons rather than on a few measured well
-\cite{berkovich2025neurite}. Manual tracing
-supplies one of these at a time. The dataset used here was traced by hand
-across $93$\,h of imaging \cite{longair2011snt,meijering2004neuronj}, and
-automatic tracing in this modality remains unsolved
-\cite{liu2022neurontracing}.
+Ultimately, the analytical value of these recordings lies not in static
+morphology, but in kinetic rates: the velocity of neurite elongation, the
+timing of retractions, and the frequency of branching
+\cite{odde1996stochastic,ren2016growthcone,wissnergross2011largescale}.
+Extracting these metrics presents a dual challenge. First, neuronal growth
+is highly phasic rather than continuous; temporal averaging obscures the
+transient dynamics that encode critical biological signals, necessitating
+dense, frame-by-frame resolution. Second, growth behavior is profoundly
+heterogeneous. While average velocities may differ across branch classes,
+this hierarchy is often overshadowed by high variance across biological
+replicates \cite{berkovich2025neurite}. Consequently, robust biological
+conclusions demand high-throughput analyses spanning large cellular
+populations rather than detailed observations of a few isolated cells.
+Currently, acquiring this data relies on manual tracing, which scales
+poorly. For context, the dataset utilized in this study required exhaustive
+manual annotation across $93$\,h of time-lapse imaging
+\cite{longair2011snt,meijering2004neuronj}. Because fully automated instance
+tracking in label-free phase contrast remains an unresolved challenge
+\cite{liu2022neurontracing}, this labor-intensive bottleneck severely
+restricts the scale of morphodynamic research.
 
-The computational problem is hard for reasons particular to this object. A
-neurite is one to two pixels wide, so a single mislabeled pixel severs a
-branch and destroys the morphology the measurement depends on while costing
-almost nothing in area: the target occupies $2.6\,\%$ of the frame on
-average and as little as $0.2\,\%$, so a per-pixel objective barely registers
-it. Phase contrast is low in contrast and uneven in illumination. The neuron
-deforms and roughly triples in extent over a recording, and must be followed
-throughout. And the field holds other neurons of the same type, so the task
-is not to segment cells but to segment one specified cell and keep hold of
-it.
+The computational challenge is fundamentally tied to the unique
+morphological properties of the target. Because neurites are often only a
+few pixels wide, a single false-negative prediction can sever a branch,
+inducing a catastrophic topological fracture that invalidates downstream
+morphological analysis. Crucially, this structural failure incurs a
+negligible penalty under standard area-based metrics. This is exacerbated by
+severe spatial imbalance: the target occupies an average of just $2.6\,\%$
+of the frame, and as little as $0.2\,\%$, rendering standard pixel-wise
+objectives highly ineffective. Furthermore, phase-contrast microscopy is
+characterized by inherently low signal-to-noise ratios and non-uniform
+illumination. Longitudinally, the target neuron undergoes severe non-rigid
+deformation, frequently tripling its spatial extent across a recording.
+Finally, because the field of view contains multiple neighboring cells of
+identical morphology, the task transcends semantic segmentation; it strictly
+requires instance-level disambiguation and the continuous preservation of
+temporal identity for a singular specified cell.
 
-We address this by adapting SAM\,2 \cite{ravi2025sam2}, a promptable video
-model whose memory bank carries a prompt from one frame to every subsequent
-one, to label-free phase contrast. The adaptation is parameter-efficient ---
-dual-rank LoRA+ over $13.9\,\%$ of the weights --- and the training objective
-penalises breaking a neurite as well as mislabeling one. A single mask on
-frame~0 then segments an entire recording: across four strictly held-out
-recordings this leads every metric we report against six competing methods
-(Section~\ref{sec:res:benchmark}) and loses least quality as the recording
-proceeds (Section~\ref{sec:res:temporal}). The model is released inside
-\texttt{neurons-labeling}, the napari plug-in in which the dataset itself was
-drawn: a neuron is painted once, propagated, corrected where the propagation
-is wrong, and exported (Figure~\ref{fig:pipeline}). Because a corrected frame
-is training data in the format the model already consumes, using the tool
-improves the model that drives it. We release the twenty-nine annotated
-recordings alongside it, four of them annotated only after development was
-complete, as a benchmark for a setting that has none.
+We address these by adapting SAM\,2 \cite{ravi2025sam2}---a promptable video
+model equipped with a memory bank that propagates spatial conditioning
+across sequential frames---to label-free phase-contrast microscopy. This
+adaptation is highly parameter-efficient, utilizing dual-rank LoRA+ to
+update merely $13.9\,\%$ of the network weights. Furthermore, our training
+objective explicitly integrates topology-preserving losses to penalize
+structural fragmentation alongside standard pixel-level errors. Conditioned
+on a single initial mask at frame~0, the model autonomously segments the
+entire time-lapse sequence. Evaluated on four strictly held-out recordings,
+our approach outperforms six competing baselines across all reported metrics
+(Section~\ref{sec:res:benchmark}) and exhibits the lowest longitudinal
+degradation over time (Section~\ref{sec:res:temporal}). The inference model
+is publicly released within \texttt{neurons-labeling}, the napari plug-in
+originally developed to curate this dataset. This facilitates a
+human-in-the-loop pipeline: a neuron is annotated once, temporally
+propagated, interactively corrected, and exported
+(Figure~\ref{fig:pipeline}). Because user corrections directly yield
+training data in the model's native consumption format, the tool
+fundamentally enables a continuous self-improvement cycle. Alongside the
+software, we release all twenty-nine annotated recordings---including four
+sequences explicitly annotated post-development to serve as a strict blind
+test set---establishing the first public benchmark for single-target
+longitudinal neurite tracking in this modality.
 
 % Novelty phrasing (locked): claim the COMBINATION, "to our knowledge, based
 % on a systematic search". Credit LoRA/PEFT, the individual topology losses,
