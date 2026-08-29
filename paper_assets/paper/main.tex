@@ -1147,7 +1147,7 @@ supervision noted to contextualise the comparisons. Our proposed model
 significantly outperforms all methods across both topological metrics by a
 substantial margin. Furthermore, these results expose the limitations of
 area-based evaluation: $\mu$SAM and Cellpose-SAM yield virtually identical
-IoU scores ($0.561$ vs. $0.563$) despite a significant disparity in
+IoU scores ($0.562$ vs. $0.563$) despite a significant disparity in
 structural connectivity ($0.767$ vs. $0.725$ cbDice). SAM\,3.1 is reported in
 both of the modes its video interface accepts; it cannot be given a mask
 prompt, and its concept mode is not target-aware, so its predictions are
@@ -1159,8 +1159,8 @@ reduced to the target exactly as for the other automatic methods.}
 Method & IoU & Dice & \textbf{cbDice} & clDice & Per-frame supervision \\
 \midrule
 \textbf{Ours}            & \textbf{0.760} & \textbf{0.861} & \textbf{0.851} & \textbf{0.943} & 1 annotation (frame 0) \\
-SAM\,2 (zero-shot)       & 0.639 & 0.770 & 0.758 & 0.830 & 1 annotation (frame 0) \\
-$\mu$SAM (box-prompt)    & 0.561 & 0.702 & 0.767 & 0.804 & GT box, \emph{every} frame \\
+SAM\,2 (zero-shot)       & 0.639 & 0.771 & 0.758 & 0.830 & 1 annotation (frame 0) \\
+$\mu$SAM (box-prompt)    & 0.562 & 0.702 & 0.767 & 0.804 & GT box, \emph{every} frame \\
 SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{every} frame \\
 Cellpose-SAM             & 0.563 & 0.708 & 0.725 & 0.798 & none (automatic) \\
 NeuroQuantify            & 0.446 & 0.594 & 0.602 & 0.680 & none (automatic) \\
@@ -1177,7 +1177,7 @@ The empirical performance of each method closely aligns with its underlying
 design priorities (Figure~\ref{fig:benchmark}). The baseline SAM\,2 reliably
 segments the main soma but fails to delineate fine, low-contrast processes,
 attaining an IoU of $0.639$ and a cbDice of $0.758$. Despite benefiting from
-a per-frame bounding box prompt, $\mu$SAM achieves only $0.561$ IoU and
+a per-frame bounding box prompt, $\mu$SAM achieves only $0.562$ IoU and
 $0.767$ cbDice. Notably, Cellpose-SAM matches $\mu$SAM in terms of regional
 overlap ($0.563$ IoU) but underperforms significantly in preserving
 topological connectivity ($0.725$ cbDice). This discrepancy perfectly
@@ -1224,9 +1224,15 @@ cbDice, achieved by fine-tuning only $13.9\,\%$ of the network parameters. A
 margin of this magnitude is highly significant for targets as diminutive and
 intricately branched as these; because the object occupies only a minimal
 percentage of the frame, a single pixel of boundary error along a neurite
-disproportionately degrades the overall score. Furthermore, the temporal
-propagation is highly stable: across the 328 evaluated frames, the predicted
-mask never diverges from the target (Figure~\ref{fig:qualitative}).
+disproportionately degrades the overall score. Furthermore, the
+propagation never fails outright: across the 328 evaluated frames the lowest
+per-frame IoU our model records is $0.550$, and no frame falls below $0.3$.
+Every competing method has frames that do --- six for zero-shot SAM\,2,
+thirty-two for $\mu$SAM, eighty-three for SAM\,3.1 and one hundred and
+eighty-nine for Omnipose --- and Cellpose-SAM returns an empty mask on three.
+Figure~\ref{fig:qualitative} shows the same contrast at three time points of
+a single recording: as the arbour extends, the competing methods lose the
+thin distal branches that our model retains.
 
 
 
@@ -1421,8 +1427,8 @@ the operational range, we adopt the smaller weight.
 %   MATCHED-IoU (Fig. whytopology) -- a 1 px uniform erosion and a two-branch
 %     deletion score IoU 0.805 vs 0.820, i.e. IoU ranks them BACKWARDS, while
 %     cbDice reads 0.986 vs 0.800 (clDice 0.998 vs 0.674).
-%   DISCRIMINATION (Tab. main) -- uSAM and Cellpose-SAM sit within 0.002 on
-%     IoU (0.561 / 0.563) yet 0.043 apart on cbDice (0.767 / 0.725).
+%   DISCRIMINATION (Tab. main) -- uSAM and Cellpose-SAM sit within 0.001 on
+%     IoU (0.562 / 0.563) yet 0.043 apart on cbDice (0.767 / 0.725).
 We introduced a parameter-efficient adaptation of SAM\,2 (via dual-rank
 LoRA+) for the longitudinal tracking of highly arborised neurons.
 Conditioned on a single initial mask, our model establishes
