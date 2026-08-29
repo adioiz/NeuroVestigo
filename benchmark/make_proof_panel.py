@@ -31,11 +31,12 @@ FIGDIR = os.path.join(REPO, "paper_assets", "figures")
 PRETTY = {"ours": "Ours (fine-tuned)", "sam2_zeroshot": "SAM 2 (zero-shot)",
           "usam": "µSAM (box-prompt)", "cellpose_sam": "Cellpose-SAM",
           "omnipose": "Omnipose", "neuroquantify": "NeuroQuantify",
-          "sam3.1": "SAM 3.1 (point-prompt)"}
+          "sam3.1": "SAM 3.1 (point-prompt)",
+          "sam3.1_text": "SAM 3.1 (text: \"cells\")"}
 # Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
-PRED_DIR = {"sam3.1": "sam3_final"}
+PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final"}
 
 
 def load_gray(video, t):
