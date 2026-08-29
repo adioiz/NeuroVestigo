@@ -1,0 +1,349 @@
+<style>
+  :root{
+    --ground:#F6F7F9; --panel:#FFFFFF; --ink:#16233A; --muted:#5A6472;
+    --line:#DCE1E8; --navy:#1F3A5F; --teal:#2C9A93;
+    --yes:#4F9D5D; --partial:#E1A93B; --no:#CDD3DC;
+    --shadow:0 1px 2px rgba(22,35,58,.04),0 6px 20px rgba(22,35,58,.06);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono","Menlo","Consolas",monospace;
+  }
+  *{box-sizing:border-box}
+  .wrap{background:var(--ground);color:var(--ink);font-family:var(--sans);
+    line-height:1.6;-webkit-font-smoothing:antialiased;padding:0 20px 96px}
+  .col{max-width:920px;margin:0 auto}
+  .prose{max-width:70ch}
+  h1,h2,h3{text-wrap:balance;line-height:1.15;margin:0}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;
+    text-transform:uppercase;color:var(--teal);font-weight:600}
+  a{color:var(--navy);text-decoration:none;border-bottom:1px solid var(--line)}
+  a:hover{border-color:var(--navy)}
+
+  /* ---- header ---- */
+  header{padding:64px 0 40px;border-bottom:1px solid var(--line)}
+  header .kicker{color:var(--muted)}
+  h1{font-size:clamp(30px,5vw,50px);font-weight:800;letter-spacing:-.02em;margin:18px 0 0}
+  h1 .hl{color:var(--navy)}
+  .lede{font-size:clamp(17px,2.4vw,20px);color:var(--muted);margin:20px 0 0;max-width:60ch}
+  .stats{display:flex;flex-wrap:wrap;gap:12px;margin-top:32px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 18px;box-shadow:var(--shadow)}
+  .stat .n{font-family:var(--mono);font-size:22px;font-weight:600;color:var(--navy);
+    font-variant-numeric:tabular-nums}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:2px}
+
+  /* ---- sections ---- */
+  section{padding:48px 0;border-bottom:1px solid var(--line)}
+  .sec-h{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+  .sec-h h2{font-size:23px;font-weight:750;letter-spacing:-.01em}
+  .sec-sub{color:var(--muted);font-size:15px;margin:6px 0 26px;max-width:66ch}
+  p{margin:0 0 14px}
+
+  /* thesis callout */
+  .thesis{background:var(--navy);color:#EAF0F7;border-radius:16px;padding:30px 32px;
+    box-shadow:var(--shadow)}
+  .thesis .eyebrow{color:#8FC6C0}
+  .thesis p{font-size:19px;line-height:1.55;margin:12px 0 0;color:#F2F6FB}
+  .thesis b{color:#fff}
+
+  /* ---- capability matrix ---- */
+  .matrix-scroll{overflow-x:auto;margin:0 -4px}
+  table.matrix{border-collapse:separate;border-spacing:0;width:100%;min-width:680px;
+    font-size:13px}
+  table.matrix th{font-weight:600;color:var(--muted);text-align:center;
+    padding:0 6px 12px;vertical-align:bottom;font-size:12px;line-height:1.25}
+  table.matrix th.rowh{text-align:left;width:120px}
+  table.matrix td{text-align:center;padding:5px}
+  .cell{display:flex;align-items:center;justify-content:center;height:40px;border-radius:8px;
+    color:#fff;font-weight:700;font-size:15px}
+  .cell.yes{background:var(--yes)} .cell.part{background:var(--partial)}
+  .cell.no{background:var(--no);color:#8A93A1}
+  td.model{text-align:left;font-weight:600;font-size:13.5px;white-space:nowrap;padding-right:14px}
+  tr.ours td.model{color:var(--navy);font-weight:800}
+  tr.ours td{background:rgba(31,58,95,.05)}
+  tr.ours td:first-child{border-radius:8px 0 0 8px}
+  tr.ours td:last-child{border-radius:0 8px 8px 0}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:16px;font-size:12.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;
+    vertical-align:middle}
+  .matrix-note{margin-top:14px;font-size:13.5px;color:var(--muted);max-width:66ch}
+  .matrix-note b{color:var(--navy)}
+
+  /* ---- competitor cards ---- */
+  .cards{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;
+    box-shadow:var(--shadow)}
+  .card h3{font-size:16px;font-weight:750}
+  .card .venue{font-family:var(--mono);font-size:11px;color:var(--teal);margin-top:3px;
+    text-transform:uppercase;letter-spacing:.04em}
+  .card .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;
+    margin-top:10px}
+  .tag.rel{background:#E7F1EA;color:#2f6b3d} .tag.arch{background:#EAF0F7;color:var(--navy)}
+  .tag.gen{background:#F1EEDF;color:#8a6d1f}
+  .card p{font-size:13.5px;margin:12px 0 0;color:#39485c}
+  .card .diff{margin-top:12px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);
+    padding-top:10px}
+  .card .diff b{color:var(--ink)}
+
+  /* ---- ledger ---- */
+  .ledger{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .lcol{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;
+    box-shadow:var(--shadow)}
+  .lcol.novel{border-top:3px solid var(--yes)}
+  .lcol.crowded{border-top:3px solid var(--partial)}
+  .lcol h3{font-size:15px}
+  .lcol ul{margin:12px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+  .lcol li{font-size:13.5px;padding-left:20px;position:relative;color:#39485c}
+  .lcol li::before{position:absolute;left:0;top:0;font-weight:700}
+  .lcol.novel li::before{content:"✓";color:var(--yes)}
+  .lcol.crowded li::before{content:"→";color:var(--partial)}
+
+  /* ---- benchmark ---- */
+  .bplan{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .bbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;
+    box-shadow:var(--shadow)}
+  .bbox .num{font-family:var(--mono);font-size:12px;color:var(--teal);font-weight:600}
+  .bbox h3{font-size:15px;margin:6px 0 0}
+  .bbox p{font-size:13.5px;color:#39485c;margin:10px 0 0}
+  .metricrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border-radius:7px;
+    background:var(--ground);border:1px solid var(--line);color:var(--ink)}
+  .chip.star{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+  /* ---- journal ladder ---- */
+  .ladder{width:100%;border-collapse:separate;border-spacing:0 8px;font-size:13.5px}
+  .ladder th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);padding:0 12px 4px;font-weight:600}
+  .ladder td{background:var(--panel);padding:12px;border-top:1px solid var(--line);
+    border-bottom:1px solid var(--line);vertical-align:middle}
+  .ladder td:first-child{border-left:1px solid var(--line);border-radius:9px 0 0 9px;font-weight:700}
+  .ladder td:last-child{border-right:1px solid var(--line);border-radius:0 9px 9px 0}
+  .ladder .if{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--muted)}
+  .verdict{display:inline-block;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px}
+  .v-target{background:#E7F1EA;color:#2f6b3d}
+  .v-reach{background:#F1EEDF;color:#8a6d1f}
+  .v-no{background:#F1E7E7;color:#9a3b3b}
+  .ladder tr.rec td{background:#F3F7FB}
+
+  /* ---- gaps ---- */
+  .gaps{display:flex;flex-direction:column;gap:10px}
+  .gap{display:flex;gap:14px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);
+    border-radius:10px;padding:14px 16px;box-shadow:var(--shadow)}
+  .gap .dot{flex:none;width:10px;height:10px;border-radius:50%;margin-top:7px}
+  .dot.red{background:#C6592F} .dot.amber{background:var(--partial)}
+  .gap .body{font-size:13.5px}
+  .gap .body b{color:var(--ink)} .gap .body span{color:var(--muted)}
+  .gap .lvl{font-family:var(--mono);font-size:10px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.06em;padding:2px 8px;border-radius:5px;margin-left:auto;flex:none;align-self:center}
+  .lvl.block{background:#F4E2DA;color:#a2431f} .lvl.soon{background:#F3EAD3;color:#8a6d1f}
+
+  footer{padding:36px 0 0;color:var(--muted);font-size:13px;max-width:70ch}
+  footer code{font-family:var(--mono);font-size:12px;background:var(--panel);
+    border:1px solid var(--line);padding:1px 6px;border-radius:5px}
+
+  @media(max-width:720px){
+    .cards,.ledger,.bplan{grid-template-columns:1fr}
+    header{padding:44px 0 32px}
+  }
+</style>
+
+<div class="wrap">
+<div class="col">
+
+  <header>
+    <div class="kicker eyebrow" style="color:var(--muted)">Competitive briefing · Publication strategy · 23 Jul 2026</div>
+    <h1>Where a neuron-specialized, <span class="hl">topology-preserving</span> tracker sits in a crowded SAM landscape</h1>
+    <p class="lede">A fine-tuned SAM&nbsp;2 pipeline for live phase-contrast neuron time-lapse — and the honest case for what is novel, who the competitors are, and which journal ladder to climb.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">0.8401</div><div class="l">val IoU (Run 7, held-out 5 videos)</div></div>
+      <div class="stat"><div class="n">0.9117</div><div class="l">val Dice</div></div>
+      <div class="stat"><div class="n">13.9%</div><div class="l">params trained (5.56M / 39.9M)</div></div>
+      <div class="stat"><div class="n">20</div><div class="l">annotated videos · ~72 frames each</div></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="thesis">
+      <div class="eyebrow">The positioning in one paragraph</div>
+      <p>The contribution is <b>not</b> "we LoRA-fine-tuned SAM&nbsp;2" (crowded) and <b>not</b> "a specialist beats generalists" (expected). It is the first <b>neuron-specialized, topology-preserving, temporally-consistent</b> segmentation-and-tracking pipeline for live phase-contrast neuron time-lapse — a regime where foundation models fragment thin neurites and <b>no public dataset</b> covers phase-contrast + genuine neurons + tracking at once. Lead with that capability gap, never with the model.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="eyebrow">01</span><h2>Capability matrix</h2></div>
+    <p class="sec-sub">Six competitors against the axes that matter for neurites. Only one method fills every column — and the two columns nobody else fills are exactly the paper's thesis.</p>
+    <div class="matrix-scroll">
+      <table class="matrix">
+        <thead><tr>
+          <th class="rowh"></th>
+          <th>Native temporal<br>tracking</th><th>Phase-contrast<br>trained</th>
+          <th>Neuron / neurite<br>specialized</th><th>Topology-aware<br>loss</th>
+          <th>Promptable</th><th>Foundation-model<br>backbone</th>
+        </tr></thead>
+        <tbody>
+          <tr><td class="model">SAM 2 (base)</td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td></tr>
+          <tr><td class="model">µSAM</td>
+            <td><div class="cell part">~</div></td><td><div class="cell yes">✓</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td></tr>
+          <tr><td class="model">Cellpose-SAM</td>
+            <td><div class="cell no">–</div></td><td><div class="cell yes">✓</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell yes">✓</div></td></tr>
+          <tr><td class="model">CellSAM</td>
+            <td><div class="cell no">–</div></td><td><div class="cell part">~</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td></tr>
+          <tr><td class="model">DeepSea</td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td>
+            <td><div class="cell no">–</div></td><td><div class="cell no">–</div></td></tr>
+          <tr class="ours"><td class="model">Ours</td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td>
+            <td><div class="cell yes">✓</div></td><td><div class="cell yes">✓</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--yes)"></i>yes / native</span>
+      <span><i style="background:var(--partial)"></i>partial / external</span>
+      <span><i style="background:var(--no)"></i>no</span>
+    </div>
+    <p class="matrix-note"><b>Read the two empty columns.</b> No competitor is neuron/neurite-specialized, and none carries a topology-aware loss. µSAM's tracking is per-frame segmentation linked by Trackastra (built on SAM&nbsp;1, not native SAM&nbsp;2 propagation); DeepSea tracks natively but is a small U-Net, not a foundation model, and its cells are non-neuronal blobs.</p>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="eyebrow">02</span><h2>The competitors</h2></div>
+    <p class="sec-sub">Two tiers — generalist foundation models, and the two task/architecture relatives you must benchmark and cite directly.</p>
+    <div class="cards">
+      <div class="card">
+        <h3>DeepSea</h3><div class="venue">Cell Reports Methods 2023 · closest task relative</div>
+        <span class="tag rel">nearest prior art</span>
+        <p>Single-cell segmentation + tracking in 2D phase-contrast time-lapse — your exact imaging regime, and the venue you realistically target. Small U-Net + separate tracker U-Net. Seg IoU 0.90, MOTA 0.94.</p>
+        <div class="diff"><b>You differ:</b> neurites vs. blobs, topology loss, foundation-model transfer, prompt-based propagation. Run your model on its public dataset for an apples-to-apples number.</div>
+      </div>
+      <div class="card">
+        <h3>CellSAM</h3><div class="venue">Nature Methods 2025 · closest architecture</div>
+        <span class="tag arch">SAM-for-cells baseline</span>
+        <p>SAM ViT-B + CellFinder bbox detector. Automatic 2D instance seg; tracking delegated downstream. Phase-contrast is one modality among many; neurons only as future work.</p>
+        <div class="diff"><b>You differ:</b> native temporal tracking, neurite topology, phase-contrast/neuron specialization. Cite as proof SAM transfers to microscopy.</div>
+      </div>
+      <div class="card">
+        <h3>µSAM (micro-sam)</h3><div class="venue">Nature Methods 2025</div>
+        <span class="tag gen">generalist</span>
+        <p>Interactive + automatic microscopy segmentation with a tracking annotator — but on <b>SAM&nbsp;1</b>, tracking = per-frame + Trackastra linking. Blob-oriented watershed head. Has seen phase-contrast (LIVECell).</p>
+        <div class="diff"><b>You differ:</b> native SAM&nbsp;2 propagation, neurite topology losses, no watershed blob assumption.</div>
+      </div>
+      <div class="card">
+        <h3>Cellpose-SAM</h3><div class="venue">bioRxiv 2025</div>
+        <span class="tag gen">generalist</span>
+        <p>SAM ViT-L encoder + Cellpose flow field, prompt-free, single-frame. "Superhuman" generalization on compact cells. No tracking, no topology loss.</p>
+        <div class="diff"><b>Careful:</b> don't claim a "round-cell bias" — cite the flow-field failure on <b>very</b> elongated cells (long neurons) via Omnipose instead.</div>
+      </div>
+      <div class="card">
+        <h3>SAM 2 (base)</h3><div class="venue">Meta · arXiv 2408.00714</div>
+        <span class="tag gen">the backbone</span>
+        <p>Native video tracking via streaming memory — but zero microscopy training and no topology constraint. The paper itself admits it "struggles with very thin or fine details."</p>
+        <div class="diff"><b>You add:</b> domain fine-tuning + connectivity objectives on top of its memory propagation.</div>
+      </div>
+      <div class="card" style="border-style:dashed">
+        <h3>Topology-loss cluster</h3><div class="venue">clDice · cbDice · supervoxel loss</div>
+        <span class="tag arch">credit, don't claim</span>
+        <p>clDice (CVPR'21), cbDice (MICCAI'24), supervoxel connectivity loss (AAAI'25) — all validated on <b>static</b> vessels/roads/EM/3D connectomics. None on live neuron time-lapse + a foundation model's memory.</p>
+        <div class="diff"><b>Your whitespace:</b> the combination and the temporal domain shift — not the individual losses.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="eyebrow">03</span><h2>Novelty ledger — be upfront</h2></div>
+    <p class="sec-sub">The strongest reviews come from claiming exactly the right amount. Phrase every "first" as "to our knowledge, based on a systematic search."</p>
+    <div class="ledger">
+      <div class="lcol novel">
+        <h3>Genuinely novel (defensible)</h3>
+        <ul>
+          <li>Topology/connectivity losses applied to <b>live neuron time-lapse</b>, where connectivity must hold across frames as neurites extend and retract.</li>
+          <li>Coupled with a <b>foundation model's temporal memory</b> — topologically-correct mask at frame <i>t</i> conditions frame <i>t+1</i>.</li>
+          <li>Dual-rank LoRA+ trained <b>through SAM 2's real video-tracking pass</b>, so memory-attention adapters actually receive gradient.</li>
+          <li>Positioned to fill a real <b>dataset gap</b> — no public phase-contrast + neuron + tracking benchmark exists.</li>
+        </ul>
+      </div>
+      <div class="lcol crowded">
+        <h3>Not novel — credit, don't claim</h3>
+        <ul>
+          <li>LoRA/PEFT of SAM/SAM2 — SAM2LoRA, SAM-OCTA2, SAMed, µSAM already cover it, several on thin-vessel targets.</li>
+          <li>Each topology loss individually is prior art (clDice, cbDice, supervoxel loss).</li>
+          <li>"Foundation model for microscopy segmentation + tracking" already exists (µSAM).</li>
+          <li>A specialist outperforming generalists on its own niche — expected, not a headline.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="eyebrow">04</span><h2>Strawman-proof benchmark plan</h2></div>
+    <p class="sec-sub">Two competitor tiers, an independent public benchmark, and — critically — a fair protocol for scoring a promptable single-object model.</p>
+    <div class="bplan">
+      <div class="bbox">
+        <div class="num">TIER 1 + 2</div>
+        <h3>Zero-shot generalists AND the same models fine-tuned on your data</h3>
+        <p>Base SAM&nbsp;2, µSAM, Cellpose-SAM, CellSAM, DeepSea. Identical prompts for promptable models; documented instance-matching for automatic ones (reduce to the target neuron before scoring); same splits & resolution; mean&nbsp;±&nbsp;std across sequences.</p>
+        <div class="metricrow">
+          <span class="chip">IoU</span><span class="chip">Dice</span><span class="chip star">clDice — exposes connectivity IoU/Dice hide</span>
+        </div>
+      </div>
+      <div class="bbox">
+        <div class="num">CTC · PUBLIC</div>
+        <h3>PhC-C2DH-U373 — cells with processes, closest to neurons</h3>
+        <p>On the tracking benchmark, top <b>SEG saturates ≈ 0.74</b> while TRA is near-solved — segmentation is the hard, unsaturated axis your topology losses target. Report a <b>GT-prompted oracle upper bound</b> separately from a <b>fully-automatic</b> pipeline; never mix them. Score with <code style="font-family:var(--mono);font-size:12px">py-ctcmetrics</code>.</p>
+        <div class="metricrow">
+          <span class="chip">SEG (>0.5 match)</span><span class="chip">DET</span><span class="chip">TRA (AOGM)</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-h"><span class="eyebrow">05</span><h2>Journal ladder — honest tiering</h2></div>
+    <p class="sec-sub">Submit top-down, cascade on rejection. Calibration: DeepSea — your closest scope match — landed in Cell Reports Methods, not Nature Methods. Verify every impact factor on the journal's own metrics page before quoting.</p>
+    <div class="matrix-scroll">
+    <table class="ladder">
+      <thead><tr><th>Journal</th><th>~IF</th><th>Presub</th><th>For this tool</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Nature Methods</td><td class="if">~28</td><td>Yes ✓</td><td><span class="verdict v-reach">reach</span></td><td>Best odds as a dataset <b>Resource</b>; do a free presubmission enquiry</td></tr>
+        <tr class="rec"><td>Cell Reports Methods</td><td class="if">~4.5</td><td>Yes ✓</td><td><span class="verdict v-target">target</span></td><td>Where DeepSea landed — your task family. Send a presub.</td></tr>
+        <tr class="rec"><td>Communications Biology</td><td class="if">~5.1–5.8</td><td>No</td><td><span class="verdict v-target">target</span></td><td>Rewards soundness + utility over conceptual leap</td></tr>
+        <tr class="rec"><td>Bioinformatics (App. Note)</td><td class="if">~5.5</td><td>—</td><td><span class="verdict v-target">target</span></td><td>Cleanest home for a released, documented tool</td></tr>
+        <tr class="rec"><td>Scientific Data</td><td class="if">~6.9</td><td>—</td><td><span class="verdict v-target">dataset</span></td><td>Split the annotated neuron dataset into a Data Descriptor</td></tr>
+        <tr><td>Medical Image Analysis</td><td class="if">~10–14</td><td>—</td><td><span class="verdict v-reach">reach</span></td><td>Method-rigor route; medical-leaning scope risk</td></tr>
+        <tr><td>IEEE TMI</td><td class="if">~9.8</td><td>No</td><td><span class="verdict v-no">no</span></td><td>High method-novelty bar; medical-leaning</td></tr>
+        <tr><td>Nature Communications</td><td class="if">~15.7</td><td>No</td><td><span class="verdict v-no">no</span></td><td>Needs broad-impact framing beyond one task</td></tr>
+        <tr><td>Nature Machine Intelligence</td><td class="if">~18.4</td><td>No</td><td><span class="verdict v-no">no</span></td><td>Wants ML novelty, not an application</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="matrix-note" style="margin-top:18px"><b>Biggest lever:</b> release the annotated dataset as a Resource/benchmark. It fills a documented public gap, secures a Scientific Data floor, and is the one move that lifts the ceiling toward the Nature family.</p>
+  </section>
+
+  <section style="border-bottom:none">
+    <div class="sec-h"><span class="eyebrow">06</span><h2>Before the centerpiece figures can be real</h2></div>
+    <p class="sec-sub">The qualitative comparison grid and the clDice benchmark bars cannot be built today. These are the prerequisites, in priority order — do not fabricate competitor numbers until they exist.</p>
+    <div class="gaps">
+      <div class="gap"><span class="dot red"></span><div class="body"><b>eval_masks.py does not exist.</b> <span>Not in either repo; clDice appears only as a loss in <code>src/loss_fns.py</code>, never as a computed metric. No clDice number exists anywhere yet. This is blocker #1.</span></div><span class="lvl block">blocker</span></div>
+      <div class="gap"><span class="dot red"></span><div class="body"><b>No competitor has been run.</b> <span>REPORT.tex has zero baselines. The entire two-tier comparison is unbuilt.</span></div><span class="lvl block">blocker</span></div>
+      <div class="gap"><span class="dot red"></span><div class="body"><b>No CTC evaluation set up.</b> <span>Download PhC-C2DH-U373, run the oracle + automatic protocols, score with py-ctcmetrics.</span></div><span class="lvl block">blocker</span></div>
+      <div class="gap"><span class="dot amber"></span><div class="body"><b>k-fold over the 20 videos.</b> <span>For IoU/Dice/clDice mean ± σ; the report flags split dependency on A91_C1_2.</span></div><span class="lvl soon">soon</span></div>
+      <div class="gap"><span class="dot amber"></span><div class="body"><b>"MNSeg" is a phantom citation.</b> <span>Unverifiable by search. Confirm the exact paper or replace with FISBe / Fluorescent Neuronal Cells v2 / SNEMI3D before any draft circulates.</span></div><span class="lvl soon">soon</span></div>
+      <div class="gap"><span class="dot amber"></span><div class="body"><b>Dataset license check.</b> <span>Confirm you can release your data. Note DeepSea data is CC-BY-NC-ND and Cellpose data CC-BY-NC — don't redistribute derivatives.</span></div><span class="lvl soon">soon</span></div>
+    </div>
+  </section>
+
+  <footer>
+    Full citations, per-competitor detail, and the fair-evaluation protocol are in <code>paper_assets/COMPETITIVE_ANALYSIS.md</code>. Figure inventory and status in <code>paper_assets/FIGURE_PLAN.md</code>. Real-data figures (capability matrix, training journey, temporal stability, per-video, parameter budget, loss decomposition) in <code>paper_assets/figures/</code>. Impact factors are aggregator estimates — verify on each journal's own metrics page before quoting.
+  </footer>
+
+</div>
+</div>

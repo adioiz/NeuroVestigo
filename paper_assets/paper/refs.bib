@@ -1,0 +1,350 @@
+%=======================================================================
+%  refs.bib   --  ordered to follow the paper's flow:
+%                 1 Introduction (biology)  ->  2 Related work (competitors)
+%              ->  3 Methods (model, losses, optimiser)  ->  optional
+%
+%  With \nocite{*} the list prints in THIS order. Once the text cites
+%  properly, unsrtnat renumbers by order of first citation automatically -
+%  so this ordering is a convenience for drafting, not a constraint.
+%
+%  STATUS KEY
+%    [VERIFIED]  transcribed from the PDF Adi supplied.
+%    [THESIS]    transcribed from E. Berkovich's thesis bibliography.
+%    [NEEDED]    cited but no PDF supplied; check against the DOI page.
+%
+%  The old "MNSeg" citation could not be verified and is deliberately absent.
+%=======================================================================
+
+
+%======================= 1. INTRODUCTION (biology) =====================
+
+%--- why neurite growth and branching matter ---
+% [THESIS]
+@article{lowery2009growthcone,
+  title={The trip of the tip: understanding the growth cone machinery},
+  author={Lowery, Laura Anne and Van Vactor, David},
+  journal={Nature Reviews Molecular Cell Biology}, volume={10}, pages={332--343}, year={2009}}
+
+@article{dotti1988polarity,
+  title={The establishment of polarity by hippocampal neurons in culture},
+  author={Dotti, Carlos G. and Sullivan, Christopher A. and Banker, Gary A.},
+  journal={Journal of Neuroscience}, volume={8}, pages={1454--1468}, year={1988}}
+
+%--- clinical stakes: regeneration ---
+@article{sofroniew2018spinal,
+  title={Dissecting spinal cord regeneration},
+  author={Sofroniew, Michael V.},
+  journal={Nature}, volume={557}, pages={343--350}, year={2018},
+  doi={10.1038/s41586-018-0068-4}}
+
+@article{he2016axon,
+  title={Intrinsic control of axon regeneration},
+  author={He, Zhigang and Jin, Yishi},
+  journal={Neuron}, volume={90}, number={3}, pages={437--451}, year={2016}}
+
+%--- the group's own prior work ---
+@article{shefi2005twophase,
+  title={A two-phase growth strategy in cultured neuronal networks as reflected
+         by the distribution of neurite branching angles},
+  author={Shefi, Orit and Golebowicz, Sagi and Ben-Jacob, Eshel and Ayali, Amir},
+  journal={Journal of Neurobiology}, volume={62}, pages={361--368}, year={2005}}
+
+@article{baranes2012topographic,
+  title={Topographic cues of nano-scale height direct neuronal growth pattern},
+  author={Baranes, Koby and Chejanovsky, Noa and Alon, Noa and Sharoni, Amos
+          and Shefi, Orit},
+  journal={Biotechnology and Bioengineering}, volume={109}, pages={1791--1797}, year={2012}}
+
+@article{marcus2017interactions,
+  title={Interactions of neurons with physical environments},
+  author={Marcus, Michal and others},
+  journal={Advanced Healthcare Materials}, volume={6}, number={1}, pages={1600802}, year={2017},
+  note={VERIFY full author list}}
+
+%--- what is measured: growth dynamics ---
+@article{wissnergross2011largescale,
+  title={Large-scale analysis of neurite growth dynamics on micropatterned substrates},
+  author={Wissner-Gross, Zachary D. and Scott, Mark A. and Ku, David and
+          Ramaswamy, Priya and Yanik, Mehmet Fatih},
+  journal={Integrative Biology}, volume={3}, pages={65--74}, year={2011}}
+
+@article{odde1996stochastic,
+  title={Stochastic dynamics of the nerve growth cone and its microtubules
+         during neurite outgrowth},
+  author={Odde, David J. and Tanaka, Elly M. and Hawkins, Sonya S. and
+          Buettner, Helen M.},
+  journal={Biotechnology and Bioengineering}, volume={50}, pages={452--461}, year={1996}}
+
+@article{ren2016growthcone,
+  title={Increase in growth cone size correlates with decrease in neurite growth rate},
+  author={Ren, Yuan and Suter, Daniel M.},
+  journal={Neural Plasticity}, volume={2016}, pages={3497901}, year={2016}}
+
+%--- THE BOTTLENECK: quantification is done by hand ---
+% *** the strongest motivating citations in the paper ***
+@article{meijering2004neuronj,
+  title={Design and validation of a tool for neurite tracing and analysis in
+         fluorescence microscopy images},
+  author={Meijering, Erik and Jacob, Mathews and Sarria, J.-C. F. and
+          Steiner, Pascal and Hirling, Harald and Unser, Michael},
+  journal={Cytometry Part A}, volume={58A}, number={2}, pages={167--176}, year={2004}}
+
+@article{longair2011snt,
+  title={Simple Neurite Tracer: open source software for reconstruction,
+         visualization and analysis of neuronal processes},
+  author={Longair, Mark H. and Baker, Dean A. and Armstrong, J. Douglas},
+  journal={Bioinformatics}, volume={27}, number={17}, pages={2453--2454}, year={2011}}
+
+% *** THE SOURCE OF OUR DATA. No journal paper exists (checked 2026-07-29).
+@mastersthesis{berkovich2025neurite,
+  title  = {Characterizing the kinetics of neurite growth in primary
+            cortical neurons},
+  author = {Berkovich, Efrat Naomi},
+  school = {Bar-Ilan University, Faculty of Engineering},
+  address= {Ramat Gan, Israel},
+  type   = {{M.Sc.} thesis},
+  year   = {2025},
+  note   = {Supervised by Prof. Orit Shefi}}
+
+@article{liu2022neurontracing,
+  title={Neuron tracing from light microscopy images: automation, deep learning
+         and bench testing},
+  author={Liu, Yufeng and Wang, Gaoyu and Ascoli, Giorgio A. and Zhou, Jiangning
+          and Liu, Lijuan},
+  journal={Bioinformatics}, volume={38}, number={24}, pages={5329--5339}, year={2022},
+  doi={10.1093/bioinformatics/btac712}}
+
+
+%================= 2. RELATED WORK (competing methods) =================
+
+%--- generalist cell segmenters ---
+% [VERIFIED]
+@article{stringer2021cellpose,
+  title   = {Cellpose: a generalist algorithm for cellular segmentation},
+  author  = {Stringer, Carsen and Wang, Tim and Michaelos, Michalis and
+             Pachitariu, Marius},
+  journal = {Nature Methods}, volume={18}, number={1}, pages={100--106}, year={2021},
+  doi     = {10.1038/s41592-020-01018-x}}
+
+% [NEEDED] *** the model actually benchmarked (cpsam, Cellpose v4) ***
+@article{pachitariu2025cellposesam,
+  title   = {Cellpose-{SAM}: superhuman generalization for cellular segmentation},
+  author  = {Pachitariu, Marius and Stringer, Carsen and others},
+  journal = {}, year = {2025},
+  note    = {CITATION INCOMPLETE - verify authors, venue, year}}
+
+% [NEEDED] cited as architecturally unable to represent branched filaments
+@inproceedings{schmidt2018stardist,
+  title     = {Cell Detection with Star-Convex Polygons},
+  author    = {Schmidt, Uwe and Weigert, Martin and Broaddus, Coleman and
+               Myers, Gene},
+  booktitle = {Medical Image Computing and Computer Assisted Intervention (MICCAI)},
+  pages     = {265--273}, year = {2018}}
+
+%--- morphology-specialised ---
+% [VERIFIED]
+@article{cutler2022omnipose,
+  title   = {Omnipose: a high-precision morphology-independent solution for
+             bacterial cell segmentation},
+  author  = {Cutler, Kevin J. and Stringer, Carsen and Lo, Teresa W. and
+             Rappez, Luca and Stroustrup, Nicholas and Peterson, S. Brook and
+             Wiggins, Paul A. and Mougous, Joseph D.},
+  journal = {Nature Methods}, volume={19}, number={11}, pages={1438--1448}, year={2022},
+  doi     = {10.1038/s41592-022-01639-4}}
+
+%--- domain-specialised (phase-contrast neurons + neurites) ---
+% [NEEDED] strongest unprompted competitor. arXiv preprint: 2310.10978
+@article{chen2024neuroquantify,
+  title   = {NeuroQuantify -- An image analysis software for detection and
+             quantification of neuron cells and neurite lengths using deep learning},
+  author  = {Chen, Ka My and others},
+  journal = {Journal of Neuroscience Methods}, year = {2024},
+  note    = {VERIFY full author list, volume, article number}}
+
+%--- foundation models ---
+% [VERIFIED]
+@inproceedings{kirillov2023sam,
+  title     = {Segment Anything},
+  author    = {Kirillov, Alexander and Mintun, Eric and Ravi, Nikhila and
+               Mao, Hanzi and Rolland, Chloe and Gustafson, Laura and Xiao, Tete
+               and Whitehead, Spencer and Berg, Alexander C. and Lo, Wan-Yen and
+               Doll{\'a}r, Piotr and Girshick, Ross},
+  booktitle = {Proceedings of the IEEE/CVF International Conference on
+               Computer Vision (ICCV)}, year = {2023}}
+
+% [NEEDED]
+@article{archit2025microsam,
+  title   = {Segment Anything for Microscopy},
+  author  = {Archit, Anwai and Freckmann, Luca and Nair, Sushmita and
+             Khalid, Nabeel and Hilt, Paul and Rajashekar, Vikas and
+             Freitag, Marei and Teuber, Carolin and Buckley, Genevieve and
+             von Haaren, Sebastian and Gupta, Sagnik and Dengel, Andreas and
+             Ahmed, Sheraz and Pape, Constantin},
+  journal = {Nature Methods}, year = {2025},
+  doi     = {10.1038/s41592-024-02580-4},
+  note    = {VERIFY volume and article number}}
+
+% [NEEDED] named as access-gated, not evaluated
+@article{israel2025cellsam,
+  title   = {A foundation model for cell segmentation},
+  author  = {Israel, Uriah and others},
+  journal = {Nature Methods}, year = {2025},
+  doi     = {10.1038/s41592-025-02879-w},
+  note    = {VERIFY author list and article number}}
+
+%--- trackers (segment-then-link) ---
+% [NEEDED]
+@article{zargari2023deepsea,
+  title   = {{DeepSea} is an efficient deep-learning model for single-cell
+             segmentation and tracking in time-lapse microscopy},
+  author  = {Zargari, Abolfazl and Lodewijk, Gerrald N. and Mashhadi, Najmeh
+             and Cook, Nathan and Neudorf, Celine W. and
+             Araghbidikashani, Kimiasadat and Hays, Robert and Kozuki, Sayaka
+             and Rubio, Stefany and Hrabeta-Robinson, Eva and Brooks, Angela
+             and Hinck, Lindsay and Shariati, S. Ali},
+  journal = {Cell Reports Methods}, year = {2023},
+  note    = {VERIFY volume, issue, article number}}
+
+% [NEEDED]
+@inproceedings{gallusser2024trackastra,
+  title     = {Trackastra: Transformer-based cell tracking for live-cell microscopy},
+  author    = {Gallusser, Benjamin and Weigert, Martin},
+  booktitle = {European Conference on Computer Vision (ECCV)}, year = {2024}}
+
+% [NEEDED - optional] architecture most cell segmenters descend from
+@inproceedings{ronneberger2015unet,
+  title     = {{U-Net}: Convolutional Networks for Biomedical Image Segmentation},
+  author    = {Ronneberger, Olaf and Fischer, Philipp and Brox, Thomas},
+  booktitle = {Medical Image Computing and Computer Assisted Intervention (MICCAI)},
+  pages     = {234--241}, year = {2015}}
+
+
+%========================= 3. METHODS ==================================
+
+%--- backbone ---
+% [VERIFIED] conference version (Adi's choice 2026-07-29)
+@inproceedings{ravi2025sam2,
+  title     = {{SAM} 2: Segment Anything in Images and Videos},
+  author    = {Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang
+               and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and
+               R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and
+               Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and
+               Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and
+               Doll{\'a}r, Piotr and Feichtenhofer, Christoph},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2025}}
+
+% [NEEDED] the image encoder inside SAM 2 (from slide 30 of the deck)
+@inproceedings{ryali2023hiera,
+  title     = {Hiera: A Hierarchical Vision Transformer without the Bells-and-Whistles},
+  author    = {Ryali, Chaitanya and Hu, Yuan-Ting and Bolya, Daniel and Wei, Chen
+               and Fan, Haoqi and Huang, Po-Yao and Aggarwal, Vaibhav and
+               Chowdhury, Arkabandhu and Poursaeed, Omid and Hoffman, Judy and
+               Malik, Jitendra and Li, Yanghao and Feichtenhofer, Christoph},
+  booktitle = {International Conference on Machine Learning (ICML)}, year = {2023}}
+
+%--- parameter-efficient adaptation ---
+% [VERIFIED]
+@inproceedings{hu2022lora,
+  title     = {{LoRA}: Low-Rank Adaptation of Large Language Models},
+  author    = {Hu, Edward J. and Shen, Yelong and Wallis, Phillip and
+               Allen-Zhu, Zeyuan and Li, Yuanzhi and Wang, Shean and Wang, Lu
+               and Chen, Weizhu},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2022}}
+
+% [VERIFIED] the "+" in dual-rank LoRA+: separate A/B learning rates
+@inproceedings{hayou2024loraplus,
+  title     = {{LoRA+}: Efficient Low Rank Adaptation of Large Models},
+  author    = {Hayou, Soufiane and Ghosh, Nikhil and Yu, Bin},
+  booktitle = {Proceedings of the 41st International Conference on Machine
+               Learning (ICML)},
+  series    = {PMLR}, volume = {235}, year = {2024}}
+
+%--- loss terms (one citation per weight in Table 1) ---
+% [VERIFIED] focal = our loss_mask term, weight 5.0
+@inproceedings{lin2017focal,
+  title     = {Focal Loss for Dense Object Detection},
+  author    = {Lin, Tsung-Yi and Goyal, Priya and Girshick, Ross and He, Kaiming
+               and Doll{\'a}r, Piotr},
+  booktitle = {Proceedings of the IEEE International Conference on Computer
+               Vision (ICCV)}, year = {2017}}
+
+% [VERIFIED] V-Net = origin of the Dice loss, our loss_dice term, weight 2.0
+@inproceedings{milletari2016vnet,
+  title     = {{V-Net}: Fully Convolutional Neural Networks for Volumetric
+               Medical Image Segmentation},
+  author    = {Milletari, Fausto and Navab, Nassir and Ahmadi, Seyed-Ahmad},
+  booktitle = {Fourth International Conference on 3D Vision (3DV)}, year = {2016}}
+
+% [VERIFIED] cbDice = our topology term, weight 5.0. arXiv:2407.01517
+@inproceedings{shi2024cbdice,
+  title     = {Centerline Boundary Dice Loss for Vascular Segmentation},
+  author    = {Shi, Pengcheng and Hu, Jiesi and Yang, Yanwu and Gao, Zilve and
+               Liu, Wei and Ma, Ting},
+  booktitle = {Medical Image Computing and Computer Assisted Intervention
+               (MICCAI)}, year = {2024},
+  note      = {Reference implementation:
+               \url{https://github.com/PengchengShi1220/cbDice}}}
+
+% [VERIFIED] supervoxel connectivity term, weight 0.3. Implementation adapted
+% from github.com/AllenNeuralDynamics/supervoxel-loss (src/loss_fns.py:500).
+@inproceedings{grim2025supervoxel,
+  title     = {Efficient Connectivity-Preserving Instance Segmentation with
+               Supervoxel-Based Loss Function},
+  author    = {Grim, Anna and Chandrashekar, Jayaram and S{\"u}mb{\"u}l, Uygar},
+  booktitle = {Proceedings of the Thirty-Ninth AAAI Conference on Artificial
+               Intelligence (AAAI)},
+  pages     = {3167--3175}, year = {2025}}
+
+% [NEEDED - verify page numbers against the NeurIPS 2019 proceedings]
+% CURRENTLY UNCITED. Kept on hand for Related Work, where the topology-loss
+% family can be named in one clause. Deliberately NOT cited in Section 3.3:
+% we never run a persistent-homology loss, so any comparative claim there
+% would rest on Grim et al.'s argument rather than our own evidence, and
+% would invite an ablation we do not have. Delete if Related Work does not
+% end up mentioning it.
+@inproceedings{hu2019topology,
+  title     = {Topology-Preserving Deep Image Segmentation},
+  author    = {Hu, Xiaoling and Fuxin, Li and Samaras, Dimitris and
+               Chen, Chao},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2019}}
+
+%--- evaluation metric (NOT the training objective - state this explicitly) ---
+% [VERIFIED]
+@inproceedings{shit2021cldice,
+  title     = {{clDice} -- A Novel Topology-Preserving Loss Function for
+               Tubular Structure Segmentation},
+  author    = {Shit, Suprosanna and Paetzold, Johannes C. and
+               Sekuboyina, Anjany and Ezhov, Ivan and Unger, Alexander and
+               Zhylka, Andrey and Pluim, Josien P. W. and Bauer, Ulrich and
+               Menze, Bjoern H.},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and
+               Pattern Recognition (CVPR)},
+  pages     = {16560--16569}, year = {2021}}
+
+%--- optimisation ---
+% [VERIFIED]
+@inproceedings{loshchilov2019adamw,
+  title     = {Decoupled Weight Decay Regularization},
+  author    = {Loshchilov, Ilya and Hutter, Frank},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2019}}
+
+% [NEEDED - optional] the warmup + cosine schedule we follow (deck slide 30)
+@inproceedings{brown2020gpt3,
+  title     = {Language Models are Few-Shot Learners},
+  author    = {Brown, Tom B. and Mann, Benjamin and Ryder, Nick and others},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2020}}
+
+
+%========================= 4. OPTIONAL =================================
+
+% [NEEDED - only if the external validation runs] Adi: keep for now.
+@article{maska2023ctc,
+  title   = {The Cell Tracking Challenge: 10 years of objective benchmarking},
+  author  = {Ma{\v{s}}ka, Martin and Ulman, Vladim{\'i}r and others},
+  journal = {Nature Methods}, volume = {20}, pages = {1010--1020}, year = {2023},
+  doi     = {10.1038/s41592-023-01879-y}}

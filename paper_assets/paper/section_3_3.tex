@@ -1,0 +1,192 @@
+\subsection{Topology-preserving loss}
+\label{sec:met:loss}
+
+\paragraph{Motivation.}
+Two properties of neuronal morphology make our recordings difficult to
+segment: branches can be only a few pixels wide, and neighbouring branches
+often touch or overlap due to the image resolution
+\cite{grim2025supervoxel}. An error at this scale --- negligible under a
+per-pixel or region-overlap loss --- can therefore split one branch into
+two, or merge two branches into one. The loss score is almost unchanged, yet
+the reconstructed morphology is no longer usable for the measurements that
+motivate the segmentation.
+
+Splits and merges are topological errors: they change the connectivity of
+the segmented neuron while leaving its area essentially intact, and neither
+a per-pixel nor a region-overlap term can register them. We therefore
+include two terms that operate on topology. cbDice \cite{shi2024cbdice}
+compares the centrelines of prediction and target rather than their areas,
+and weights that comparison by local thickness so that a thin branch counts
+more than the cell body --- exactly where an area-based loss is weakest. The
+supervoxel loss \cite{grim2025supervoxel} examines the connected components
+of the error mask and identifies those whose addition or removal would
+change the number of connected components in the prediction; it penalises
+false splits and false merges directly, which cbDice, comparing centrelines,
+does not.
+
+\paragraph{The composite loss.}
+% NOTE (verified from gpu-checkpoints/training_log.json): loss_iou and
+% loss_class are identically 0.0 across every logged epoch - they are gated
+% on pred_obj_scores, which the training wrapper does not emit. The loss
+% actually optimised has FOUR terms. Do not reinstate the six-term form.
+We supervise the predicted mask with a weighted sum of four terms --- two
+that measure agreement in the conventional way, per pixel and per region,
+and two that measure topology:
+\begin{equation}
+\mathcal{L} = 5\,\mathcal{L}_{\text{focal}} + 2\,\mathcal{L}_{\text{Dice}}
+ + 5\,\mathcal{L}_{\text{cbDice}} + 0.3\,\mathcal{L}_{\text{sv}} .
+\label{eq:loss}
+\end{equation}
+The first pair is the mask supervision under which SAM and SAM\,2 were
+themselves trained \cite{kirillov2023sam,ravi2025sam2}; we keep it so that
+adaptation proceeds under the same supervision that produced the pretrained
+weights, and retune only the relative weights. Focal loss
+\cite{lin2017focal} is a cross-entropy in which every pixel is scaled by a
+class factor $\alpha_t$ and by $(1-p_t)^{\gamma}$, so that a pixel already
+classified confidently contributes almost nothing; we use the standard
+pairing $\gamma = 2.0$, $\alpha = 0.25$, the focusing term having already
+absorbed most of the imbalance that $\alpha$ would otherwise correct. The
+target is a small share of each frame and that share varies by an order of
+magnitude across recordings, so an unweighted cross-entropy would be
+dominated by background the model classifies correctly from the first epoch,
+while a fixed class weight would have to be retuned per recording. The focal
+term instead adapts pixel by pixel, redirecting capacity to those that
+remain ambiguous --- here the branch boundaries and the lowest-contrast
+neurites. The
+Dice term \cite{milletari2016vnet} compares the two masks as regions and
+normalises by their combined area, which makes it independent of how much of
+the frame the neuron occupies and supplies a gradient that depends on the
+mask as a whole rather than on pixels independently --- both properties that
+the per-pixel term lacks. Table~\ref{tab:loss} summarises the four.
+
+\paragraph{Centreline-boundary Dice.}
+cbDice \cite{shi2024cbdice} extends clDice \cite{shit2021cldice}, which
+scores the skeletons of prediction and target against each other rather than
+their masks: a skeleton holds far fewer pixels than the region it
+summarises, so a break costing a handful of pixels of area removes a visible
+fraction of the skeleton and the loss registers it. What clDice omits is
+scale --- a centreline pixel inside the cell body and one on a two-pixel
+branch count the same --- and cbDice supplies it by weighting each by its
+distance to the nearest boundary.
+
+Both quantities must be differentiable. The skeleton is obtained by
+iterative morphological opening, following the clDice implementation:
+erosion is a min-pool over the four-connected cross and dilation a max-pool
+over the $3\times3$ square. Writing $I_k$ for the mask after $k$ erosions
+and $S_0 = 0$,
+\begin{equation}
+S_k = \min\!\Big(1,\; S_{k-1} + \mathrm{ReLU}\!\big(I_k - \mathrm{open}(I_k)\big)\Big),
+\qquad
+\mathrm{open}(x) = \mathrm{dilate}\big(\mathrm{erode}(x)\big),
+\label{eq:skel}
+\end{equation}
+accumulated over $k = 1,\dots,5$, the clamp keeping $S$ a soft membership in
+$[0,1]$. Opening deletes exactly the thin ridges, so each iteration retains
+the pixels that belong to thin structure and $S$ approximates the medial
+axis. The weighting follows from the Euclidean distance transform: with
+$d(m)$ the distance of each foreground pixel of a mask $m$ to its nearest
+boundary,
+\begin{equation}
+W(m) = \frac{1}{d(m) + 1},
+\qquad\text{normalised so that}\quad \textstyle\sum W = |m| ,
+\label{eq:edtweight}
+\end{equation}
+which is $0.5$ on a one-pixel-radius branch and below $0.1$ inside the cell
+body. The weight maps enter as constants: the distance transform is not
+differentiated through, and $W_p$ is computed from the prediction
+thresholded at $0.5$. For a predicted probability map $p$, a binary target
+$g$, and their soft skeletons $S_p$ and $S_g$, weighted topological
+precision and sensitivity are
+\begin{equation}
+\mathrm{cbT}_{\text{prec}}
+ = \frac{\langle W_g \odot S_p,\; g \rangle}{\langle W_g,\; S_p \rangle},
+\qquad
+\mathrm{cbT}_{\text{sens}}
+ = \frac{\langle W_p \odot S_g,\; p \rangle}{\langle W_p,\; S_g \rangle},
+\label{eq:cbdice}
+\end{equation}
+and $\mathcal{L}_{\text{cbDice}} = 1 - 2\,\mathrm{cbT}_{\text{prec}}
+\mathrm{cbT}_{\text{sens}} / (\mathrm{cbT}_{\text{prec}} +
+\mathrm{cbT}_{\text{sens}})$. The two are asymmetric by construction:
+precision asks whether the predicted centreline stays inside the target,
+which detects spurious branches, and sensitivity whether the target
+centreline stays inside the prediction, which detects breaks. A severed
+branch is therefore penalised twice over --- the target centreline leaves
+the prediction, and the weight at that location is at its largest --- and
+the harmonic mean prevents either from being traded against the other. The
+guarantee is partial: topology is preserved up to homotopy equivalence only
+where the number of iterations exceeds the local radius
+\cite{grim2025supervoxel}, so at $k = 5$ the term is exact along the
+branches and approximate within the cell body, which is the regime we want.
+
+\paragraph{Supervoxel connectivity.}
+cbDice is a single soft score for the frame: it makes a break expensive
+without identifying the pixels responsible, which is what the supervoxel
+loss \cite{grim2025supervoxel} adds by testing each error component on its
+own. Let $\hat{y}_-$ and $\hat{y}_+$ be the false-negative and
+false-positive masks obtained by comparing the prediction $\hat{y}$ with the
+target $y$. A connected component of $\hat{y}_-$ is \emph{negatively
+critical} if it adjoins two or more distinct predicted components, so that
+adding it would join them: it is a bridge, and without it the branch is
+severed. A component of $\hat{y}_+$ is \emph{positively critical} if
+deleting it separates predicted pixels that it had joined, which is decided
+by removing it and relabelling; it falsely merges two structures. Every
+other error component is a thickness error and is scored as one. Components
+are four-connected throughout, and the prediction is binarised at $0.5$
+before they are formed. Writing $\mathcal{N}$ and
+$\mathcal{P}$ for the unions of the negatively and positively critical
+components, $\Omega$ for the frame, and $\bar{\mathcal{L}}_0(A)$ for the
+mean binary cross-entropy over a pixel set $A$,
+\begin{equation}
+\mathcal{L}_{\text{sv}}
+ = (1-\alpha)\,\bar{\mathcal{L}}_0\big(\Omega \setminus (\mathcal{N} \cup \mathcal{P})\big)
+ + \alpha\beta\,\bar{\mathcal{L}}_0(\mathcal{N})
+ + \alpha(1-\beta)\,\bar{\mathcal{L}}_0(\mathcal{P}),
+\label{eq:sv}
+\end{equation}
+with $\alpha = \beta = 0.5$, so that critical and non-critical pixels carry
+equal total weight and splits and merges are penalised symmetrically. The
+extra gradient thus lands on precisely the pixels whose presence or absence
+flips a split into a join. Criticality is decided by connected-component
+labelling, which is linear in the number of pixels and so far cheaper than
+the persistent-homology formulations of the same idea. Both topology terms
+are evaluated at $256\times256$ rather than at the full $1024\times1024$
+output, since connectivity is a coarse property while the distance transform
+and the component labelling dominate their cost; the critical masks are
+upsampled before the cross-entropy is applied, so gradients are taken at
+full resolution.
+
+\paragraph{Optimisation.}
+Training uses AdamW \cite{loshchilov2019adamw} with decoupled weight decay
+$0.05$ and gradient-norm clipping at $1.0$, in mixed precision, for 110
+epochs over clips of eight consecutive frames whose start points advance by
+four, two clips per batch. All rates are warmed up over two epochs, since the
+zero-initialised adapter matrices make the first steps sharp, then decayed
+on a cosine schedule to $5\,\%$ of peak rather than to zero, which keeps the
+late epochs productive on a dataset of this size. Augmentation is applied
+identically to every frame of a clip --- horizontal and vertical flips
+($p = 0.5$ each), rotation $\pm25^{\circ}$, shear $\pm20^{\circ}$,
+brightness and contrast $\pm15\,\%$ --- so that the memory pathway is
+trained against the motion actually present in the recording rather than
+against apparent motion introduced by the augmentation. Validation runs
+every second epoch and the best validation checkpoint is retained.
+
+\begin{table}[!ht]
+\centering
+\caption{\textbf{The four terms of the training loss.} Each addresses a
+distinct failure mode. The two topology terms are included because an error
+that splits or merges a branch alters the area of the mask very little while
+invalidating the morphology it is meant to describe.}
+\label{tab:loss}
+\small
+\begin{tabular}{llcl}
+\toprule
+Term & Operates on & Weight & What it enforces \\
+\midrule
+Focal \cite{lin2017focal}        & per pixel            & 5.0 & robustness to severe, recording-dependent imbalance \\
+Dice \cite{milletari2016vnet}    & region               & 2.0 & scale-invariant overlap on very small masks \\
+cbDice \cite{shi2024cbdice}      & skeleton $+$ EDT     & 5.0 & thin-branch topology; reweights by inverse radius \\
+Supervoxel \cite{grim2025supervoxel} & connected components & 0.3 & penalises splitting or merging a branch \\
+\bottomrule
+\end{tabular}
+\end{table}
