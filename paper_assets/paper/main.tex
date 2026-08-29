@@ -1590,33 +1590,6 @@ in Section~\ref{sec:res:temporal} but scores $0.574$ against $0.595$
 validation IoU, so the shipped setting is the one favourable to it
 (\texttt{benchmark/sweep\_usam\_multimask.py}).
 
-SAM\,3.1's prompt mode was selected on validation like every other setting
-here. The package does contain a lower-level tracker exposing an
-\texttt{add\_new\_mask} entry point, but it is not usable in the released
-inference build: constructed through the only public factory, it fails inside
-that call on a missing internal attribute, and the factory takes no checkpoint,
-so a mask-prompted configuration was not available to us. Points beat a box on every frame ($0.579$ against $0.027$ at three
-points; $0.000$ for points on frame~0 alone), and ten points was the optimum
-($0.634$, falling to $0.425$ at twenty). Its concept mode is sensitive to
-wording rather than simply blind: \texttt{cells} detects the target while
-\texttt{neuron}, \texttt{blob} and \texttt{object} detect nothing at all. The
-cap on simultaneously tracked objects was swept for the same reason as every
-other threshold here: SAM\,3's default of sixteen discards the target on
-frames where the field saturates, and raising it recovers those detections
-($16 \to 0.394$, $32 \to 0.413$, $64 \to 0.419$ validation IoU), so
-\texttt{cells} with a cap of $64$ was adopted. Its language-prompted performance is also unstable
-between recordings of the same preparation --- \texttt{A81\_C1} scores $0.543$
-and \texttt{A12\_C1\_100k\_2} scores $0.000$ on the same test split --- so the
-single-recording zero is characteristic rather than anomalous. Selection was on
-IoU throughout, as for every other method, although its clDice peaks at five
-points rather than ten. Its late-frame masks expand to cover up to $78\,\%$ of
-the field, and one recording per split collapses in this way ---
-\texttt{A91\_C1\_2} on validation and \texttt{A12\_C3\_100k} on test, both
-roughly tenfold foreground over-predictions (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
-not an artefact of our scoring, since its interface returns exactly one object
-per frame, the expanded region contains the target rather than sitting beside
-it, and the expansion is already present at three points per frame.
-
 Figure~\ref{fig:proofA81} repeats the qualitative comparison of
 Figure~\ref{fig:qualitative} on a second held-out recording, and
 Figure~\ref{fig:rawoutput} shows each method's native output before
