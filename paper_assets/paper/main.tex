@@ -393,8 +393,9 @@ update merely $13.9\,\%$ of the network weights. Furthermore, our training
 objective explicitly integrates topology-preserving losses to penalize
 structural fragmentation alongside standard pixel-level errors. Conditioned
 on a single initial mask at frame~0, the model autonomously segments the
-entire time-lapse sequence. Evaluated on four strictly held-out recordings,
-our approach outperforms six competing baselines across all reported metrics
+entire time-lapse sequence. Evaluated on four strictly held-out recordings
+propagated in full ($72$--$92$ frames), our approach outperforms six
+competing baselines across all reported metrics
 (Section~\ref{sec:res:benchmark}) and exhibits the lowest longitudinal
 degradation over time (Section~\ref{sec:res:temporal}). The inference model
 is publicly released within \texttt{neurons-labeling}, the napari plug-in
