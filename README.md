@@ -28,7 +28,7 @@ same ground truth, skipping frame 0 because prompted methods are given it.
 | NeuroQuantify | automatic | 0.4461 | 0.5941 | 0.6801 | 0.6019 |
 | DeepSea | automatic | 0.3350 | 0.4800 | 0.5649 | 0.4313 |
 | Omnipose | automatic | 0.2791 | 0.4284 | 0.6492 | 0.5600 |
-| SAM 3.1 | text "cells" | 0.1921 | 0.2666 | 0.2790 | 0.2520 |
+| SAM 3.1 | text "cells" | 0.2002 | 0.2779 | 0.2901 | 0.2600 |
 | Trackastra + DeepSea | automatic | 0.0290 | 0.0462 | 0.0551 | 0.0742 |
 | Trackastra + Omnipose | automatic | 0.0111 | 0.0205 | 0.0362 | 0.0702 |
 
