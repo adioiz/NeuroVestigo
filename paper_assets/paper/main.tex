@@ -494,13 +494,24 @@ strictly single-frame architecture incapable of longitudinal tracking.
 Within our specific modality, NeuroQuantify \cite{chen2024neuroquantify}
 effectively segments neurites in phase-contrast microscopy, but it operates
 purely as a semantic segmenter lacking instance-level discrimination.
+% NeuriteTracker claims verified against the PMC full text (PMC4700477),
+% verbatim: "a bicistronic vector that expresses Lifeact-GFP, a fusion of GFP
+% with the F-actin binding peptide Lifeact, and a nuclear localization
+% NLS-mCherry fusion, which labels the nucleus for cell detection"; "the MSER
+% (Maximally Stable Extremal Regions) feature detector followed by a
+% morphological filling operation"; "a calibrated Hessian-based filter,
+% computing a geodesic distance combining intensity and geometric distance";
+% "a graph-association tracking method was applied over the time-lapse data to
+% provide a unique label for each tracked cell over time".
 NeuriteTracker \cite{fusco2016neuritetracker} is closest in task, segmenting
-and tracking neurite morphodynamics across a time-lapse and assigning each
-cell a label through the sequence by graph association; it depends, however,
-on fluorescence --- neurons are transfected with a nuclear marker for
-detection and an F-actin marker for the neurites --- which is exactly the
-labelling a multi-day acquisition forgoes, and its segmentation is a
-hand-designed pipeline with no objective that penalises breaking a branch.
+and tracking neurite morphodynamics across a time-lapse and giving each cell a
+unique label through the sequence by graph association. It requires
+fluorescence, however: neurons express a bicistronic construct carrying an
+F-actin marker and a nuclear marker used for cell detection, which is exactly
+the labelling a multi-day acquisition forgoes. Its segmentation is also a
+hand-designed pipeline --- maximally stable extremal regions for the nuclei, a
+Hessian filter and a geodesic distance for the processes --- so no part of it
+is trained, and nothing in it penalises breaking a branch.
 Consequently, when precise, per-neuron morphology is required, the gold
 standard remains labour-intensive manual tracing
 \cite{meijering2004neuronj,longair2011snt}, as fully automated instance
