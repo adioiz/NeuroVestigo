@@ -478,70 +478,80 @@ the plug-in return as new training data.}
 \section{Related work}
 \label{sec:related}
 
-\paragraph{Cell segmentation.}
-Cell segmentation is dominated by methods that learn a shape representation
-and recover instances from it. Cellpose \cite{stringer2021cellpose} predicts
-a field flowing towards each cell's centre, its SAM-based successor
-\cite{pachitariu2025cellposesam} replaces the encoder and extends the
-training corpus, and StarDist \cite{schmidt2018stardist} fits a star-convex
-polygon; all descend from U-Net \cite{ronneberger2015unet}, and all assume a
-compact object, which a process that branches or curves back on itself
-violates. Omnipose \cite{cutler2022omnipose} removes that assumption by
-measuring distance to the object boundary rather than to a centre, and is the
-closest existing method to our shape regime, but it is object-centric and
-single-frame. NeuroQuantify \cite{chen2024neuroquantify} is closest in
-domain, segmenting neurites in phase contrast, but semantically rather than
-per cell. NeuriteTracker \cite{fusco2016neuritetracker} is closest in
-task: it segments and tracks neurite morphodynamics across a time-lapse,
-assigning each cell a label through the sequence by graph association, and it
-remains a reference point in this literature. It depends, however, on
-fluorescence --- neurons are transfected with a nuclear marker for detection
-and an F-actin marker for the neurites --- which is exactly the labelling a
-multi-day acquisition forgoes, and its segmentation is a hand-designed
-pipeline rather than a learned one, with no objective that penalises breaking
-a branch. Where per-neuron morphology is required the established practice
-remains manual tracing \cite{meijering2004neuronj,longair2011snt}, and
-automatic tracing in this modality is acknowledged to be unsolved
+\paragraph{Cell segmentation.} Cell segmentation is dominated by methods
+that learn a shape representation and recover instances from it. Cellpose
+\cite{stringer2021cellpose} predicts a spatial flow field towards each
+cell's centre, its SAM-based successor \cite{pachitariu2025cellposesam}
+replaces the encoder and extends the training corpus, while StarDist
+\cite{schmidt2018stardist} parameterises instances as star-convex polygons.
+Crucially, these U-Net \cite{ronneberger2015unet} descendants intrinsically
+assume morphological compactness; this spatial prior is fundamentally
+violated by neural processes, which frequently branch or recurve. Omnipose
+\cite{cutler2022omnipose} relaxes this constraint by predicting distance
+fields relative to object boundaries rather than centroids, making it
+geometrically better suited to filamentous structures. However, it remains a
+strictly single-frame architecture incapable of longitudinal tracking.
+Within our specific modality, NeuroQuantify \cite{chen2024neuroquantify}
+effectively segments neurites in phase-contrast microscopy, but it operates
+purely as a semantic segmenter lacking instance-level discrimination.
+NeuriteTracker \cite{fusco2016neuritetracker} is closest in task, segmenting
+and tracking neurite morphodynamics across a time-lapse and assigning each
+cell a label through the sequence by graph association; it depends, however,
+on fluorescence --- neurons are transfected with a nuclear marker for
+detection and an F-actin marker for the neurites --- which is exactly the
+labelling a multi-day acquisition forgoes, and its segmentation is a
+hand-designed pipeline with no objective that penalises breaking a branch.
+Consequently, when precise, per-neuron morphology is required, the gold
+standard remains labour-intensive manual tracing
+\cite{meijering2004neuronj,longair2011snt}, as fully automated instance
+tracking in this domain remains an open challenge
 \cite{liu2022neurontracing}.
 
-\paragraph{Promptable video models and tracking.}
-The Segment Anything Model \cite{kirillov2023sam} reframed segmentation as a
-promptable task, returning whatever object a point, box or mask indicates,
-and SAM\,2 \cite{ravi2025sam2} extends this to video with a memory bank, so
-that a prompt supplied on one frame conditions every later frame --- the
-property this work depends on. Microscopy adaptations follow the same
-pattern: $\mu$SAM \cite{archit2025microsam} retrains SAM on microscopy
-corpora, CellSAM \cite{israel2025cellsam} pairs it with a detector to remove
-the prompt, and SAM\,3 generalises the prompt itself from a geometric
-indication to a concept expressed in language. All bring priors learned at a
-scale no laboratory dataset can match, and none is trained to preserve the
-connectivity of a structure one or two pixels wide. Identity through time is
-conventionally handled as a second stage, a segmenter producing per-frame
-masks and a tracker linking them, as the Cell Tracking Challenge has
-standardised \cite{maska2023ctc} and as DeepSea \cite{zargari2023deepsea} and
-Trackastra \cite{gallusser2024trackastra} implement. That decomposition
-bounds the result: a linker cannot restore a branch its segmenter never
-produced. Propagating a mask through a memory avoids it, which is why we
-adapt a video model rather than pair a segmenter with a tracker.
+\paragraph{Promptable video models and tracking.} The Segment Anything Model
+\cite{kirillov2023sam} reconceptualised segmentation as a promptable task,
+isolating targets specified via spatial priors such as points, boxes, or
+masks. SAM\,2 \cite{ravi2025sam2} extends this paradigm to the video domain
+via a memory bank, allowing a single-frame prompt to condition all
+subsequent predictions---a foundational mechanism leveraged in this work.
+Domain-specific adaptations have built upon this architecture: $\mu$SAM
+\cite{archit2025microsam} fine-tunes SAM on microscopy corpora, CellSAM
+\cite{israel2025cellsam} integrates an automated detector to eliminate
+manual prompting, and SAM\,3 abstracts the prompting modality from geometric
+coordinates to semantic language. While these architectures bring powerful
+foundation priors learned at unprecedented scales, none are explicitly
+optimised to preserve the topological connectivity of pixel-scale
+filamentous structures. Furthermore, temporal identity is conventionally
+resolved via a two-stage pipeline---independent spatial segmentation
+followed by temporal linking---as standardised by the Cell Tracking
+Challenge \cite{maska2023ctc} and implemented in DeepSea
+\cite{zargari2023deepsea} and Trackastra \cite{gallusser2024trackastra}.
+This separation limits the final result: a tracker cannot recover fine
+branches that the segmenter failed to detect. Propagating the mask
+continuously through a temporal memory avoids this loss of information,
+which is why we adapt a unified video model instead of pairing a segmenter
+with a separate tracker.
 
-\paragraph{Topology-preserving objectives and low-rank adaptation.}
-Two further lines are ingredients here rather than points of contrast. That
-overlap losses are indifferent to connectivity is well established, and
-several objectives correct it: persistent-homology losses
-\cite{hu2019topology}, clDice \cite{shit2021cldice}, which compares soft
-skeletons so that a break costs in proportion to the centreline it removes,
-cbDice \cite{shi2024cbdice}, which adds a radius weighting so a thin branch
-outweighs a thick one, and the supervoxel loss \cite{grim2025supervoxel},
-which concentrates gradient on the individual error components that split or
-merge an object. We adopt the last two rather than propose a new one.
-Low-rank adaptation \cite{hu2022lora} and LoRA+ \cite{hayou2024loraplus} are
-likewise established, and we claim nothing in them. The gap is the
-combination: shape models lack identity through time, trackers inherit their
-connectivity from a segmenter, video foundation models are not trained to
-preserve thin structure, and topology-preserving objectives have not, to our
-knowledge and based on a systematic search, been combined with temporal
-propagation in a promptable video model, nor applied to individual neurons in
-label-free phase contrast.
+\paragraph{Topology-preserving objectives and low-rank adaptation.} We
+utilise two additional methodologies as foundational components rather than
+baselines for comparison. It is well established that area-overlap losses
+are insensitive to topological connectivity. Several objectives address this
+limitation, including persistent homology \cite{hu2019topology}, clDice
+\cite{shit2021cldice} (which penalises breaks proportionally using soft
+skeletons), cbDice \cite{shi2024cbdice} (which applies radius weighting to
+prioritise thin branches), and the supervoxel loss \cite{grim2025supervoxel}
+(which focuses gradients specifically on structural splits or merges). We
+adopt the latter two directly rather than proposing a novel topological
+loss. Similarly, we employ established low-rank adaptation techniques (LoRA
+\cite{hu2022lora} and LoRA+ \cite{hayou2024loraplus}) without architectural
+modification.
+
+Our contribution lies in synthesising these elements to address a critical
+gap. Current shape models lack temporal identity, tracking pipelines inherit
+connectivity errors from their segmenters, and video foundation models are
+not trained to preserve fine structures. To the best of our knowledge,
+topology-preserving objectives have not previously been integrated with
+temporal propagation in a promptable video model, nor applied to track
+individual neurons in label-free phase-contrast microscopy.
 
 %=====================================================================
 \section{Methods}
