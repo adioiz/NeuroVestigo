@@ -82,6 +82,15 @@
 %\linenumbers                  % uncomment for review (slows compiles)
 \setlength{\parskip}{0.35em}
 
+% A float at the top of a page can strand the last line of the paragraph that
+% preceded it -- one orphan line under Table 3, which is what "tionately severe
+% penalty during these early frames." was. LaTeX's defaults (150) barely
+% discourage this; 10000 forbids it, so the break moves up and takes at least
+% two lines with it. displaywidowpenalty covers the same case around equations.
+\widowpenalty=10000
+\clubpenalty=10000
+\displaywidowpenalty=10000
+
 \newcommand{\todo}[1]{\textcolor{red!80!black}{\textbf{[TODO: #1]}}}
 \newcommand{\note}[1]{\textcolor{blue!60!black}{\textit{(#1)}}}
 
@@ -1156,7 +1165,7 @@ SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{e
 Cellpose-SAM             & 0.563 & 0.708 & 0.725 & 0.798 & none (automatic) \\
 NeuroQuantify            & 0.446 & 0.594 & 0.602 & 0.680 & none (automatic) \\
 Omnipose                 & 0.279 & 0.428 & 0.560 & 0.649 & none (automatic) \\
-SAM\,3.1 (text-prompt)   & 0.200 & 0.278 & 0.260 & 0.290 & none (automatic) \\
+SAM\,3.1 (text-prompt)   & 0.192 & 0.267 & 0.252 & 0.279 & none (automatic) \\
 \midrule
 \multicolumn{2}{l}{\emph{our margin over best method}} & & $0.083$ & $0.113$ & \\
 \bottomrule
@@ -1186,7 +1195,7 @@ favourable configuration found on validation supplies ten ground-truth points
 on \emph{every} frame, more per-frame supervision than any other method
 receives, and attains $0.471$ IoU and $0.602$ cbDice. Prompted like our model
 --- points on frame~0 only --- it scores $0.000$, and in its native concept
-mode it reaches $0.200$ IoU, with the phrase mattering more than any other
+mode it reaches $0.192$ IoU, with the phrase mattering more than any other
 setting: \texttt{cells} detects the target while \texttt{neuron} detects
 nothing at all. A model an order of magnitude larger than the SAM\,2 backbone
 we adapt therefore trails zero-shot SAM\,2 by $0.156$ cbDice, which we
