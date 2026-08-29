@@ -54,6 +54,24 @@ def load_gt(name, n=None):
     return np.stack([np.array(Image.open(f)) > 0 for f in files])
 
 
+def jpeg_mirror(png_dir, n):
+    """SAM 2-style video loaders glob for .jpg and report "no images found" on a
+    directory of .png -- which is what the first corrected run hit. Mirror the
+    frames as maximum-quality JPEG in a temp directory so the loader can read
+    them. Lossy in principle; irrelevant for answering "does add_new_mask work".
+    """
+    import tempfile
+    files = sorted(glob.glob(os.path.join(png_dir, "*.png")))[:n]
+    if not files:
+        raise RuntimeError(f"no .png frames in {png_dir}")
+    out = tempfile.mkdtemp(prefix="sam3probe_")
+    for i, f in enumerate(files):
+        Image.open(f).convert("RGB").save(os.path.join(out, f"{i:05d}.jpg"),
+                                          quality=100, subsampling=0)
+    print(f"    (mirrored {len(files)} frames as JPEG in {out})")
+    return out
+
+
 def show(title):
     print("\n" + "=" * 68)
     print(title)
@@ -186,19 +204,35 @@ def drive(tracker, frames_dir, gt):
     T = len(gt)
 
     print("  init_state ...")
-    state = None
-    for kw in ({"video_path": frames_dir},
-               {"video_path": frames_dir, "video_height": H, "video_width": W,
-                "num_frames": T},
-               {"video_height": H, "video_width": W, "num_frames": T}):
+    try:
+        jpg_dir = jpeg_mirror(frames_dir, T)
+    except BaseException as e:
+        print(f"    could not mirror frames: {e}"); jpg_dir = None
+
+    state, loaded_video = None, False
+    cands = ([{"video_path": jpg_dir}] if jpg_dir else []) + [
+        {"video_path": frames_dir},
+        {"video_path": jpg_dir, "video_height": H, "video_width": W, "num_frames": T}
+        if jpg_dir else {"video_path": frames_dir},
+    ]
+    for kw in cands:
         try:
             state = tracker.init_state(**kw)
-            print(f"    OK with {sorted(kw)}")
+            loaded_video = True
+            print(f"    OK with {sorted(kw)} -- video frames loaded")
             break
         except BaseException as e:
             print(f"    {type(e).__name__}: {str(e)[:170]}")
     if state is None:
-        print("  STOP at C: cannot initialise state. Paste this output back.")
+        try:
+            state = tracker.init_state(video_height=H, video_width=W, num_frames=T)
+            print("    OK with dimensions only -- but this is the cached_features")
+            print("    path: the state holds NO images, so add_new_mask below will")
+            print("    fail on 'images' regardless of whether masks are supported.")
+        except BaseException as e:
+            print(f"    {type(e).__name__}: {str(e)[:170]}")
+    if state is None:
+        print("  STOP at C: cannot initialise state at all. Paste this output back.")
         return False
 
     print("  add_new_mask(frame 0, add_mask_to_memory=True) ...")
@@ -215,8 +249,13 @@ def drive(tracker, frames_dir, gt):
         except BaseException as e:
             print(f"    [{lbl}] {type(e).__name__}: {str(e)[:170]}")
     if not ok:
-        print("  STOP at D: the tracker exists but will not take a mask. That is")
-        print("  the answer and the paper's claim stands. Paste this output back.")
+        if not loaded_video:
+            print("  STOP at D, but INCONCLUSIVE: init_state never loaded the video,")
+            print("  so the mask was offered to a state with no frames. This says")
+            print("  nothing about whether masks are supported -- do NOT quote it.")
+        else:
+            print("  STOP at D: the video loaded and the tracker still refused a")
+            print("  mask. That IS the answer and the paper's claim stands.")
         return False
 
     print("  propagate_in_video ...")
@@ -276,9 +315,10 @@ def main():
         print("The paper must stop saying it cannot, and the row should be re-run")
         print("mask-prompted, which removes the protocol asymmetry entirely.")
     else:
-        print("Stopped before propagating from a mask. The paper's claim stands,")
-        print("but phrase it as 'no supported path we could drive', not as a")
-        print("statement about the architecture. Paste this output back.")
+        print("Stopped before propagating from a mask. Read the stage that stopped:")
+        print("only a stop AFTER the video loaded is evidence about mask support.")
+        print("A loader or signature failure is a probe limitation, not a finding,")
+        print("and must not be quoted in the paper. Paste this output back.")
 
 
 if __name__ == "__main__":
