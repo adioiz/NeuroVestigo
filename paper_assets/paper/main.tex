@@ -1550,12 +1550,13 @@ remains is tracker collapse on a thin, low-contrast target, and it is the same
 quantity that Table~\ref{tab:drift} reports as a decay of $0.418$.
 
 SAM\,3.1 was swept more widely than any other competitor, because its
-interface exposes more choices. Prompt mode was selected first (points on
-every frame $0.634$ validation IoU, against $0.027$ for a box on every frame,
+interface exposes more choices. Prompt mode was selected first, at the
+default three points per frame (points on every frame $0.579$ validation IoU,
+against $0.027$ for a box on every frame,
 $0.025$ for a box on frame~0, and $0.000$ for points on frame~0 or for the
 concept prompt \texttt{neuron}), then the number of points ($3 \to 0.579$,
-$5 \to 0.625$, $10 \to 0.634$, declining at $15$ and $20$, and $0.368$ at
-$30$: an interior optimum rather than a plateau), and finally, for the
+$5 \to 0.625$, $10 \to 0.634$, then $15 \to 0.564$, $20 \to 0.425$ and
+$30 \to 0.368$: an interior optimum rather than a plateau), and finally, for the
 concept path, the phrase itself and the cap on the number of tracked objects.
 Twelve phrases were tried; \texttt{cells} reached $0.394$, \texttt{cell}
 $0.292$ and \texttt{a cell} $0.167$, while \texttt{neuron}, \texttt{nerve

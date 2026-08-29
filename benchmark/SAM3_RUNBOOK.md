@@ -387,3 +387,29 @@ python benchmark/run_sam3.py --mode points-every --npoints 10 --no-cudnn \
 It printed `fg=0.1476`, bit-identical to the committed prediction, so the run
 reproduces. Written up in the paper's appendix; the same quantity is Table 3's
 -0.418 decay.
+
+
+## Validation numbers re-verified from artifacts (2026-08-29)
+
+Every SAM 3.1 validation claim in the paper's appendix was re-scored from the
+retained prediction directories. 17 of 18 reproduced to 4 decimal places.
+
+One did not, and it is a real correction: the paper attributed **0.634** to the
+prompt-mode comparison, but `sam3_pointsevery` scores **0.5786** -- bit-identical
+to `sam3_p3_t0.5`, i.e. that stage ran at the DEFAULT 3 points. 0.634 is the
+post-tuning value from the later npoints sweep, so quoting it at the
+prompt-mode stage was anachronistic. Corrected to 0.579; the conclusion is
+unchanged, since points-every beats box-every 0.579 vs 0.027 either way.
+
+Also confirmed: clDice 0.8182 at 5 points vs 0.7813 at 10 (the selection-rule
+caveat), ours on validation IoU 0.7618 / cbDice 0.8429, and the two collapse
+recordings are 14.7x (A91_C1_2, val) and 12.3x (A12_C3_100k, test)
+foreground over-predictions -- "roughly tenfold" is fair.
+
+**Not verifiable from artifacts:** the pre-SAM-3 competitor sweep values
+(uSAM vit_b 0.42 vs vit_l 0.56; Cellpose cellprob 0.38 -> 0.47 and flow
+0.44 -> 0.56; uSAM multimask 0.574 vs 0.595). Those sweeps did not retain
+their predictions -- only the final shipped configuration was kept, which
+scores usam 0.5752 and cellpose_sam 0.5768 on validation. The sweep numbers
+rest on the contemporaneous audit trail in main.tex's header block, not on
+anything re-derivable. Retain sweep predictions in future.
