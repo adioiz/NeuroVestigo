@@ -1193,7 +1193,11 @@ way our model and SAM\,2 are: its video interface accepts text, point and box
 prompts but not a mask. Given ten ground-truth points on \emph{every} frame it
 reaches $0.471$ IoU, and in its native concept mode $0.200$, so a model an
 order of magnitude larger than the backbone we adapt trails zero-shot SAM\,2
-while receiving far more per-frame supervision.
+while receiving far more per-frame supervision. On \texttt{A12\_C1\_100k\_2}
+the concept prompt produced no detection overlapping the target on any frame
+(raw foreground $0.0004$, $0.1$ instances per frame), while the point-prompted
+configuration reached $0.544$ IoU on the same recording: the failure is the
+language prompt rather than the evaluation.
 
 \begin{figure}[!htb]
   \centering
@@ -1537,7 +1541,10 @@ cap on simultaneously tracked objects was swept for the same reason as every
 other threshold here: SAM\,3's default of sixteen discards the target on
 frames where the field saturates, and raising it recovers those detections
 ($16 \to 0.394$, $32 \to 0.413$, $64 \to 0.419$ validation IoU), so
-\texttt{cells} with a cap of $64$ was adopted. Selection was on
+\texttt{cells} with a cap of $64$ was adopted. Its language-prompted performance is also unstable
+between recordings of the same preparation --- \texttt{A81\_C1} scores $0.543$
+and \texttt{A12\_C1\_100k\_2} scores $0.000$ on the same test split --- so the
+single-recording zero is characteristic rather than anomalous. Selection was on
 IoU throughout, as for every other method, although its clDice peaks at five
 points rather than ten. Its late-frame masks expand to cover up to $78\,\%$ of
 the field (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
