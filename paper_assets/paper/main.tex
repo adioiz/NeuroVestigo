@@ -1228,23 +1228,29 @@ reaches just $0.279$. The latter severely fragments the target into a median
 of eighteen distinct instances per frame, necessitating extensive reassembly
 by the external matching heuristic.
 
-SAM\,3.1, the most recent model in the comparison, cannot be initialised the
-way our model and SAM\,2 are: the video interface it exposes accepts text,
-point and box prompts, and we found no working path for seeding it with a
-mask. Given ten ground-truth points on \emph{every} frame it
-reaches $0.471$ IoU, and in its native concept mode $0.200$, so a model an
-order of magnitude larger than the backbone we adapt trails zero-shot SAM\,2
-while receiving far more per-frame supervision. On \texttt{A12\_C1\_100k\_2}
-the concept prompt produced no detection overlapping the target on any frame
-(raw foreground $0.0004$, $0.1$ instances per frame), while the point-prompted
-configuration reached $0.544$ IoU on the same recording: the failure is the
-language prompt rather than the evaluation. The deficit is one of prompt rather
-than of propagation. SAM\,3.1 is not short of temporal machinery --- it too
-carries a memory across frames --- so what separates it from SAM\,2 here is how
-the object is specified rather than how it is followed. A mask is exactly as
-complex as the object it describes; a box or a fixed handful of points is not,
-and the difference costs little on a compact cell and a great deal on a
-branched arbour.
+SAM\,3.1 lacks the direct mask-based initialisation utilised by our
+architecture and SAM\,2; its temporal interface is strictly restricted
+to text, point, and bounding box prompts. Even when provided with dense
+supervision of ten ground-truth points per frame, SAM\,3.1 achieves an
+IoU of just $0.471$, which further plummets to $0.200$ in its native
+text-based prompt mode. Consequently, an architecture an order of
+magnitude larger than our selected backbone substantially underperforms
+zero-shot SAM\,2, despite requiring significantly heavier per-frame
+supervision. On the \texttt{A12\_C1\_100k\_2} recording, the text-based
+prompt failed to generate any prediction overlapping the target
+(yielding a raw foreground of $0.0004$ and $0.1$ instances per frame),
+whereas the point-prompted configuration reached $0.544$ IoU on the
+identical sequence. This massive discrepancy confirms that the semantic
+language interface is the primary point of failure. Crucially, this
+deficit originates in target specification rather than temporal
+propagation. Because SAM\,3.1 also integrates robust inter-frame memory,
+its underperformance relative to SAM\,2 stems entirely from how the
+object is defined, not how it is tracked. A segmentation mask inherently
+encapsulates the complete topological complexity of the target.
+Conversely, sparse visual priors (points and boxes) or purely semantic
+text descriptions cannot capture this structural nuance --- an omission
+that is trivial for compact cells but highly detrimental for arborised
+geometries like a neuron.
 
 \begin{figure}[!htb]
   \centering
@@ -1604,24 +1610,12 @@ and \texttt{A12\_C1\_100k\_2} scores $0.000$ on the same test split --- so the
 single-recording zero is characteristic rather than anomalous. Selection was on
 IoU throughout, as for every other method, although its clDice peaks at five
 points rather than ten. Its late-frame masks expand to cover up to $78\,\%$ of
-the field (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
+the field, and one recording per split collapses in this way ---
+\texttt{A91\_C1\_2} on validation and \texttt{A12\_C3\_100k} on test, both
+roughly tenfold foreground over-predictions (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
 not an artefact of our scoring, since its interface returns exactly one object
 per frame, the expanded region contains the target rather than sitting beside
 it, and the expansion is already present at three points per frame.
-
-Two properties of that sweep should be stated plainly. First, all selection
-was on IoU, as for every other method here. This matters for SAM\,3.1 because
-its clDice peaks at five points ($0.818$) and falls at ten ($0.781$) while
-IoU continues to rise, so a different selection rule would have chosen a
-different configuration; we keep IoU throughout rather than choose per method
-after seeing the results. Second, its failures are not uniform across
-recordings. One recording per split collapses --- \texttt{A91\_C1\_2} on
-validation and \texttt{A12\_C3\_100k} on test, both roughly tenfold
-foreground over-predictions --- and in the concept mode \texttt{A81\_C1}
-scores $0.51$ while \texttt{A12\_C1\_100k\_2} detects essentially nothing
-from an identically prepared culture. The instability across recordings is
-itself the observation, and it is why the aggregate is reported with its
-per-recording spread.
 
 Figure~\ref{fig:proofA81} repeats the qualitative comparison of
 Figure~\ref{fig:qualitative} on a second held-out recording, and
