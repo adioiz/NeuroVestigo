@@ -341,15 +341,39 @@ the frame --- $2.6\,\%$ on average, and as little as $0.2\,\%$ --- so
 per-pixel losses barely see it.}
 
 % P4 - what we do + contributions
-\todo{P4: contributions.}
-% 1. a neuron-specialised, topology-preserving, temporally-consistent
-%    segmentation-and-tracking method, adapted parameter-efficiently
-%    (13.9 % of weights trained) from a video foundation model
-% 2. a rigorous, deliberately competitor-favourable benchmark against five
-%    methods spanning four families, on genuinely held-out recordings
-% 3. evidence that connectivity metrics are NECESSARY: methods that look
-%    comparable under IoU are far apart under cbDice/clDice
-%
+We present a method that segments and tracks an individual neuron through a
+label-free phase-contrast time-lapse from a single annotation, together with
+the tool that makes it usable at a bench. Our contributions are three.
+
+\emph{A model.} We adapt SAM\,2 to this modality with dual-rank LoRA+,
+training $13.9\,\%$ of its parameters, and supervise it with an objective that
+penalises breaking a neurite as well as mislabelling one. Prompted with one
+mask on frame~0 and given no further input, it segments every remaining frame
+of a recording and leads every metric we report against six competing methods
+spanning four algorithmic families
+(Section~\ref{sec:res:benchmark}), while losing least quality over the course
+of a recording (Section~\ref{sec:res:temporal}).
+
+\emph{A tool.} The model is released inside \texttt{neurons-labeling}, a
+napari plug-in in which a neuron is painted on the first frame, propagated
+through the recording, corrected wherever the propagation is wrong, and
+exported as masks or as per-pixel coordinates
+(Figure~\ref{fig:pipeline}). The correction step closes a loop: edited frames
+are training data in the format the model was trained on, so use of the tool
+improves the model that drives it.
+
+\emph{A dataset.} We release twenty-nine hand-annotated recordings spanning
+$93$\,h of imaging, four of them held out and annotated only after model
+development was complete, as a benchmark for single-target neurite
+segmentation under propagation --- a setting for which no public dataset
+currently exists.
+
+Two further results support the first claim rather than standing beside it:
+that connectivity metrics are necessary to see the difference between these
+methods at all (Section~\ref{sec:met:metrics}), and that the comparison holds
+when every competitor is run in the most favourable configuration we could
+find for it (Appendix~\ref{sec:supp:protocol}).
+
 % Novelty phrasing (locked): claim the COMBINATION, "to our knowledge, based
 % on a systematic search". Credit LoRA/PEFT, the individual topology losses,
 % and foundation-models-for-microscopy to prior art.
@@ -534,6 +558,22 @@ favour of the model, we verified that no test-set ground truth coincides
 with the model's own prediction: across the 328 scored test frames the
 highest agreement is IoU~0.903, with none exceeding 0.95, indicating that
 every frame was substantively edited.
+
+\paragraph{The annotation and inference tool.}
+\texttt{neurons-labeling} is a napari plug-in, released with this work, that
+is both how the dataset was produced and how the model is meant to be used. A
+recording is opened as a stack, one neuron is painted on the first frame with
+the standard labels brush, and a single action propagates that annotation
+through every remaining frame using the weights of
+Section~\ref{sec:met:model}; the base SAM\,2 weights can be selected instead,
+which is how the zero-shot baseline of Section~\ref{sec:res:benchmark} is
+reproduced. Any frame can then be corrected with brush and eraser and the
+propagation re-run from that frame. Output is written either as a mask stack
+or as a per-pixel coordinate table indexed by frame and object, the form the
+downstream morphometric analysis consumes. Because a corrected frame is a
+mask in exactly the format the model was trained on, routine use of the tool
+produces training data without a separate annotation effort --- the loop drawn
+in Figure~\ref{fig:pipeline}.
 
 %---------------------------------------------------------------------
 \subsection{Parameter-efficient adaptation of SAM\,2}
@@ -1198,7 +1238,13 @@ while receiving far more per-frame supervision. On \texttt{A12\_C1\_100k\_2}
 the concept prompt produced no detection overlapping the target on any frame
 (raw foreground $0.0004$, $0.1$ instances per frame), while the point-prompted
 configuration reached $0.544$ IoU on the same recording: the failure is the
-language prompt rather than the evaluation.
+language prompt rather than the evaluation. The deficit is one of prompt rather
+than of propagation. SAM\,3.1 is not short of temporal machinery --- it too
+carries a memory across frames --- so what separates it from SAM\,2 here is how
+the object is specified rather than how it is followed. A mask is exactly as
+complex as the object it describes; a box or a fixed handful of points is not,
+and the difference costs little on a compact cell and a great deal on a
+branched arbour.
 
 \begin{figure}[!htb]
   \centering
@@ -1321,6 +1367,16 @@ during these early frames.
   \label{fig:temporal}
 \end{figure}
 
+
+That the two methods given ground-truth prompts on \emph{every} frame drift
+fastest of all is not the paradox it first appears. A sparse prompt describes a
+growing arbour progressively worse: the target fills $29\,\%$ of its own
+bounding box in the first quarter of a recording and $14\,\%$ in the last.
+Methods that re-derive the object from a box or a handful of points on each
+frame therefore work from a description that degrades exactly as the target
+becomes harder, whereas a mask-seeded memory carries the full shape forward
+from the frames in which it was simplest. Per-frame supervision is not the same
+as per-frame information.
 
 Because the memoryless baselines process frames independently, their minimum
 decay of $0.126$ strictly isolates the escalating difficulty of the task
