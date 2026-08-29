@@ -184,6 +184,43 @@ def build(factories, classes, ckpt):
     return None
 
 
+def prepare(tracker):
+    """Move the tracker to the GPU and report whether its weights look trained.
+
+    build_tracker() returns a model on CPU in float32. SAM 3 feeds CUDA bfloat16,
+    so the first mask call dies with "Input type (CUDABFloat16Type) and weight
+    type (torch.FloatTensor) should be the same" -- a device/dtype mismatch that
+    says nothing about mask support. This was the third false negative.
+    """
+    import torch
+    if not torch.cuda.is_available():
+        print("    no CUDA visible -- run this on a GPU node"); return tracker, None
+    for label, fn in (("tracker.to(cuda)", lambda: tracker.to("cuda")),
+                      ("tracker.model.to(cuda)", lambda: tracker.model.to("cuda")),
+                      ("tracker.cuda()", lambda: tracker.cuda())):
+        try:
+            fn(); print(f"    {label} OK"); break
+        except BaseException as e:
+            print(f"    {label}: {type(e).__name__}: {str(e)[:110]}")
+
+    # Are these trained weights or a fresh init? build_tracker takes no
+    # checkpoint argument, so the answer decides whether any IoU below is
+    # meaningful -- the mask question is answerable either way.
+    try:
+        ps = [p for p in tracker.parameters() if p.dim() > 1]
+        if ps:
+            import numpy as _np
+            stds = [float(p.detach().float().std()) for p in ps[:40]]
+            print(f"    weight std over {len(stds)} tensors: "
+                  f"median {_np.median(stds):.4f}, range {min(stds):.4f}-{max(stds):.4f}")
+            print("    (a fresh init is tightly clustered; trained weights vary widely.")
+            print("     If these look untrained, add_new_mask still answers the API")
+            print("     question, but any IoU printed below is meaningless.)")
+    except BaseException as e:
+        print(f"    could not inspect weights: {type(e).__name__}")
+    return tracker, "cuda"
+
+
 # ---------------------------------------------------------------- stages C-E
 def drive(tracker, frames_dir, gt):
     """Stages C-E, using the signatures stage A actually reported:
@@ -238,13 +275,20 @@ def drive(tracker, frames_dir, gt):
     print("  add_new_mask(frame 0, add_mask_to_memory=True) ...")
     ok = False
     import torch
+    from contextlib import nullcontext
+    amp = (torch.autocast("cuda", dtype=torch.bfloat16)
+           if torch.cuda.is_available() else nullcontext())
     m0 = gt[0]
     for cast, lbl in ((lambda m: torch.from_numpy(m.astype("bool")), "torch bool"),
                       (lambda m: torch.from_numpy(m.astype("uint8")), "torch uint8"),
                       (lambda m: m.astype("bool"), "numpy bool")):
         try:
-            tracker.add_new_mask(inference_state=state, frame_idx=0, obj_id=1,
-                                 mask=cast(m0), add_mask_to_memory=True)
+            mt = cast(m0)
+            if hasattr(mt, "to") and torch.cuda.is_available():
+                mt = mt.to("cuda")
+            with amp:
+                tracker.add_new_mask(inference_state=state, frame_idx=0, obj_id=1,
+                                     mask=mt, add_mask_to_memory=True)
             print(f"    OK ({lbl})"); ok = True; break
         except BaseException as e:
             print(f"    [{lbl}] {type(e).__name__}: {str(e)[:170]}")
@@ -254,26 +298,29 @@ def drive(tracker, frames_dir, gt):
             print("  so the mask was offered to a state with no frames. This says")
             print("  nothing about whether masks are supported -- do NOT quote it.")
         else:
-            print("  STOP at D: the video loaded and the tracker still refused a")
-            print("  mask. That IS the answer and the paper's claim stands.")
+            print("  STOP at D with the video loaded. Check the error above before")
+            print("  quoting this: a device/dtype or tensor-shape error is still a")
+            print("  probe limitation. Only a refusal that names masks, prompts or")
+            print("  unsupported input is evidence about mask support.")
         return False
 
     print("  propagate_in_video ...")
     for mx, lbl in ((T, f"max_frame_num_to_track={T}"), (None, "max_frame_num_to_track=None")):
         try:
             n = 0
-            for frame_idx, obj_ids, logits in tracker.propagate_in_video(
+            with amp:
+              for frame_idx, obj_ids, logits in tracker.propagate_in_video(
                     state, start_frame_idx=0, max_frame_num_to_track=mx, reverse=False):
-                m = logits.detach().cpu().numpy() if hasattr(logits, "detach") else np.asarray(logits)
-                m = (m > 0).reshape(-1, *m.shape[-2:])
-                a = np.any(m, 0)
-                iou = None
-                if frame_idx < T and a.shape == gt[frame_idx].shape:
-                    u = (a | gt[frame_idx]).sum()
-                    iou = (a & gt[frame_idx]).sum() / u if u else float("nan")
-                print(f"    frame {frame_idx:>3}  objs={len(obj_ids)}  fg={float(a.mean()):.4f}"
-                      + (f"  IoU={iou:.3f}" if iou is not None else ""))
-                n += 1
+                  m = logits.detach().cpu().numpy() if hasattr(logits, "detach") else np.asarray(logits)
+                  m = (m > 0).reshape(-1, *m.shape[-2:])
+                  a = np.any(m, 0)
+                  iou = None
+                  if frame_idx < T and a.shape == gt[frame_idx].shape:
+                      u = (a | gt[frame_idx]).sum()
+                      iou = (a & gt[frame_idx]).sum() / u if u else float("nan")
+                  print(f"    frame {frame_idx:>3}  objs={len(obj_ids)}  fg={float(a.mean()):.4f}"
+                        + (f"  IoU={iou:.3f}" if iou is not None else ""))
+                  n += 1
             print(f"  OK -- {n} frames propagated from a MASK prompt ({lbl})")
             return True
         except BaseException as e:
@@ -302,6 +349,9 @@ def main():
         print("\nRESULT: the class exists but no construction path worked. That is")
         print("a defensible basis for the paper's claim -- quote the failures above.")
         return
+
+    show("STAGE B2 -- move to device, and are the weights trained?")
+    tracker, _dev = prepare(tracker)
 
     show("STAGE C/D/E -- init, seed with a mask, propagate")
     frames_dir = os.path.join(DATA, "images", args.video)
