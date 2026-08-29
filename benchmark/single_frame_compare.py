@@ -34,7 +34,12 @@ MODELS = [("ours", "Ours"),
           ("usam", "µSAM\n(box-prompt)"),
           ("cellpose_sam", "Cellpose-SAM\n(auto)"),
           ("omnipose", "Omnipose\n(auto)"),
-          ("neuroquantify", "NeuroQuantify\n(phase-contrast)")]
+          ("neuroquantify", "NeuroQuantify\n(phase-contrast)"),
+          ("sam3.1", "SAM 3.1\n(point-prompt)")]
+# Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
+# wrote one directory per configuration, so the winning run does not carry the
+# name it is scored under.
+PRED_DIR = {"sam3.1": "sam3_final"}
 POOL = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2", "A31_C1", "A52_C2", "A22_C2"]
 
 
@@ -85,7 +90,7 @@ def main():
     for m, _ in MODELS:
         for v, _t in samples:
             if v not in preds[m]:
-                preds[m][v] = tifffile.imread(os.path.join(PRED, m, f"{v}.tif")) > 0
+                preds[m][v] = tifffile.imread(os.path.join(PRED, PRED_DIR.get(m, m), f"{v}.tif")) > 0
     for m in AUTO:
         for v, _t in samples:
             if v not in raw[m]:

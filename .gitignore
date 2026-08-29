@@ -24,10 +24,19 @@ Thumbs.db
 
 # Outputs
 *.csv
+# ...but the benchmark scores ARE the paper's evidence and must be versioned.
+# Every number in Tables 2 and 3 is read from these files; leaving them
+# untracked is how the SAM 3 text row came to disagree with its own predictions.
+!benchmark/results/**/*.csv
+*.bak
 outputs/
 checkpoints/
 checkpoints-new/
 gpu-checkpoints/
+# every training run writes ~250-700 MB of weights; never commit these
+checkpoints-*/
+# stray zero-byte files from interrupted shells
+.Rhistory
 # Jupyter
 .ipynb_checkpoints/
 

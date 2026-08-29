@@ -28,6 +28,10 @@ from benchmark.data import Dataset
 
 FIGDIR = os.path.join(REPO, "paper_assets", "figures")
 PRED = os.path.join(REPO, "benchmark", "predictions")
+# Model key -> predictions subdirectory, where the two differ. The SAM 3 sweep
+# wrote one directory per configuration, so the winning runs do not carry the
+# model name they are scored under.
+PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_test"}
 
 mpl.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
@@ -35,16 +39,19 @@ mpl.rcParams.update({
     "axes.linewidth": 0.9, "figure.dpi": 120, "svg.fonttype": "none",
 })
 NAVY = "#16324F"; OURS = "#1F6FB2"; OURS2 = "#2CA6A4"; OURS3 = "#123A5A"
+AMBER = "#E1A93B"   # SAM 3.1, matching the paper palette
 MUTE = ["#B9C2CC", "#A7B2BE", "#95A2B0", "#8391A1", "#7C8998", "#6E7C8C", "#617080"]  # muted greys
 GRID = "#E4E8ED"
 
 PRETTY = {"ours": "Ours", "sam2_zeroshot": "SAM 2\nzero-shot", "usam": "µSAM\n(box-prompt)",
           "deepsea": "DeepSea\n(auto)", "cellpose_sam": "Cellpose-SAM\n(auto)",
           "omnipose": "Omnipose\n(auto)", "neuroquantify": "NeuroQuantify\n(phase-contrast)",
-          "cellsam": "CellSAM\n(auto)", "trackastra_omnipose": "Omnipose +\nTrackastra"}
+          "cellsam": "CellSAM\n(auto)", "trackastra_omnipose": "Omnipose +\nTrackastra",
+          "sam3.1": "SAM 3.1\n(point-prompt)", "sam3.1_text": "SAM 3.1\n(text-prompt)"}
 METRICS = [("iou", "IoU"), ("dice", "Dice"), ("cbdice", "cbDice")]
 # Locked figure roster (DeepSea, Trackastra, CellSAM -> text only).
-FIGURE_COMPETITORS = ["sam2_zeroshot", "usam", "cellpose_sam", "omnipose", "neuroquantify"]
+FIGURE_COMPETITORS = ["sam2_zeroshot", "usam", "sam3.1", "cellpose_sam", "omnipose",
+                      "neuroquantify", "sam3.1_text"]
 
 
 def load_summary(split="test"):
@@ -68,8 +75,9 @@ def save(fig, name):
 # ---------------------------------------------------------------------------
 def fig_benchmark(split="test"):
     rows = load_summary(split)
-    # Final figure roster (locked with Adi): ours + these 5. DeepSea, Trackastra and
+    # Final figure roster (locked with Adi): ours + these 7. DeepSea, Trackastra and
     # CellSAM are mentioned in the text only, not plotted. Competitors ordered by cbDice.
+    # SAM 3.1 appears twice -- it is reported in both modes its video API accepts.
     comps = sorted([m for m in FIGURE_COMPETITORS if m in rows],
                    key=lambda m: -float(rows[m]["cbdice_mean"]))
     order = ["ours"] + comps
@@ -160,7 +168,7 @@ def fig_temporal():
         per_t = [[] for _ in range(T)]
         for v in videos:
             gt = ds.load_gt(v)
-            pr = tifffile.imread(os.path.join(PRED, m, f"{v}.tif")) > 0
+            pr = tifffile.imread(os.path.join(PRED, PRED_DIR.get(m, m), f"{v}.tif")) > 0
             for t in range(1, min(T + 1, gt.shape[0], pr.shape[0])):
                 per_t[t - 1].append(_cbdice(pr[t], gt[t] > 0))
         curves[m] = np.array([np.mean(c) if c else np.nan for c in per_t])
@@ -170,10 +178,13 @@ def fig_temporal():
               "usam": dict(color="#7FA6C9", lw=1.4, alpha=0.85),
               "neuroquantify": dict(color=OURS2, lw=1.6, alpha=0.9),
               "omnipose": dict(color="#AEB8C4", lw=1.4, alpha=0.85),
-              "cellpose_sam": dict(color="#C7CDD6", lw=1.4, alpha=0.85)}
+              "cellpose_sam": dict(color="#C7CDD6", lw=1.4, alpha=0.85),
+              "sam3.1": dict(color=AMBER, lw=1.6, alpha=0.9),
+              "sam3.1_text": dict(color=AMBER, lw=1.2, alpha=0.7, ls=":")}
     names = {"ours": "Ours (temporal propagation)", "sam2_zeroshot": "SAM 2 zero-shot",
              "usam": "µSAM (box-prompt)", "neuroquantify": "NeuroQuantify (phase-contrast)",
-             "omnipose": "Omnipose", "cellpose_sam": "Cellpose-SAM"}
+             "omnipose": "Omnipose", "cellpose_sam": "Cellpose-SAM",
+             "sam3.1": "SAM 3.1 (point-prompt)", "sam3.1_text": "SAM 3.1 (text-prompt)"}
 
     fig, ax = plt.subplots(figsize=(8.4, 4.4))
     xs = np.arange(1, T + 1)
