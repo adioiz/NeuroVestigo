@@ -1533,6 +1533,22 @@ in Section~\ref{sec:res:temporal} but scores $0.574$ against $0.595$
 validation IoU, so the shipped setting is the one favourable to it
 (\texttt{benchmark/sweep\_usam\_multimask.py}).
 
+SAM\,3.1's failure mode was audited in the same way, because it is severe: on
+the later frames of every test recording its mask expands to cover between
+$42$ and $78\,\%$ of the field, up to $72\times$ the area of the target
+(Figure~\ref{fig:proofA81}). This is the model's own behaviour and not an
+artefact of how we combine its output. Its video interface returns exactly one
+object per frame, so the union we apply to multi-instance methods is a no-op
+here; the expanded region is a single connected component that contains the
+target rather than a spurious object placed beside it, so restricting the
+prediction to target-overlapping components changes IoU by less than $0.01$;
+the masks are not inverted ($0.554$ against $0.007$ for the complement); and
+the expansion is already present at three points per frame, reaching
+$45\times$ the target area, so it does not arise from combining one object per
+supplied point. The area also rises and falls rather than accumulating. What
+remains is tracker collapse on a thin, low-contrast target, and it is the same
+quantity that Table~\ref{tab:drift} reports as a decay of $0.418$.
+
 SAM\,3.1 was swept more widely than any other competitor, because its
 interface exposes more choices. Prompt mode was selected first (points on
 every frame $0.634$ validation IoU, against $0.027$ for a box on every frame,

@@ -359,3 +359,31 @@ SAM 3 could not be given a mask prompt because its video predictor does not
 accept one. Reported under its best box/points/text regime, chosen on
 validation. A reviewer who notices the difference unaided will assume the
 comparison was rigged.
+
+
+## Is the area blow-up ours or SAM 3.1's? -- SETTLED, it is SAM 3.1's
+
+Asked 2026-08-29 after the red-everywhere panel in `proof_A81_C1`. On late
+frames SAM 3.1's point-prompted mask covers 42-78% of the field, up to 72x the
+target area. Six checks, all pointing the same way:
+
+| check | result |
+|---|---|
+| `inst/frame` in point mode | **1.0** -- one object per frame, so `np.any(masks,0)` is a no-op |
+| connected components | 95-98% of the area is ONE component |
+| keep only GT-overlapping components | IoU 0.106 -> 0.112, i.e. the blob CONTAINS the target |
+| polarity | as-is 0.554 vs inverted 0.007 -- not flipped |
+| blow-up vs `--npoints` | already 45x at 3 points; worse at 3 than at 5 |
+| area over time | non-monotonic (49.9% -> 13.1% -> 76.1%) -- not accumulation |
+
+The `inst/frame=1.0` measurement is the decisive one and is worth re-running
+if the runner's mask handling ever changes:
+
+```bash
+python benchmark/run_sam3.py --mode points-every --npoints 10 --no-cudnn \
+    --limit-frames 73 --out-dir /tmp/sam3_check --videos A81_C1
+```
+
+It printed `fg=0.1476`, bit-identical to the committed prediction, so the run
+reproduces. Written up in the paper's appendix; the same quantity is Table 3's
+-0.418 decay.
