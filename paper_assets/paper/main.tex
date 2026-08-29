@@ -1653,13 +1653,48 @@ directly from sequential masks.
 
 %=====================================================================
 \section*{Data and code availability}
-\todo{Code repository + Zenodo DOI. Dataset availability statement.}
+
+All data, code and model weights required to reproduce this work are
+publicly available.
+
+\emph{Dataset.} The twenty-nine annotated phase-contrast recordings ---
+paired image stacks and single-neuron instance masks, including the four
+held-out test sequences --- are deposited at Zenodo,
+\todo{Zenodo DOI}, under \todo{data license}.
+
+\emph{Training and evaluation code.} Adaptation, training and the full
+benchmark are at
+\url{https://github.com/adioiz/Fine-tune-SAM2-model-for-Neurons-segmentation}.
+Per-recording scores for every method are tracked in the repository under
+\texttt{benchmark/results/}; \texttt{benchmark/drift\_quartiles.py}
+regenerates Table~\ref{tab:drift} and \texttt{benchmark/run\_ours.py}
+reproduces the full-sequence propagation reported in
+Table~\ref{tab:main}.
+
+\emph{Model and plug-in.} The LoRA adapter weights and the
+\texttt{neurons-labeling} napari plug-in are at
+\url{https://github.com/adioiz/neurons-labeling}. The adapters are applied
+to the public SAM\,2.1 Hiera-tiny checkpoint \cite{ravi2025sam2}, which
+remains subject to its own license and is not redistributed here. Software
+in both repositories is released under \todo{software license}.
 
 \section*{Acknowledgements}
-\todo{Funding, facilities, people.}
+The time-lapse dataset was acquired and hand-annotated by E.\,N.~Berkovich
+as part of the M.Sc.\ research reported in \cite{berkovich2025neurite}; we
+thank the members of the Shefi laboratory for the primary cultures and for
+maintaining the live-imaging system on which these recordings were made.
+\todo{Funding: grant numbers and agencies. Computing resources. Any further
+acknowledgements.}
 
 \section*{Author contributions}
-\todo{CRediT statement.}
+CRediT taxonomy. A.O.: conceptualization, methodology, software, formal
+analysis, validation, visualization, writing --- original draft.
+E.\,N.\,B.: investigation, data curation, resources, writing --- review and
+editing. O.S.: supervision, funding acquisition, resources, project
+administration, writing --- review and editing.
+\todo{Confirm all roles with the co-authors, and add the contributions of
+S.C. and O.O. -- these are not yet recorded anywhere. Author order is also
+still to be confirmed with Prof. Shefi.}
 
 \section*{Declaration of interests}
 The authors declare no competing interests.
