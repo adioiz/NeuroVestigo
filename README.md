@@ -11,6 +11,75 @@ The current shipping configuration is **Run D**: 25 labeled recordings (20 train
 
 > **Read [Correctness fixes](#correctness-fixes) before interpreting any run before Run D.** Three defects — an inert cbDice term, a resampling artefact inside cbDice, and an elastic augmentation that misaligned images from their labels — were found and fixed after most of the run history below was recorded. They do not invalidate reported validation numbers (validation was never augmented), but they do explain why sweeping the loss weights produced differences too small to call.
 
+## Results
+
+Held-out test set: 4 recordings never seen during training or validation, and
+removed from the pool *before* the train/val split. Every method is scored by
+the same code (`benchmark/score.py` → `benchmark/eval_masks.py`) against the
+same ground truth, skipping frame 0 because prompted methods are given it.
+
+| method | prompt | IoU | Dice | clDice | cbDice |
+|---|---|---:|---:|---:|---:|
+| **This work** (SAM 2 + LoRA+) | mask, frame 0 | 0.7599 | 0.8612 | 0.9432 | 0.8505 |
+| SAM 2 zero-shot | mask, frame 0 | 0.6392 | 0.7705 | 0.8301 | 0.7578 |
+| Cellpose-SAM | automatic | 0.5629 | 0.7078 | 0.7976 | 0.7245 |
+| micro-SAM | box, every frame | 0.5615 | 0.7017 | 0.8041 | 0.7672 |
+| SAM 3.1 | 10 points, every frame | 0.4712 | 0.5953 | 0.5921 | 0.6018 |
+| NeuroQuantify | automatic | 0.4461 | 0.5941 | 0.6801 | 0.6019 |
+| DeepSea | automatic | 0.3350 | 0.4800 | 0.5649 | 0.4313 |
+| Omnipose | automatic | 0.2791 | 0.4284 | 0.6492 | 0.5600 |
+| SAM 3.1 | text "cells" | 0.1921 | 0.2666 | 0.2790 | 0.2520 |
+| Trackastra + DeepSea | automatic | 0.0290 | 0.0462 | 0.0551 | 0.0742 |
+| Trackastra + Omnipose | automatic | 0.0111 | 0.0205 | 0.0362 | 0.0702 |
+
+Numbers above are read from `benchmark/results/test/summary.csv`, which is
+version-controlled — the per-recording breakdown for each method sits beside it
+in the same directory, and `benchmark/results/val/` holds the validation split
+used to choose every method's configuration.
+
+**Reading the table.** The prompt column matters more than the ranking. Methods
+given a mask on frame 0 start from the exact target; methods given points or
+boxes must infer the shape, and a neuron's thin branching arbour is mostly empty
+space inside its own bounding box. SAM 3.1 needed ground-truth points on *every*
+frame to reach its score — given a single prompt on frame 0 it scores 0.0000,
+which is the like-for-like comparison against this work.
+
+Competitor configurations were each chosen on validation and applied unchanged
+to test; the sweeps are recorded in `benchmark/sweep_*.py` and, for SAM 3.1, in
+[`benchmark/SAM3_RUNBOOK.md`](benchmark/SAM3_RUNBOOK.md).
+
+## Reproducing the benchmark
+
+Every method follows the same three steps: **run → score → read**. Predictions
+are written as one `uint8` TIF stack per recording; `score.py` is the only thing
+that ever computes a metric, so no method can be scored by a different rule.
+
+```bash
+# 1. run a method on the held-out test recordings
+python benchmark/run_ours.py --split test
+
+# 2. score whatever it wrote (same command for every method)
+python benchmark/score.py --pred-dir benchmark/predictions/ours \
+    --model ours --split test --cbdice --skip-first-frame
+
+# 3. read the table
+column -t -s, benchmark/results/test/summary.csv
+```
+
+`--skip-first-frame` is not optional for a fair comparison: prompted methods
+are handed frame 0, so scoring it would flatter them over the automatic ones.
+
+**Choosing a configuration.** No method is tuned on test. Each one is swept on
+the validation split (`benchmark/sweep_*.py`), the best setting is recorded, and
+that setting is applied unchanged to test. `benchmark/results/val/summary.csv`
+holds those sweeps, so the choice is auditable rather than asserted.
+
+**Competitors live in isolated environments.** Cellpose, Omnipose, micro-SAM,
+DeepSea and SAM 3.1 have mutually incompatible dependencies (SAM 3.1 needs
+`numpy<2`; the training stack uses `numpy>=2`). Each runner names the
+environment it expects in its docstring — read it before installing anything,
+and never install into the training environment.
+
 **For labeling/annotation**, use the companion [neurons-labeling](../neurons-labeling/) repository.
 
 ## Features
@@ -37,13 +106,12 @@ labeled_masks/        -> ../neurons-labeling/labeled_masks/
 labeled_coordinates/  -> ../neurons-labeling/labeled_coordinates/
 ```
 
-The labeling repo also symlinks back here:
-
-```
-neurons-labeling/checkpoints/ -> ../Fine-tune-SAM2-model-for-Neurons-segmentation/checkpoints/
-```
-
 **No manual copying needed** — label in one repo, train in the other.
+
+The trained adapters live in `gpu-checkpoints/lora_weights.pt` (~22 MB: the
+LoRA matrices only, not a full SAM 2 checkpoint). Loading them requires the
+base SAM 2 weights, which are downloaded separately — see
+[Step 4](#step-4-use-the-fine-tuned-weights).
 
 ## Installation
 
@@ -348,40 +416,54 @@ why an IoU-only comparison cannot tell you whether a config change helped.
 
 ```
 Fine-tune-SAM2-model-for-Neurons-segmentation/
-├── cli.py                   # Training CLI
-├── data_manifest.json
-├── requirements.txt
+├── cli.py                   # training + data-prep CLI (the entry point)
 ├── README.md                # ← you are here
-├── METHODS_CHEAT_SHEET.md   # quick technical reference
-├── FINE_TUNING_GUIDE.md     # full pedagogical guide
-├── CODE_EXPLAINED.md        # file-by-file walkthrough
-├── labeled_masks/           # symlink → ../neurons-labeling/labeled_masks
-├── labeled_coordinates/     # symlink → ../neurons-labeling/labeled_coordinates
-├── checkpoints/
-│   ├── lora_weights.pt
-│   ├── training_log.json
-│   └── val_samples/epoch_NNN/    # worst-IoU prediction dumps
-├── training_data/
-│   └── stats.json
-├── benchmark/               # competitor comparison + test-set evaluation
-│   ├── data.py              # TEST_VIDEOS definition
-│   └── eval_masks.py        # reported IoU / Dice / clDice / cbDice metrics
-├── tests/                   # regression tests for the historical defects
-│   ├── test_cbdice_loss.py         # cbDice term is not inert; ordering holds
-│   ├── test_cbdice_resize.py       # perfect prediction costs exactly 0
+├── METHODS_CHEAT_SHEET.md   # what each hyperparameter does, and why
+├── CODE_EXPLAINED.md        # file-by-file walkthrough of src/
+├── data_manifest.json       # recording name → source TIF + mask TIF
+├── requirements.txt
+│
+├── src/                     # the training pipeline
+│   ├── config.py            # ← single source of truth for hyperparameters
+│   ├── trainer.py           # training loop, checkpointing, resume
+│   ├── lora.py              # LoRA+ adapters, dual-rank targeting
+│   ├── loss_fns.py          # focal, Dice, clDice, cbDice, supervoxel
+│   ├── evaluate.py          # validation, per-frame/per-video/Betti metrics
+│   ├── neuron_dataset.py    # Dataset: clips, prompts, train/val/test split
+│   ├── augmentations.py     # clip-consistent video augmentation
+│   ├── prepare_data.py      # TIF stacks → PNG frames
+│   └── data_utils.py        # batched containers
+│
+├── benchmark/               # every number in the paper's comparison tables
+│   ├── score.py             # ONE scorer for every method → results/
+│   ├── eval_masks.py        # IoU / Dice / clDice / cbDice definitions
+│   ├── data.py              # split resolution + ground-truth loading
+│   ├── run_*.py             # one runner per method (ours, sam2, sam3, …)
+│   ├── sweep_*.py           # per-competitor fairness sweeps, on val only
+│   ├── SAM3_RUNBOOK.md      # SAM 3.1 setup, sweep, and findings
+│   └── results/             # version-controlled scores
+│       ├── test/summary.csv #   ← the reported table
+│       └── val/summary.csv  #   ← what every configuration was chosen on
+│
+├── tests/                   # regression tests pinning the historical defects
+│   ├── test_cbdice_loss.py          # cbDice is not inert; ordering holds
+│   ├── test_cbdice_resize.py        # a perfect prediction costs exactly 0
 │   ├── test_augmentation_alignment.py  # image and mask stay aligned
-│   ├── test_supervoxel_speed.py    # detector is bit-identical to whole-frame ref
-│   └── test_betti.py               # Betti numbers on known shapes
-└── src/
-    ├── config.py            # ← single source of truth for hyperparameters
-    ├── lora.py              # LoRA+ adapter implementation
-    ├── trainer.py           # training loop
-    ├── evaluate.py          # validation + per-frame/per-video/Betti metrics
-    ├── neuron_dataset.py    # PyTorch Dataset
-    ├── augmentations.py     # video augmentation
-    ├── loss_fns.py          # focal, dice, cbDice, supervoxel
-    ├── prepare_data.py      # TIF → PNG conversion
-    └── data_utils.py        # batched data containers
+│   ├── test_supervoxel_speed.py     # optimised detector is bit-identical
+│   └── test_betti.py                # Betti numbers on known shapes
+│
+├── gpu-checkpoints/         # the trained model
+│   ├── lora_weights.pt      #   adapters only (~22 MB), not full SAM 2
+│   ├── training_config.json #   exact config that produced it
+│   └── training_log.json    #   per-epoch metrics
+│
+├── paper_assets/            # manuscript, figures, and their generators
+│   ├── paper/main.tex
+│   ├── figures/
+│   └── make_figures.py
+│
+├── labeled_masks/           -> ../neurons-labeling/labeled_masks/
+└── labeled_coordinates/     -> ../neurons-labeling/labeled_coordinates/
 ```
 
 Run the tests with:
@@ -485,9 +567,18 @@ which is the term the 512 setting was actually raised for.
 
 ## Documentation
 
-- `METHODS_CHEAT_SHEET.md` — concise technical reference, current defaults
-- `FINE_TUNING_GUIDE.md` — full pedagogical guide
-- `CODE_EXPLAINED.md` — file-by-file walkthrough
+Start with whichever question you actually have:
+
+| you want to… | read |
+|---|---|
+| understand a hyperparameter or loss term | [`METHODS_CHEAT_SHEET.md`](METHODS_CHEAT_SHEET.md) |
+| find where something is implemented | [`CODE_EXPLAINED.md`](CODE_EXPLAINED.md) |
+| reproduce a number in the comparison table | [Reproducing the benchmark](#reproducing-the-benchmark) |
+| know how SAM 3.1 was set up and swept | [`benchmark/SAM3_RUNBOOK.md`](benchmark/SAM3_RUNBOOK.md) |
+| read the manuscript itself | `paper_assets/paper/main.tex` |
+
+The planning notes under `paper_assets/*.md` are working documents kept for
+provenance, not maintained references.
 
 ## References
 

@@ -16,6 +16,7 @@ This document explains **every file, every function, and every important line** 
 8. [augmentations.py (Data Augmentation)](#file-7-augmentationspy---data-augmentation)
 9. [trainer.py (Training Loop)](#file-8-srctrainerpy---training-loop)
 10. [evaluate.py (Metrics)](#file-9-evaluatepy---metrics)
+11. [benchmark/ (the comparison table)](#file-10-benchmark--the-comparison-table)
 
 ---
 
@@ -2324,5 +2325,87 @@ After reading this document, you should be able to explain:
 11. **B200 perf:** bf16 (no GradScaler), channels-last, FlashAttention-3 via cuDNN SDPA, fused AdamW, parallel cbDice scipy, pinned memory + non_blocking copies, deferred `.item()` syncs
 12. **Diagnostics:** Per-component loss + per-frame IoU + per-video IoU + worst-IoU PNG dumps — every validation epoch
 13. **Chained training:** `--resume train_state.pt` lets one logical training run span multiple SLURM jobs under a wall-clock limit (e.g. 90 epochs across two 4-hour B200 jobs)
+
+---
+
+# File 10: `benchmark/` - The Comparison Table
+
+Everything above trains the model. This directory produces the numbers the
+paper compares it against. The organising rule: **runners write masks, one
+scorer reads them.** No method computes its own metric.
+
+```
+run_<method>.py   →   predictions/<method>/<recording>.tif   →   score.py   →   results/
+```
+
+## The three files that matter
+
+**`eval_masks.py`** — the metric definitions, and the only place they exist.
+`evaluate_stack()` takes a predicted stack and a ground-truth stack and returns
+per-frame IoU, Dice, clDice and (optionally) cbDice. `skip_first_frame=True`
+drops frame 0 because prompted methods are handed it.
+
+cbDice here is `src.loss_fns.SoftCBDiceLoss` — the training loss reused as a
+metric — but constructed with `skeleton_fn=_exact_skeleton` and
+`topology_resolution=512`. Both differ deliberately from training:
+
+- *Exact skeleton, not soft.* `soft_skel` is five morphological openings and
+  cannot fully erode a thick soma. That bias is method-dependent (measured on
+  real predictions: Omnipose +0.169, micro-SAM −0.004), so a metric built on it
+  would distort the gaps between methods rather than shift them uniformly.
+- *512, not 256.* `SoftCBDiceLoss` downsamples to a square grid when either
+  side exceeds `topology_resolution`. At 256 a 307×485 mask is squashed
+  non-uniformly and 1–2 px neurites vanish — the very structure cbDice exists
+  to measure. At 512 no resize happens and `cbDice(gt, gt) == 1.0000`.
+
+Downsampling is fine for a training loss, where only gradients matter. It is
+not acceptable for a reported number.
+
+**`score.py`** — the single entry point for scoring. Resolves which recordings
+belong to a split, loads ground truth, calls `evaluate_stack`, and writes both
+a per-recording CSV and an updated row in `results/<split>/summary.csv`. Passing
+`--videos` overrides split resolution, which the test split needs because
+`data.test_videos` is not populated in the training config.
+
+**`data.py`** — `Dataset.split(name)` reads the authoritative train/val/test
+lists from `gpu-checkpoints/training_config.json`, so the benchmark and the
+trainer cannot disagree about what "val" means. `load_gt()` prefers the manifest
+TIF and falls back to `training_data/masks/<name>/*.png`, which is what makes
+scoring work on a machine where the manifest's absolute paths do not resolve.
+
+## Runners
+
+One per method, each naming its expected environment in its docstring. They
+share a shape: load frames, build prompts from ground truth, run the model,
+write a `uint8` stack per recording.
+
+`run_sam3.py` is the most involved, because SAM 3.1's video API is
+concept-driven rather than mask-driven. It supports five prompt regimes
+(`box-every`, `box-first`, `points-every`, `points-first`, `text`), normalises
+coordinates (the multiplex model asserts prompts lie in `[0,1]`), and consumes
+propagation through `handle_stream_request`, which is a generator. Its `--probe`
+flag introspects the installed package and prints the real API rather than
+assuming one. See [`benchmark/SAM3_RUNBOOK.md`](benchmark/SAM3_RUNBOOK.md) for
+the full setup and sweep.
+
+## Sweeps
+
+`sweep_*.py` exist so "we ran the competitor in its best configuration" is a
+measurement rather than a claim. Each sweeps one method's knobs on the
+**validation** split only; the winner is applied unchanged to test. They are
+worth reading before trusting any competitor's number — `sweep_cellpose_flow.py`
+in particular records that Cellpose's default `flow_threshold` was discarding
+valid detections on 37 of 72 frames.
+
+## Analysis scripts
+
+The remaining files are analyses behind specific claims — `drift_quartiles.py`
+(how quality falls across a recording), `target_growth.py` (how much of that
+fall is the neuron itself growing), `tracking_stability.py` (whether the mask
+stays on the same cell), `why_topology.py`, `single_frame_compare.py` — plus
+figure generators (`make_figures.py`, `make_proof_panel.py`, `paper_figures.py`,
+`make_fig1_result.py`) and two `diagnose_*.py` scripts that document *why*
+Cellpose scores poorly on A71/A81, which is a question a reader is likely to
+ask.
 
 Good luck with your paper and presentation!

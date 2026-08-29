@@ -207,6 +207,36 @@ And saves the **6 worst-IoU prediction PNGs** to `checkpoints/val_samples/epoch_
 
 ---
 
+## 9b. Benchmark Protocol (how the comparison table is produced)
+
+| rule | why |
+|---|---|
+| one scorer for every method (`benchmark/score.py`) | a method cannot be advantaged by its own metric code |
+| configurations chosen on **val**, applied unchanged to **test** | no method is tuned on the reported split |
+| frame 0 excluded (`--skip-first-frame`) | prompted methods are given frame 0; scoring it would flatter them |
+| predictions stored as TIF stacks, scores in `benchmark/results/` | numbers are re-derivable from artefacts, not from memory |
+
+**Prompt regimes differ between methods, and that is the point.** This work and
+zero-shot SAM 2 receive a mask on frame 0. micro-SAM receives a box every frame.
+SAM 3.1's video path refuses masks entirely, so its best available analogue is
+points — 10 per frame, chosen by sweep. Automatic methods (Cellpose, Omnipose,
+DeepSea, NeuroQuantify) receive nothing and are union-matched to the target.
+
+The prompt column belongs beside every number: a method given the exact target
+silhouette is solving a different problem from one given a word.
+
+**Metrics.** IoU and Dice measure area overlap and are blind to a severed
+neurite. clDice and cbDice are computed on skeletons and are not — cbDice
+additionally weights thin structures by inverse local radius. Betti errors
+(β0 components, β1 holes) are reported during training but not in the
+comparison table. For evaluation, `SoftCBDiceLoss` is constructed with an
+**exact** skeleton rather than the soft one used during training: the soft
+skeleton is five morphological openings and cannot fully erode a thick soma,
+and that bias is method-dependent (Omnipose +0.169, micro-SAM −0.004), so it
+would distort the gaps between methods.
+
+---
+
 ## 10. Chained Training Across SLURM Jobs
 
 Single-job training is capped by the cluster's wall-clock limit (4 hours on `B200-4h` — fits ~60 epochs at current ~225 s/epoch, not 80–90). The `--resume` flag lets one logical training run span multiple jobs.
