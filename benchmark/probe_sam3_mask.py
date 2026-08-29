@@ -54,6 +54,27 @@ def load_gt(name, n=None):
     return np.stack([np.array(Image.open(f)) > 0 for f in files])
 
 
+def disable_cudnn():
+    """dgx-b200-02 raises CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH: libcudnn.so
+    and its sublibraries come from different installs. run_sam3.py has carried
+    --no-cudnn for this since the sweep; the probe did not, which is what stopped
+    the previous run at stage D. Falling back to PyTorch's own kernels is a
+    kernel-selection change, not a model change.
+    """
+    import torch
+    torch.backends.cudnn.enabled = False
+    off = []
+    # SDPA chooses its backend separately, so the flag above misses attention.
+    if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        torch.backends.cuda.enable_cudnn_sdp(False); off.append("attention")
+    for name in ("enable_flash_sdp", "enable_mem_efficient_sdp"):
+        fn = getattr(torch.backends.cuda, name, None)
+        if fn:
+            fn(True)                     # keep the non-cuDNN fast paths on
+    print("[env] cuDNN disabled for conv"
+          + (" and " + off[0] if off else "") + " -- PyTorch kernels")
+
+
 def jpeg_mirror(png_dir, n):
     """SAM 2-style video loaders glob for .jpg and report "no images found" on a
     directory of .png -- which is what the first corrected run hit. Mirror the
@@ -362,7 +383,13 @@ def main():
     ap.add_argument("--video", default="A81_C1")
     ap.add_argument("--limit-frames", type=int, default=12)
     ap.add_argument("--checkpoint", default=None)
+    ap.add_argument("--cudnn", action="store_true",
+                    help="leave cuDNN enabled; off by default because this "
+                         "cluster raises CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH")
     args = ap.parse_args()
+
+    if not args.cudnn:
+        disable_cudnn()
 
     show("STAGE A -- what mask-accepting tracker exists?")
     classes, factories = find_tracker()
