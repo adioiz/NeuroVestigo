@@ -1532,8 +1532,12 @@ here. Points beat a box on every frame ($0.579$ against $0.027$ at three
 points; $0.000$ for points on frame~0 alone), and ten points was the optimum
 ($0.634$, falling to $0.425$ at twenty). Its concept mode is sensitive to
 wording rather than simply blind: \texttt{cells} detects the target while
-\texttt{neuron}, \texttt{blob} and \texttt{object} detect nothing at all, and
-\texttt{cells} with the object cap raised to $64$ was adopted. Selection was on
+\texttt{neuron}, \texttt{blob} and \texttt{object} detect nothing at all. The
+cap on simultaneously tracked objects was swept for the same reason as every
+other threshold here: SAM\,3's default of sixteen discards the target on
+frames where the field saturates, and raising it recovers those detections
+($16 \to 0.394$, $32 \to 0.413$, $64 \to 0.419$ validation IoU), so
+\texttt{cells} with a cap of $64$ was adopted. Selection was on
 IoU throughout, as for every other method, although its clDice peaks at five
 points rather than ten. Its late-frame masks expand to cover up to $78\,\%$ of
 the field (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
@@ -1591,7 +1595,7 @@ Method & Mode used & Prompt per frame & Scale & Reduction to target \\
 SAM\,2             & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 $\mu$SAM           & interactive box prompt       & GT box, every frame & $\times$1 & --- box selects target \\
 SAM\,3.1           & promptable video tracking    & 10 GT points, every frame & $\times$1 & --- points select target \\
-SAM\,3.1 (text)    & promptable concept segmentation & \texttt{cells} & $\times$1 & union of overlapping instances \\
+SAM\,3.1 (text)    & promptable concept segmentation & \texttt{cells}, cap 64 & $\times$1 & union of overlapping instances \\
 NeuroQuantify      & automatic, semantic          & none                & $\times$4 & union of overlapping regions \\
 Omnipose           & automatic, instance          & none                & $\times$3 & union of overlapping instances \\
 Cellpose-SAM       & automatic, instance          & none                & $\times$2 & union of overlapping instances \\
