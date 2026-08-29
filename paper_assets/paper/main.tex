@@ -1189,8 +1189,9 @@ of eighteen distinct instances per frame, necessitating extensive reassembly
 by the external matching heuristic.
 
 SAM\,3.1, the most recent model in the comparison, cannot be initialised the
-way our model and SAM\,2 are: its video interface accepts text, point and box
-prompts but not a mask. Given ten ground-truth points on \emph{every} frame it
+way our model and SAM\,2 are: the video interface it exposes accepts text,
+point and box prompts, and we found no working path for seeding it with a
+mask. Given ten ground-truth points on \emph{every} frame it
 reaches $0.471$ IoU, and in its native concept mode $0.200$, so a model an
 order of magnitude larger than the backbone we adapt trails zero-shot SAM\,2
 while receiving far more per-frame supervision. On \texttt{A12\_C1\_100k\_2}
@@ -1528,7 +1529,11 @@ validation IoU, so the shipped setting is the one favourable to it
 (\texttt{benchmark/sweep\_usam\_multimask.py}).
 
 SAM\,3.1's prompt mode was selected on validation like every other setting
-here. Points beat a box on every frame ($0.579$ against $0.027$ at three
+here. The package does contain a lower-level tracker exposing an
+\texttt{add\_new\_mask} entry point, but it is not usable in the released
+inference build: constructed through the only public factory, it fails inside
+that call on a missing internal attribute, and the factory takes no checkpoint,
+so a mask-prompted configuration was not available to us. Points beat a box on every frame ($0.579$ against $0.027$ at three
 points; $0.000$ for points on frame~0 alone), and ten points was the optimum
 ($0.634$, falling to $0.425$ at twenty). Its concept mode is sensitive to
 wording rather than simply blind: \texttt{cells} detects the target while

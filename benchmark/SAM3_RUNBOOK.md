@@ -342,15 +342,37 @@ favour, not ours; say so explicitly or a reviewer will assume the opposite.
 while IoU rises. Selection was on IoU, consistent with every other competitor —
 state that rule rather than letting it look chosen after the fact.
 
-### Still open
+### SETTLED 2026-08-29: the mask path is not usable in the released build
 
-`Sam3TrackerPredictor.add_new_mask` and
-`Sam3VideoTrackingMultiplexDemo.add_new_masks` exist. The winning point path
-already routes through that tracker ("Running SAM2 propagation for objects
-[1]"), so a frame-0 MASK prompt may be reachable — which would allow a fully
-matched comparison instead of a disclosed asymmetry. Untested.
+`Sam3TrackerPredictor.add_new_mask` exists, and the tracker can be built
+standalone -- `build_tracker(apply_temporal_disambiguation=False,
+with_backbone=True)` works, frames load once mirrored as JPEG (the loader
+globs `.jpg` and reports "no images found" on our `.png`), and the tracker
+moves to the GPU. But `add_new_mask` itself then fails:
 
----
+    AttributeError: 'Sam3TrackerPredictor' object has no attribute
+                    'teacher_force_obj_scores_for_mem'
+
+That is inside SAM 3's own code, with a correct CPU 2-D tensor, cuDNN
+disabled and autocast on -- not an input problem. The entry point is present in
+the source but not wired for objects built by the only public factory.
+
+`build_tracker` also takes no checkpoint argument, and the weights it returns
+have std 0.0197-0.0238 across 40 tensors -- a fresh-init signature. So even a
+working call would not have produced a benchmarkable row without a separate
+way to load the released weights.
+
+Four earlier runs stopped for reasons that were OURS, not SAM 3's: a missing
+required positional on `build_tracker`, the `.png` loader, a CPU/CUDA dtype
+mismatch, and the cuDNN sublibrary mismatch that `run_sam3.py` has had a flag
+for all along. Each time the probe announced the paper's claim was supported.
+`benchmark/test_probe_sam3_mask.py` now exercises the probe against a stub with
+these signatures before it is run, and the probe reports a stop as evidence
+only when the refusal is about masks rather than plumbing.
+
+**Written into the paper as:** the interface accepts text, point and box
+prompts and no working path was found for a mask -- a statement about what we
+could drive, not about the architecture, which does contain the machinery.
 
 ## Note for the paper
 
