@@ -505,15 +505,13 @@ purely as a semantic segmenter lacking instance-level discrimination.
 % provide a unique label for each tracked cell over time".
 NeuriteTracker \cite{fusco2016neuritetracker} aligns most closely with our
 task, segmenting neurite morphodynamics across time-lapses and maintaining
-instance identity via graph association. It relies, however, on fluorescence:
-neurons must express a bicistronic construct carrying both F-actin and nuclear
-markers, and its pipeline is built around those two channels --- maximally
-stable extremal regions detect the labelled nuclei, and a Hessian filter and a
-geodesic distance trace the processes. The labelling it needs is precisely what
-a continuous multi-day acquisition sets out to avoid, and because the pipeline
-is hand-crafted around those channels rather than learned, it is not a matter
-of supplying phase-contrast images instead. Nothing in it constrains topology
-either, so a fragmented branch carries no penalty.
+instance identity via graph association. However, it relies exclusively on
+fluorescence imaging: neurons must express a bicistronic construct carrying
+both F-actin and nuclear markers for detection. This invasive labelling is
+precisely what continuous, multi-day phase-contrast acquisitions seek to
+avoid. Because the pipeline is algorithm-based and specific to fluorescent
+markers rather than learned from data, it cannot be trivially adapted to
+label-free phase-contrast imagery.
 Consequently, when precise, per-neuron morphology is required, the gold
 standard remains labour-intensive manual tracing
 \cite{meijering2004neuronj,longair2011snt}, as fully automated instance
