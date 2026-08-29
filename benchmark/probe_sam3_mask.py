@@ -276,22 +276,41 @@ def drive(tracker, frames_dir, gt):
     ok = False
     import torch
     from contextlib import nullcontext
-    amp = (torch.autocast("cuda", dtype=torch.bfloat16)
-           if torch.cuda.is_available() else nullcontext())
+    def amp():                      # fresh context each use; reusing one is fragile
+        return (torch.autocast("cuda", dtype=torch.bfloat16)
+                if torch.cuda.is_available() else nullcontext())
     m0 = gt[0]
-    for cast, lbl in ((lambda m: torch.from_numpy(m.astype("bool")), "torch bool"),
-                      (lambda m: torch.from_numpy(m.astype("uint8")), "torch uint8"),
-                      (lambda m: m.astype("bool"), "numpy bool")):
+    # SAM 2's add_new_mask asserts mask.dim()==2 and does .float().to(device)
+    # itself, so a CPU 2-D tensor is the documented shape. SAM 3's refused a bare
+    # ndarray ("no attribute 'dim'"), confirming it wants a tensor.
+    for cast, lbl in ((lambda m: torch.from_numpy(m.astype("bool")), "cpu bool 2-D"),
+                      (lambda m: torch.from_numpy(m.astype("float32")), "cpu float32 2-D"),
+                      (lambda m: torch.from_numpy(m.astype("bool")).cuda()
+                       if torch.cuda.is_available()
+                       else torch.from_numpy(m.astype("bool")), "cuda bool 2-D")):
         try:
             mt = cast(m0)
-            if hasattr(mt, "to") and torch.cuda.is_available():
-                mt = mt.to("cuda")
-            with amp:
+            with amp():
                 tracker.add_new_mask(inference_state=state, frame_idx=0, obj_id=1,
                                      mask=mt, add_mask_to_memory=True)
             print(f"    OK ({lbl})"); ok = True; break
         except BaseException as e:
             print(f"    [{lbl}] {type(e).__name__}: {str(e)[:170]}")
+    if not ok and hasattr(tracker, "add_new_masks"):
+        print("  add_new_mask failed; trying add_new_masks (plural) ...")
+        # Sam3VideoTrackingMultiplexDemo.add_new_masks(inference_state, frame_idx,
+        #     obj_ids, masks, add_mask_to_memory=False, reconditioning=False)
+        for cast, lbl in ((lambda m: torch.from_numpy(m.astype("bool"))[None], "cpu bool 1xHxW"),
+                          (lambda m: torch.from_numpy(m.astype("float32"))[None], "cpu float32 1xHxW")):
+            try:
+                with amp():
+                    tracker.add_new_masks(inference_state=state, frame_idx=0,
+                                          obj_ids=[1], masks=cast(m0),
+                                          add_mask_to_memory=True)
+                print(f"    OK ({lbl}, via add_new_masks)"); ok = True; break
+            except BaseException as e:
+                print(f"    [{lbl}] {type(e).__name__}: {str(e)[:170]}")
+
     if not ok:
         if not loaded_video:
             print("  STOP at D, but INCONCLUSIVE: init_state never loaded the video,")
@@ -305,13 +324,21 @@ def drive(tracker, frames_dir, gt):
         return False
 
     print("  propagate_in_video ...")
+    try:                      # SAM 2 runs this inside propagate; SAM 3 exposes it
+        with amp():
+            tracker.propagate_in_video_preflight(state)
+        print("    preflight OK")
+    except BaseException as e:
+        print(f"    preflight skipped ({type(e).__name__}: {str(e)[:90]})")
+
     for mx, lbl in ((T, f"max_frame_num_to_track={T}"), (None, "max_frame_num_to_track=None")):
         try:
             n = 0
-            with amp:
+            with amp():
               for frame_idx, obj_ids, logits in tracker.propagate_in_video(
                     state, start_frame_idx=0, max_frame_num_to_track=mx, reverse=False):
-                  m = logits.detach().cpu().numpy() if hasattr(logits, "detach") else np.asarray(logits)
+                  m = (logits.detach().float().cpu().numpy() if hasattr(logits, "detach")
+                       else np.asarray(logits, dtype="float32"))
                   m = (m > 0).reshape(-1, *m.shape[-2:])
                   a = np.any(m, 0)
                   iou = None
