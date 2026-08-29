@@ -30,7 +30,12 @@ FIGDIR = os.path.join(REPO, "paper_assets", "figures")
 
 PRETTY = {"ours": "Ours (fine-tuned)", "sam2_zeroshot": "SAM 2 (zero-shot)",
           "usam": "µSAM (box-prompt)", "cellpose_sam": "Cellpose-SAM",
-          "omnipose": "Omnipose", "neuroquantify": "NeuroQuantify"}
+          "omnipose": "Omnipose", "neuroquantify": "NeuroQuantify",
+          "sam3.1": "SAM 3.1 (point-prompt)"}
+# Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
+# wrote one directory per configuration, so the winning run does not carry the
+# name it is scored under.
+PRED_DIR = {"sam3.1": "sam3_final"}
 
 
 def load_gray(video, t):
@@ -72,13 +77,13 @@ def main():
     ap.add_argument("--video", required=True)
     ap.add_argument("--frames", type=int, nargs="+", default=[8, 35, 62])
     ap.add_argument("--models", nargs="+",
-                    default=["ours", "sam2_zeroshot", "usam", "cellpose_sam",
-                             "omnipose", "neuroquantify"])
+                    default=["ours", "sam2_zeroshot", "usam", "sam3.1",
+                             "cellpose_sam", "omnipose", "neuroquantify"])
     args = ap.parse_args()
 
     models = [m for m in args.models
-              if os.path.exists(os.path.join(PRED, m, f"{args.video}.tif"))]
-    preds = {m: tifffile.imread(os.path.join(PRED, m, f"{args.video}.tif")) > 0
+              if os.path.exists(os.path.join(PRED, PRED_DIR.get(m, m), f"{args.video}.tif"))]
+    preds = {m: tifffile.imread(os.path.join(PRED, PRED_DIR.get(m, m), f"{args.video}.tif")) > 0
              for m in models}
     gts = {t: load_gt(args.video, t) for t in args.frames}
     y0, y1, x0, x1 = bbox([gts[t] for t in args.frames])

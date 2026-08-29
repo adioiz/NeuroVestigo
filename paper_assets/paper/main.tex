@@ -1384,13 +1384,17 @@ the operational range, we adopt the smaller weight.
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\textwidth,height=0.409\textwidth,keepaspectratio]{proof_A71_C1.png}
-  \caption{\textbf{One annotation propagates through the recording.}
-  Three frames spanning \texttt{A71\_C1}, with our model prompted only on
-  frame~0 and every subsequent mask produced by propagation. Overlay
-  semantics: yellow, correctly segmented; green,
-  ground-truth neurite missed; red, predicted pixels outside the ground
-  truth. Our model is prompted only on frame~0.}
+  \includegraphics[width=\textwidth,height=0.364\textwidth,keepaspectratio]{proof_A71_C1.png}
+  \caption{\textbf{Qualitative comparison on a held-out recording.} Every
+  method at three time points of \texttt{A71\_C1}, each run as described in
+  Table~\ref{tab:protocol}. Overlay semantics: yellow, correctly segmented;
+  green, ground-truth neurite missed; red, predicted pixels outside the
+  ground truth; per-panel IoU inset. Our model and SAM\,2 are prompted only
+  on frame~0 and every subsequent mask is produced by propagation, whereas
+  $\mu$SAM and SAM\,3.1 receive ground-truth prompts on the frame shown. The
+  progression down the column is the growth that makes the task harder: by
+  frame~62 the arbour has roughly tripled in centreline length, and the
+  competing methods lose the thin distal branches that our model retains.}
   \label{fig:qualitative}
 \end{figure}
 
@@ -1619,12 +1623,11 @@ Cellpose-SAM       & automatic, instance          & none                & $\time
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\textwidth,height=0.438\textwidth,keepaspectratio]{proof_A81_C1.png}
-  \caption{\textbf{One annotation propagates through a second held-out
-  recording.} As Figure~\ref{fig:qualitative}, for
-  \texttt{A81\_C1}. Overlay semantics: yellow, correctly segmented; green,
-  ground-truth neurite missed; red, predicted pixels outside the ground
-  truth. Our model is prompted only on frame~0.}
+  \includegraphics[width=\textwidth,height=0.386\textwidth,keepaspectratio]{proof_A81_C1.png}
+  \caption{\textbf{Qualitative comparison on a second held-out recording.}
+  As Figure~\ref{fig:qualitative}, for \texttt{A81\_C1}. Overlay semantics:
+  yellow, correctly segmented; green, ground-truth neurite missed; red,
+  predicted pixels outside the ground truth; per-panel IoU inset.}
   \label{fig:proofA81}
 \end{figure}
 
