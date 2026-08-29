@@ -503,15 +503,17 @@ purely as a semantic segmenter lacking instance-level discrimination.
 % computing a geodesic distance combining intensity and geometric distance";
 % "a graph-association tracking method was applied over the time-lapse data to
 % provide a unique label for each tracked cell over time".
-NeuriteTracker \cite{fusco2016neuritetracker} is closest in task, segmenting
-and tracking neurite morphodynamics across a time-lapse and giving each cell a
-unique label through the sequence by graph association. It requires
-fluorescence, however: neurons express a bicistronic construct carrying an
-F-actin marker and a nuclear marker used for cell detection, which is exactly
-the labelling a multi-day acquisition forgoes. Its segmentation is also a
-hand-designed pipeline --- maximally stable extremal regions for the nuclei, a
-Hessian filter and a geodesic distance for the processes --- so no part of it
-is trained, and nothing in it penalises breaking a branch.
+NeuriteTracker \cite{fusco2016neuritetracker} aligns most closely with our
+task, segmenting neurite morphodynamics across time-lapses and maintaining
+instance identity via graph association. It relies, however, on fluorescence:
+neurons must express a bicistronic construct carrying both F-actin and nuclear
+markers, and its pipeline is built around those two channels --- maximally
+stable extremal regions detect the labelled nuclei, and a Hessian filter and a
+geodesic distance trace the processes. The labelling it needs is precisely what
+a continuous multi-day acquisition sets out to avoid, and because the pipeline
+is hand-crafted around those channels rather than learned, it is not a matter
+of supplying phase-contrast images instead. Nothing in it constrains topology
+either, so a fragmented branch carries no penalty.
 Consequently, when precise, per-neuron morphology is required, the gold
 standard remains labour-intensive manual tracing
 \cite{meijering2004neuronj,longair2011snt}, as fully automated instance
