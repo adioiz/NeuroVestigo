@@ -1165,7 +1165,7 @@ SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{e
 Cellpose-SAM             & 0.563 & 0.708 & 0.725 & 0.798 & none (automatic) \\
 NeuroQuantify            & 0.446 & 0.594 & 0.602 & 0.680 & none (automatic) \\
 Omnipose                 & 0.279 & 0.428 & 0.560 & 0.649 & none (automatic) \\
-SAM\,3.1 (text-prompt)   & 0.192 & 0.267 & 0.252 & 0.279 & none (automatic) \\
+SAM\,3.1 (text-prompt)   & 0.200 & 0.278 & 0.260 & 0.290 & none (automatic) \\
 \midrule
 \multicolumn{2}{l}{\emph{our margin over best method}} & & $0.083$ & $0.113$ & \\
 \bottomrule
@@ -1188,18 +1188,12 @@ reaches just $0.279$. The latter severely fragments the target into a median
 of eighteen distinct instances per frame, necessitating extensive reassembly
 by the external matching heuristic.
 
-SAM\,3.1 warrants separate comment as the most recent model in the
-comparison. Its video interface accepts text, point and box prompts but not a
-mask, so it cannot be initialised the way our model and SAM\,2 are; the most
-favourable configuration found on validation supplies ten ground-truth points
-on \emph{every} frame, more per-frame supervision than any other method
-receives, and attains $0.471$ IoU and $0.602$ cbDice. Prompted like our model
---- points on frame~0 only --- it scores $0.000$, and in its native concept
-mode it reaches $0.192$ IoU, with the phrase mattering more than any other
-setting: \texttt{cells} detects the target while \texttt{neuron} detects
-nothing at all. A model an order of magnitude larger than the SAM\,2 backbone
-we adapt therefore trails zero-shot SAM\,2 by $0.156$ cbDice, which we
-attribute to the prompt interface rather than to capacity.
+SAM\,3.1, the most recent model in the comparison, cannot be initialised the
+way our model and SAM\,2 are: its video interface accepts text, point and box
+prompts but not a mask. Given ten ground-truth points on \emph{every} frame it
+reaches $0.471$ IoU, and in its native concept mode $0.200$, so a model an
+order of magnitude larger than the backbone we adapt trails zero-shot SAM\,2
+while receiving far more per-frame supervision.
 
 \begin{figure}[!htb]
   \centering
@@ -1533,42 +1527,19 @@ in Section~\ref{sec:res:temporal} but scores $0.574$ against $0.595$
 validation IoU, so the shipped setting is the one favourable to it
 (\texttt{benchmark/sweep\_usam\_multimask.py}).
 
-SAM\,3.1's failure mode was audited in the same way, because it is severe: on
-the later frames of every test recording its mask expands to cover between
-$42$ and $78\,\%$ of the field, up to $72\times$ the area of the target
-(Figure~\ref{fig:proofA81}). This is the model's own behaviour and not an
-artefact of how we combine its output. Its video interface returns exactly one
-object per frame, so the union we apply to multi-instance methods is a no-op
-here; the expanded region is a single connected component that contains the
-target rather than a spurious object placed beside it, so restricting the
-prediction to target-overlapping components changes IoU by less than $0.01$;
-the masks are not inverted ($0.554$ against $0.007$ for the complement); and
-the expansion is already present at three points per frame, reaching
-$45\times$ the target area, so it does not arise from combining one object per
-supplied point. The area also rises and falls rather than accumulating. What
-remains is tracker collapse on a thin, low-contrast target, and it is the same
-quantity that Table~\ref{tab:drift} reports as a decay of $0.418$.
-
-SAM\,3.1 was swept more widely than any other competitor, because its
-interface exposes more choices. Prompt mode was selected first, at the
-default three points per frame (points on every frame $0.579$ validation IoU,
-against $0.027$ for a box on every frame,
-$0.025$ for a box on frame~0, and $0.000$ for points on frame~0 or for the
-concept prompt \texttt{neuron}), then the number of points ($3 \to 0.579$,
-$5 \to 0.625$, $10 \to 0.634$, then $15 \to 0.564$, $20 \to 0.425$ and
-$30 \to 0.368$: an interior optimum rather than a plateau), and finally, for the
-concept path, the phrase itself and the cap on the number of tracked objects.
-Twelve phrases were tried; \texttt{cells} reached $0.394$, \texttt{cell}
-$0.292$ and \texttt{a cell} $0.167$, while \texttt{neuron}, \texttt{nerve
-cell}, \texttt{branching structure}, \texttt{thin white line},
-\texttt{blob} and \texttt{object} each detected nothing. Because
-\texttt{blob} and \texttt{object} also return nothing, this is not a generic
-detector firing indiscriminately: the model has a transferable concept of a
-cell and no concept of a neuron, and modifiers destroy what does work.
-Raising \texttt{max\_num\_objects} from the default 16 to 64 recovered
-detections the default cap had discarded ($0.394 \to 0.419$); the output
-probability threshold had no measurable effect at $0.3$, $0.5$ or $0.7$; and
-combining text with points is refused by the model itself.
+SAM\,3.1's prompt mode was selected on validation like every other setting
+here. Points beat a box on every frame ($0.579$ against $0.027$ at three
+points; $0.000$ for points on frame~0 alone), and ten points was the optimum
+($0.634$, falling to $0.425$ at twenty). Its concept mode is sensitive to
+wording rather than simply blind: \texttt{cells} detects the target while
+\texttt{neuron}, \texttt{blob} and \texttt{object} detect nothing at all, and
+\texttt{cells} with the object cap raised to $64$ was adopted. Selection was on
+IoU throughout, as for every other method, although its clDice peaks at five
+points rather than ten. Its late-frame masks expand to cover up to $78\,\%$ of
+the field (Figure~\ref{fig:proofA81}); this is the model's own behaviour and
+not an artefact of our scoring, since its interface returns exactly one object
+per frame, the expanded region contains the target rather than sitting beside
+it, and the expansion is already present at three points per frame.
 
 Two properties of that sweep should be stated plainly. First, all selection
 was on IoU, as for every other method here. This matters for SAM\,3.1 because

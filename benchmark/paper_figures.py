@@ -31,7 +31,7 @@ PRED = os.path.join(REPO, "benchmark", "predictions")
 # Model key -> predictions subdirectory, where the two differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning runs do not carry the
 # model name they are scored under.
-PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_test"}
+PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final"}
 
 mpl.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
@@ -161,7 +161,9 @@ from benchmark.eval_masks import cbdice_score as _cbdice
 def fig_temporal():
     ds = Dataset()
     videos = ds.split("test")
-    models = ["ours"] + FIGURE_COMPETITORS
+    # sam3.1_text is a Table-2-only row: the temporal curve needs prediction
+    # stacks and the reported (max_num_objects=64) run lives cluster-side.
+    models = ["ours"] + [m for m in FIGURE_COMPETITORS if m != "sam3.1_text"]
     T = 72                                    # common length (skip frame 0 = prompt)
     curves = {}
     for m in models:

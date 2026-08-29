@@ -31,7 +31,7 @@ from benchmark.eval_masks import evaluate_stack
 MODELS = {"ours": "ours", "sam2_zeroshot": "sam2_zeroshot", "usam": "usam",
           "sam3.1": "sam3_final", "cellpose_sam": "cellpose_sam",
           "neuroquantify": "neuroquantify", "omnipose": "omnipose",
-          "sam3.1_text": "sam3_text_test"}
+          "sam3.1_text": "sam3_text_final"}
 TEX = {"Ours": "ours", "SAM\\,2 (zero-shot)": "sam2_zeroshot",
        "$\\mu$SAM (box-prompt)": "usam", "SAM\\,3.1 (point-prompt)": "sam3.1",
        "Cellpose-SAM": "cellpose_sam", "NeuroQuantify": "neuroquantify",
@@ -46,6 +46,14 @@ def iou(a, b):
 
 def main():
     ds = Dataset(); vids = ds.split("test")
+    # Skip models whose prediction stacks are not on this machine, and SAY SO --
+    # a silently skipped row is how an unverified number reaches a paper.
+    absent = [m for m, d in MODELS.items()
+              if not all(os.path.exists(f"benchmark/predictions/{d}/{v}.tif") for v in vids)]
+    for m in absent:
+        print(f"[NOT VERIFIED] {m}: no stacks in benchmark/predictions/{MODELS[m]}/")
+    for m in absent:
+        MODELS.pop(m)
     _gt = {v: ds.load_gt(v) for v in vids}
     _pred = {}
     def load(d, v):                      # stacks are re-read many times below
@@ -119,7 +127,7 @@ def main():
         if not line.strip().endswith("\\\\") or "multicolumn" in line or "Method &" in line:
             continue
         nm = line.split("&")[0].replace("\\textbf{", "").replace("}", "").strip()
-        if nm not in TEX: continue
+        if nm not in TEX or TEX[nm] not in MODELS: continue
         for c, col in zip([re.sub(r"[^0-9.]", "", x) for x in line.split("&")[1:5]], COLS):
             cells += 1
             exp = Decimal(S[TEX[nm]][col]).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
