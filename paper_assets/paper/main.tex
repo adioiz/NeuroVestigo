@@ -347,7 +347,7 @@ the tool that makes it usable at a bench. Our contributions are three.
 
 \emph{A model.} We adapt SAM\,2 to this modality with dual-rank LoRA+,
 training $13.9\,\%$ of its parameters, and supervise it with an objective that
-penalises breaking a neurite as well as mislabelling one. Prompted with one
+penalises breaking a neurite as well as mislabeling one. Prompted with one
 mask on frame~0 and given no further input, it segments every remaining frame
 of a recording and leads every metric we report against six competing methods
 spanning four algorithmic families
@@ -507,11 +507,12 @@ NeuriteTracker \cite{fusco2016neuritetracker} aligns most closely with our
 task, segmenting neurite morphodynamics across time-lapses and maintaining
 instance identity via graph association. However, it relies exclusively on
 fluorescence imaging: neurons must express a bicistronic construct carrying
-both F-actin and nuclear markers for detection. This invasive labelling is
+both F-actin and nuclear markers for detection. This invasive labeling is
 precisely what continuous, multi-day phase-contrast acquisitions seek to
 avoid. Because the pipeline is algorithm-based and specific to fluorescent
 markers rather than learned from data, it cannot be trivially adapted to
 label-free phase-contrast imagery.
+
 Consequently, when precise, per-neuron morphology is required, the gold
 standard remains labour-intensive manual tracing
 \cite{meijering2004neuronj,longair2011snt}, as fully automated instance
