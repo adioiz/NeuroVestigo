@@ -57,7 +57,7 @@
 \setcounter{bottomnumber}{2}
 \setcounter{totalnumber}{4}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,calc,backgrounds,decorations.pathreplacing}
+\usetikzlibrary{arrows.meta,positioning,calc,backgrounds,decorations.pathreplacing,shapes.arrows}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[colorlinks=true,allcolors=blue!60!black]{hyperref}
 
@@ -101,6 +101,7 @@
 \definecolor{softgrey}{HTML}{E4E8ED}
 \definecolor{midgrey}{HTML}{8B96A3}
 \definecolor{amber}{HTML}{E1A93B}
+\definecolor{crimson}{HTML}{C0392B}
 
 %------------------------- title -------------------------------------
 \title{\textbf{Transformer-based, topology-preserving, temporally consistent
@@ -777,67 +778,211 @@ Figure~\ref{fig:architecture} summarizes the placement.
 %   memory attention 5.4-8.5 | mask decoder 9.4-12.5 | output arrow to 13.5
 %   prompt encoder above the decoder | memory encoder below memory attention
 % ---------------------------------------------------------------------
+% ============================================================
+%  Figure 2 -- method overview.
+%    (I)   what the model is given
+%    (II)  where it is adapted
+%    (III) what it is trained against
+%  Canvas: 16.2 cm wide (= \textwidth at a4paper/margin=2.4cm).
+% ============================================================
+\newcommand{\arbor}[2]{%  #1 = growth factor, #2 = colour
+  \begin{scope}[#2, line width=0.4pt, line cap=round]
+    \begin{scope}[scale=#1]
+      \draw (0,0) .. controls (0.10,0.28) and (0.02,0.52) .. (0.22,0.72);
+      \draw (0.22,0.72) .. controls (0.34,0.86) and (0.30,0.98) .. (0.44,1.06);
+      \draw (0.22,0.72) .. controls (0.06,0.90) and (-0.06,0.94) .. (-0.14,1.10);
+      \draw (0,0) .. controls (-0.26,0.10) and (-0.46,0.02) .. (-0.62,0.16);
+      \draw (-0.62,0.16) .. controls (-0.76,0.26) and (-0.88,0.24) .. (-0.98,0.36);
+      \draw (0,0) .. controls (0.24,-0.16) and (0.46,-0.14) .. (0.62,-0.32);
+      \draw (0.62,-0.32) .. controls (0.74,-0.44) and (0.86,-0.44) .. (0.94,-0.58);
+      \draw (0,0) .. controls (-0.14,-0.24) and (-0.30,-0.34) .. (-0.36,-0.58);
+    \end{scope}
+  \end{scope}
+  \fill[#2] (0,0) circle (0.06);
+}
+% filmstrip frame: #1 x, #2 y, #3 half-size, #4 growth, #5 colour
+\newcommand{\frmbox}[5]{%
+  \begin{scope}[shift={(#1,#2)}]
+    \fill[white, rounded corners=1pt] (-#3,-#3) rectangle (#3,#3);
+    \draw[midgrey!75, rounded corners=1pt, line width=0.4pt]
+         (-#3,-#3) rectangle (#3,#3);
+    \arbor{#4}{#5}
+  \end{scope}
+}
+
 \begin{figure}[!htb]
 \centering
 \begin{tikzpicture}[
   font=\small,
-  bx/.style={rounded corners=3pt, minimum height=1.5cm, align=center,
-             inner sep=3pt, line width=0.9pt},
-  frz/.style={bx, fill=softgrey!70, draw=midgrey},
-  lra/.style={bx, fill=ourblue!14, draw=ourblue!80},
-  trn/.style={bx, fill=teal!16, draw=teal!80},
-  ar/.style={-{Stealth[length=2.6mm,width=2mm]}, draw=navy!70, line width=1pt},
-  slab/.style={font=\scriptsize, text=midgrey}
+  pnl/.style={rounded corners=4pt, draw=midgrey!50, line width=0.7pt},
+  ttl/.style={font=\bfseries\small, text=navy, align=center},
+  sub/.style={font=\scriptsize\itshape, text=midgrey, align=center},
+  mini/.style={font=\fontsize{6}{7}\selectfont, text=navy, align=center},
+  mig/.style={font=\fontsize{6}{7}\selectfont, text=midgrey, align=center},
+  bx/.style={rounded corners=2.5pt, align=center, inner sep=2.5pt,
+             line width=0.8pt, font=\fontsize{7.2}{8.4}\selectfont},
+  frz/.style={bx, fill=softgrey!80, draw=midgrey!90},
+  lra/.style={bx, fill=ourblue!13, draw=ourblue!85},
+  trn/.style={bx, fill=teal!15, draw=teal!85},
+  ar/.style={-{Stealth[length=2mm,width=1.6mm]}, draw=navy!75, line width=0.75pt},
+  loop/.style={-{Stealth[length=2mm,width=1.6mm]}, draw=amber!92!black, line width=1.05pt},
+  grad/.style={-{Stealth[length=1.9mm,width=1.6mm]}, draw=crimson, line width=0.9pt},
+  chip/.style={single arrow, fill=midgrey!45, draw=midgrey!70,
+               minimum height=0.6cm, minimum width=0.4cm, inner sep=1pt,
+               single arrow head extend=1mm, font=\scriptsize\bfseries, text=white},
 ]
-%------------------------------- encoder path
-\node[frz, minimum width=2.8cm, anchor=west] (enc) at (0,0)
-     {Image encoder\\{\scriptsize Hiera-tiny}\\{\scriptsize\bfseries frozen}};
-\node[lra, minimum width=1.7cm, anchor=west] (hier) at (2.8,0)
-     {blocks\\10--11\\{\scriptsize\bfseries LoRA $r{=}8$}};
 
-%------------------------------- temporal + decoder
-\node[lra, minimum width=3.1cm, anchor=west] (mem) at (5.4,0)
-     {Memory attention\\{\scriptsize cross-attention to bank}\\
-      {\scriptsize\bfseries LoRA $r{=}16$ (40)}};
-\node[lra, minimum width=3.1cm, anchor=west] (dec) at (9.4,0)
-     {Mask decoder\\{\scriptsize two-way transformer}\\
-      {\scriptsize\bfseries LoRA $r{=}16$ (28)}};
+% =====================  panel grounds  =====================
+\fill[softgrey!45, rounded corners=4pt] (0,-0.30) rectangle (3.50,7.30);
+\draw[pnl] (0,-0.30) rectangle (3.50,7.30);
+\draw[pnl, fill=white] (3.76,-0.30) rectangle (10.60,7.30);
+\draw[pnl, fill=white] (10.86,-0.30) rectangle (16.05,7.30);
 
-%------------------------------- prompt in, memory out
-\node[trn, minimum width=2.6cm, minimum height=0.95cm] (pe) at (10.95,2.0)
-     {Prompt encoder\\{\scriptsize frame-0 mask}};
-\node[trn, minimum width=3.4cm, minimum height=0.95cm, anchor=north]
-     (menc) at (6.95,-1.6) {Memory encoder $+$ bank};
+% ===================  (I)  the task  =======================
+\node[ttl] at (1.75,6.92) {\textcolor{crimson}{(I)} One annotation};
+\node[sub] at (1.75,6.55) {what the model is given};
 
-%------------------------------- flow
-\draw[ar] (hier.east) -- (mem.west);
-\draw[ar] (mem.east)  -- (dec.west);
-\draw[ar] (dec.east)  -- ++(1.0,0) node[right, slab] {$\hat{m}_t$};
-\draw[ar] (pe.south)  -- (dec.north);
-% write-back: decoder output -> bank.  "|-" = vertical first, then
-% horizontal, so the corner is a true right angle.
-\draw[ar] (dec.south) |- (menc.east);
-% read-back: bank -> memory attention (conditions the next frame)
-\draw[ar] ([xshift=-0.5mm]menc.north) -- (mem.south);
+\frmbox{1.10}{5.75}{0.50}{0.20}{ourblue}
+\node[mini, anchor=west] at (1.78,5.90) {$t = 0$};
+\node[mini, anchor=west, text=ourblue] at (1.78,5.62) {GT mask};
 
-%------------------------------- legend
-\begin{scope}[shift={(1.4,-3.3)}]
-  \node[frz, minimum width=0.5cm, minimum height=0.4cm, anchor=west] (k1) at (0,0) {};
-  \node[slab, anchor=west] at (0.62,0) {frozen};
-  \node[lra, minimum width=0.5cm, minimum height=0.4cm, anchor=west] (k2) at (2.6,0) {};
-  \node[slab, anchor=west] at (3.22,0) {LoRA-adapted (0.91\,M)};
-  \node[trn, minimum width=0.5cm, minimum height=0.4cm, anchor=west] (k3) at (7.5,0) {};
-  \node[slab, anchor=west] at (8.12,0) {trained directly (4.64\,M)};
+\draw[ar] (1.10,5.18) -- (1.10,4.86);
+\node[mig, anchor=west] at (1.28,5.02) {propagate};
+
+\frmbox{1.10}{4.30}{0.50}{0.27}{teal}
+\node[mini, anchor=west] at (1.78,4.30) {$t = 1$};
+
+\frmbox{1.10}{2.85}{0.50}{0.34}{teal}
+\node[mini, anchor=west] at (1.78,2.85) {$t = k$};
+
+\node[text=midgrey!80, font=\footnotesize] at (1.10,2.15) {$\vdots$};
+
+\frmbox{1.10}{1.40}{0.50}{0.42}{teal}
+\node[mini, anchor=west] at (1.78,1.40) {$t = T$};
+
+\node[mini, align=center] at (1.75,0.58)
+     {72--92 frames,\\one per hour};
+\node[mig, align=center, font=\fontsize{6}{7}\selectfont\itshape] at (1.75,0.10)
+     {no further prompt};
+
+\node[chip] at (3.63,3.60) {1};
+
+% ===================  (II)  adaptation  ====================
+\node[ttl] at (7.18,6.92) {\textcolor{crimson}{(II)} Adaptation};
+\node[sub] at (7.18,6.55) {where the $13.9\,\%$ lives};
+
+\node[frz, minimum width=1.95cm, minimum height=0.82cm, anchor=west] (enc) at (3.92,5.70)
+     {Image encoder\\{\fontsize{6}{7}\selectfont Hiera-tiny $\cdot$ frozen}};
+\node[lra, minimum width=1.45cm, minimum height=0.82cm, anchor=west] (hier) at (6.38,5.70)
+     {blocks 10--11\\{\fontsize{6}{7}\selectfont LoRA $r{=}8$}};
+\node[trn, minimum width=1.85cm, minimum height=0.82cm, anchor=west] (pe) at (8.25,5.70)
+     {Prompt encoder\\{\fontsize{6}{7}\selectfont frame-0 mask}};
+
+\node[lra, minimum width=2.25cm, minimum height=0.88cm, anchor=west] (mem) at (3.92,3.90)
+     {Memory attention\\{\fontsize{6}{7}\selectfont LoRA $r{=}16$ $\cdot$ 40 sites}};
+\node[lra, minimum width=2.25cm, minimum height=0.88cm, anchor=west] (dec) at (6.78,3.90)
+     {Mask decoder\\{\fontsize{6}{7}\selectfont LoRA $r{=}16$ $\cdot$ 28 sites}};
+\node[trn, minimum width=2.70cm, minimum height=0.58cm, anchor=west] (menc) at (5.30,2.35)
+     {Memory encoder $+$ bank};
+
+\draw[ar] (enc.east) -- (hier.west);
+\draw[ar] (hier.south) -- ++(0,-0.50) -| (mem.north);
+\draw[ar] (mem.east) -- (dec.west);
+\draw[ar] (pe.south) -- ++(0,-0.55) -| ([xshift=6mm]dec.north);
+\draw[ar] (dec.east) -- ++(0.30,0) node[right, mini] {$\hat{m}_t$};
+\draw[loop] (dec.south) -- (dec.south |- menc.north);
+\draw[loop] (menc.west) -| (mem.south);
+\node[mig, anchor=north, text=amber!70!black, align=center] at (6.20,1.92)
+     {recurrence: the bank read at $t$\\holds the mask predicted at $t-1$};
+
+% --- low-rank inset (bottom right of the panel, clear of everything)
+\begin{scope}[shift={(8.62,2.05)}]
+  \node[mini, anchor=south west] at (-0.05,1.00) {low-rank update};
+  \draw[draw=midgrey!85, fill=softgrey!75, line width=0.55pt] (0,0.20) rectangle (0.46,0.86);
+  \node[mig] at (0.23,0.53) {$W$};
+  \node[mini] at (0.64,0.53) {$+$};
+  \draw[draw=ourblue!85, fill=ourblue!16, line width=0.55pt] (0.82,0.20) rectangle (1.00,0.86);
+  \draw[draw=ourblue!85, fill=ourblue!16, line width=0.55pt] (1.10,0.64) rectangle (1.62,0.86);
+  \node[mig, text=ourblue] at (0.91,0.06) {$B$};
+  \node[mig, text=ourblue] at (1.36,0.50) {$A$};
+  \node[mini, anchor=north west] at (-0.05,-0.10) {$\mathrm{lr}_B = 16\,\mathrm{lr}_A$};
 \end{scope}
+
+% --- legend
+\begin{scope}[shift={(4.05,0.62)}]
+  \node[frz, minimum width=0.32cm, minimum height=0.22cm, anchor=west] at (0,0) {};
+  \node[mini, anchor=west] at (0.40,0) {frozen};
+  \node[lra, minimum width=0.32cm, minimum height=0.22cm, anchor=west] at (1.30,0) {};
+  \node[mini, anchor=west, align=left] at (1.70,0) {LoRA-adapted\\$0.91$\,M};
+  \node[trn, minimum width=0.32cm, minimum height=0.22cm, anchor=west] at (3.90,0) {};
+  \node[mini, anchor=west, align=left] at (4.30,0) {trained directly\\$4.64$\,M};
+\end{scope}
+
+\node[chip] at (10.73,3.60) {2};
+
+% ===================  (III)  objective  ====================
+\node[ttl] at (13.46,6.92) {\textcolor{crimson}{(III)} Objective};
+\node[sub] at (13.46,6.55) {16-frame BPTT, bank not detached};
+
+\frmbox{11.45}{5.46}{0.45}{0.20}{teal}
+\frmbox{12.60}{5.46}{0.45}{0.24}{teal}
+\frmbox{13.75}{5.46}{0.45}{0.28}{teal}
+\frmbox{15.20}{5.46}{0.45}{0.38}{teal}
+\node[text=midgrey!80, font=\footnotesize] at (14.50,5.46) {$\cdots$};
+
+\draw[ar] (11.93,5.46) -- (12.13,5.46);
+\draw[ar] (13.08,5.46) -- (13.28,5.46);
+\node[mig] at (13.46,6.18) {memory writes};
+
+\node[mig] at (11.45,4.82) {$t$};
+\node[mig] at (12.60,4.82) {$t{+}1$};
+\node[mig] at (13.75,4.82) {$t{+}2$};
+\node[mig] at (15.20,4.82) {$t{+}15$};
+
+\draw[grad] (15.20,4.58) .. controls (14.25,4.02) and (12.42,4.02) .. (11.45,4.58);
+\node[mig, anchor=north, text=crimson] at (13.46,3.98)
+     {gradient reaches every earlier frame};
+
+\begin{scope}[shift={(11.62,1.70)}]
+  \draw[rounded corners=2.5pt, fill=navy!6, draw=navy!35, line width=0.7pt]
+       (0,0) rectangle (3.68,1.68);
+  % tint band behind the two connectivity terms
+  \draw[rounded corners=2pt, fill=ourblue!10, draw=none] (0.08,0.10) rectangle (3.60,0.84);
+  \node[mig, anchor=west, text=navy]    at (0.18,1.38) {$3.0\times$ Focal};
+  \node[mig, anchor=west, text=navy]    at (0.18,1.02) {$2.0\times$ Dice};
+  \node[mig, anchor=west, text=ourblue] at (0.18,0.64) {$0.3\times$ cbDice};
+  \node[mig, anchor=west, text=ourblue] at (0.18,0.28) {$0.3\times$ Supervoxel};
+  \node[mig, anchor=west] at (2.12,1.38) {per pixel};
+  \node[mig, anchor=west] at (2.12,1.02) {per region};
+  \node[mig, anchor=west, text=ourblue!85!black] at (2.12,0.64) {skeleton};
+  \node[mig, anchor=west, text=ourblue!85!black] at (2.12,0.28) {components};
+\end{scope}
+
+\draw[dashed, draw=midgrey!85, line width=0.7pt] (11.05,1.40) -- (15.87,1.40);
+\node[mini, anchor=north] at (13.46,1.24) {\bfseries At inference};
+\node[mig, anchor=north, align=center] at (13.46,0.90)
+     {no gradients, no clips: one mask\\propagates the whole recording};
+
 \end{tikzpicture}
-\caption{\textbf{Where the model is adapted.} The image
-encoder is frozen; low-rank adapters are inserted into the attention
-projections of its final two blocks (rank 8) and of the memory-attention
-module and mask decoder (rank 16). Boxes are colored by where adapters are
-placed --- the non-attention machinery within the same modules, together
-with the prompt and memory encoders, is trained directly. In total 13.9\,\%
-of the 39{,}876{,}930 parameters are updated. The bank written by the memory
-encoder conditions the next frame (Eq.~\ref{eq:recurrence}).}
+\caption{\textbf{Method overview.}
+\textbf{(I)}~A single ground-truth mask on frame~0 is the only supervision the
+model receives. It propagates that mask through the rest of the recording ---
+72 to 92 further frames, acquired one per hour --- with no second prompt,
+correction or re-initialization.
+\textbf{(II)}~Where the network is adapted. The Hiera-tiny image encoder is
+frozen apart from low-rank adapters in the attention projections of its final
+two blocks ($r{=}8$); the memory-attention module (40 adapter sites) and the
+mask decoder (28) carry rank-16 adapters; the prompt and memory encoders are
+trained directly. In total $5{,}557{,}250$ of $39{,}876{,}930$ parameters are
+updated ($13.9\,\%$). The amber path is the recurrence of
+Eq.~\ref{eq:recurrence}: the bank read at frame $t$ holds the mask predicted
+at $t-1$.
+\textbf{(III)}~Training unrolls clips of 16 frames and backpropagates through
+that recurrence with the memory bank left attached to the computation graph,
+so gradient reaches the cross-frame parameters along every path back to the
+start of the clip. Two connectivity terms (shaded) supplement the pixel-level
+terms. At inference the same recurrence runs without gradients, over the whole
+recording.}
 \label{fig:architecture}
 \end{figure}
 
