@@ -57,3 +57,7 @@ benchmark/__pycache__/
 # SAM 3 is cloned into the repo root on the cluster for `pip install -e .`.
 # It is a separate upstream git repo (~60 MB) — never ours to track.
 sam3/
+
+# figure-tracing scratch
+paper_assets/paper/*.aux
+paper_assets/paper/*.log
