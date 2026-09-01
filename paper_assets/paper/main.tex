@@ -31,6 +31,9 @@
 \usepackage[margin=2.4cm]{geometry}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
+% left-aligned wrapping column, so p{} cells do not stretch their spaces
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \usepackage{amsmath,amssymb}
 \usepackage{siunitx}
 \usepackage{xcolor}
@@ -59,6 +62,7 @@
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,calc,backgrounds,decorations.pathreplacing,shapes.arrows}
 \usepackage[numbers,sort&compress]{natbib}
+\PassOptionsToPackage{hyphens}{url}
 \usepackage[colorlinks=true,allcolors=blue!60!black]{hyperref}
 
 \graphicspath{{figures/}}
@@ -104,9 +108,8 @@
 \definecolor{crimson}{HTML}{C0392B}
 
 %------------------------- title -------------------------------------
-\title{\textbf{Transformer-based, topology-preserving, temporally consistent
-segmentation and tracking of individual neurons in phase-contrast
-time-lapse microscopy}}
+\title{\textbf{NeuroVestigo: topology-preserving segmentation and tracking
+of single neurons in phase-contrast time-lapse microscopy}}
 
 % Author order to be confirmed with Prof. Shefi.
 % E. N. Berkovich acquired and hand-annotated the time-lapse dataset
@@ -299,7 +302,7 @@ the one- to two-pixel-wide neurites that carry the biological signal; none
 preserve the identity of a single neuron across a multi-day recording; and
 area-based scores conceal precisely this failure, since a severed branch
 costs a handful of pixels while invalidating the morphology it defines.
-We present \todo{NAME}, a parameter-efficient adaptation of the promptable
+We present NeuroVestigo, a parameter-efficient adaptation of the promptable
 video model SAM\,2 \cite{ravi2025sam2} to label-free phase contrast.
 Dual-rank LoRA+ updates $5.56$\,M of $39.9$\,M weights ($13.9\,\%$), trained
 under a connectivity-preserving objective that penalizes topological breaks
@@ -386,16 +389,17 @@ identical morphology, the task transcends semantic segmentation; it strictly
 requires instance-level disambiguation and the continuous preservation of
 temporal identity for a singular specified cell.
 
-We address these by adapting SAM\,2 \cite{ravi2025sam2}---a promptable video
-model equipped with a memory bank that propagates spatial conditioning
-across sequential frames---to label-free phase-contrast microscopy. This
+We address these with NeuroVestigo, an adaptation of SAM\,2
+\cite{ravi2025sam2}---a promptable video model equipped with a memory bank
+that propagates spatial conditioning across sequential frames---to label-free
+phase-contrast microscopy. This
 adaptation is highly parameter-efficient, utilizing dual-rank LoRA+ to
 update merely $13.9\,\%$ of the network weights. Furthermore, our training
 objective explicitly integrates topology-preserving losses to penalize
 structural fragmentation alongside standard pixel-level errors. Conditioned
 on a single initial mask at frame~0, the model autonomously segments the
 entire time-lapse sequence. Evaluated on four strictly held-out recordings
-propagated in full ($72$--$92$ frames), our approach outperforms six
+propagated in full ($72$--$92$ frames), NeuroVestigo outperforms six
 competing baselines across all reported metrics
 (Section~\ref{sec:res:benchmark}) and exhibits the lowest longitudinal
 degradation over time (Section~\ref{sec:res:temporal}). The inference model
@@ -1146,7 +1150,7 @@ that splits or merges a branch alters the area of the mask very little while
 invalidating the morphology it is meant to describe.}
 \label{tab:loss}
 \small
-\begin{tabular}{llcl}
+\begin{tabular}{l l c L{6.0cm}}
 \toprule
 Term & Operates on & Weight & What it enforces \\
 \midrule
@@ -1455,7 +1459,7 @@ reduced to the target exactly as for the other automatic methods.}
 \toprule
 Method & IoU & Dice & \textbf{cbDice} & clDice & Per-frame supervision \\
 \midrule
-\textbf{Ours}            & \textbf{0.760} & \textbf{0.861} & \textbf{0.851} & \textbf{0.943} & 1 annotation (frame 0) \\
+\textbf{NeuroVestigo}            & \textbf{0.760} & \textbf{0.861} & \textbf{0.851} & \textbf{0.943} & 1 annotation (frame 0) \\
 SAM\,2 (zero-shot)       & 0.639 & 0.771 & 0.758 & 0.830 & 1 annotation (frame 0) \\
 $\mu$SAM (box-prompt)    & 0.562 & 0.702 & 0.767 & 0.804 & GT box, \emph{every} frame \\
 SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{every} frame \\
@@ -1591,7 +1595,7 @@ inherent temporal consistency.}
 \toprule
 Method & Q1 & Q2 & Q3 & Q4 & Decay \\
 \midrule
-\textbf{Ours}            & \textbf{0.876} & \textbf{0.887} & \textbf{0.833} & \textbf{0.807} & $\mathbf{-0.069}$ \\
+\textbf{NeuroVestigo}            & \textbf{0.876} & \textbf{0.887} & \textbf{0.833} & \textbf{0.807} & $\mathbf{-0.069}$ \\
 Cellpose-SAM             & 0.764 & 0.785 & 0.712 & 0.637 & $-0.126$ \\
 Omnipose                 & 0.609 & 0.617 & 0.556 & 0.458 & $-0.150$ \\
 SAM\,2 (zero-shot)       & 0.846 & 0.806 & 0.730 & 0.649 & $-0.197$ \\
@@ -1816,14 +1820,18 @@ paired image stacks and single-neuron instance masks, including the four
 held-out test sequences --- are deposited at Zenodo,
 \todo{Zenodo DOI}, under \todo{data license}.
 
+\begin{sloppypar}
 \emph{Training and evaluation code.} Adaptation, training and the full
 benchmark are at
 \url{https://github.com/adioiz/Fine-tune-SAM2-model-for-Neurons-segmentation}.
+\end{sloppypar}
+\begin{sloppypar}
 Per-recording scores for every method are tracked in the repository under
 \texttt{benchmark/results/}; \texttt{benchmark/drift\_quartiles.py}
 regenerates Table~\ref{tab:drift} and \texttt{benchmark/run\_ours.py}
 reproduces the full-sequence propagation reported in
 Table~\ref{tab:main}.
+\end{sloppypar}
 
 \emph{Model and plug-in.} The LoRA adapter weights and the
 \texttt{neurons-labeling} napari plug-in are at
@@ -1861,6 +1869,7 @@ The authors declare no competing interests.
 \subsection*{How the competing methods were run}
 \label{sec:supp:protocol}
 
+\begin{sloppypar}
 Two settings recur across the competing methods. The first is input scale:
 our recordings are about $1.5$ px per micrometer, coarser than the
 magnifications these models were trained at. The second is detection
@@ -1873,6 +1882,7 @@ $0.42$ against $0.56$ validation IoU); Cellpose-SAM uses
 \texttt{bact\_phase\_omni}, the only one of its models that detects anything
 here. Every value was selected on validation and applied unchanged to test;
 Table~\ref{tab:protocol} sets out the full configuration.
+\end{sloppypar}
 
 $\mu$SAM's mask selection was audited: it is asked for three candidate masks
 and its own highest-scoring one is kept. Restricting it to a single mask
@@ -1909,11 +1919,11 @@ uses
 here --- \texttt{cyto2\_omni} returns no objects on any validation frame.}
 \label{tab:protocol}
 \small
-\begin{tabular}{lllcl}
+\begin{tabular}{l L{2.9cm} L{2.8cm} c L{3.2cm}}
 \toprule
 Method & Mode used & Prompt per frame & Scale & Reduction to target \\
 \midrule
-\textbf{Ours}      & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
+\textbf{NeuroVestigo}      & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 SAM\,2             & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 $\mu$SAM           & interactive box prompt       & GT box, every frame & $\times$1 & --- box selects target \\
 SAM\,3.1           & promptable video tracking    & 10 GT points, every frame & $\times$1 & --- points select target \\
