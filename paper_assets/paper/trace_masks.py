@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 from skimage import measure, morphology
 
-REPO = "/Users/adioiz/Documents/Learnings/Thesis/scripts/NeuroVestigo"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MASKS = os.path.join(REPO, "training_data", "masks")
 
 
