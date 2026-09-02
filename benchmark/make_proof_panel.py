@@ -36,7 +36,8 @@ PRETTY = {"ours": "NeuroVestigo", "sam2_zeroshot": "SAM 2 (zero-shot)",
 # Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
-PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final"}
+PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final",
+            "usam": "usam_single"}
 
 
 def load_gray(video, t):

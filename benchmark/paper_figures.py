@@ -31,7 +31,10 @@ PRED = os.path.join(REPO, "benchmark", "predictions")
 # Model key -> predictions subdirectory, where the two differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning runs do not carry the
 # model name they are scored under.
-PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final"}
+PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final",
+            # uSAM is reported in single-mask mode (multimask_output=False),
+            # SAM's documented setting for an unambiguous box prompt.
+            "usam": "usam_single"}
 
 mpl.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],

@@ -26,7 +26,7 @@ from benchmark.eval_masks import evaluate_stack
 OURS_LABEL = "NeuroVestigo"
 METHODS = [(OURS_LABEL, "ours_16f"), ("Cellpose-SAM", "cellpose_sam"),
            ("Omnipose", "omnipose"), ("SAM 2 (zero-shot)", "sam2_zeroshot"),
-           ("$\\mu$SAM (box-prompt)", "usam"), ("NeuroQuantify", "neuroquantify"),
+           ("$\\mu$SAM (box-prompt)", "usam_single"), ("NeuroQuantify", "neuroquantify"),
            ("SAM 3.1 (point-prompt)", "sam3_final")]
 
 

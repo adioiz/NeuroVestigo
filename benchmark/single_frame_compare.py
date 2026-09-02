@@ -39,7 +39,7 @@ MODELS = [("ours", "NeuroVestigo"),
 # Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
-PRED_DIR = {"sam3.1": "sam3_final"}
+PRED_DIR = {"sam3.1": "sam3_final", "usam": "usam_single"}
 POOL = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2", "A31_C1", "A52_C2", "A22_C2"]
 
 

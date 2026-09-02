@@ -507,15 +507,8 @@ longitudinal neurite tracking in this modality.
   node[midway, above, note, text=amber!85, yshift=1pt]
   {corrections $\rightarrow$ new training data};
 \end{tikzpicture}
-\caption{\textbf{From one annotation to a tracked neuron.}
-\textbf{(a)}~A label-free phase-contrast recording of
-$T$ frames. \textbf{(b)}~A single neuron is annotated on the first frame in
-the accompanying \texttt{neurons-labeling} napari plug-in. \textbf{(c)}~The
-fine-tuned model propagates that annotation, re-using its own previous
-output through the memory bank. \textbf{(d)}~The neuron is segmented on
-every frame with a single maintained identity (yellow, correct; green,
-missed; red, extra), yielding per-neurite morphometrics. Corrections made in
-the plug-in return as new training data.}
+\caption{\textbf{End-to-end pipeline for single neuron tracking.}
+\textbf{(a)}~A continuous label-free phase-contrast time-lapse sequence comprising $T$ frames. \textbf{(b)}~A single target neuron is manually annotated on the initial frame utilizing the integrated \texttt{neurons-labeling} napari plug-in. \textbf{(c)}~The fine-tuned model propagates this spatial prior across the sequence, explicitly maintaining instance identity by conditioning on past predictions via its temporal memory bank. \textbf{(d)}~The target is robustly segmented in every subsequent frame (visualization: true positive in yellow, false negative in green, false positive in red). Interactive corrections made within the plug-in natively generate formatted data for continuous model refinement.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -979,27 +972,10 @@ Figure~\ref{fig:architecture} summarizes the placement.
       a severed branch barely moves an area term};
 
 \end{tikzpicture}
-\caption{\textbf{Method overview.}
-\textbf{(a)}~The task. The model is given one ground-truth mask at $t=0$
-(navy) and nothing further; every later mask (teal) is its own output,
-propagated with no second prompt, correction or re-initialization. The frames
-are the phase-contrast images of held-out recording \texttt{A71\_C1}, every
-twelfth hour, with the predictions of the reported model overlaid; it reaches
-IoU $0.830$ on this recording. The ground-truth target grows from $1.5\,\%$ of
-the frame at $t=0$ to $5.8\,\%$ at $t=72$. Scale bar $50\,\mu$m.
-\textbf{(b)}~Where the network is adapted. The Hiera-tiny image encoder is
-frozen apart from low-rank adapters in the attention projections of its final
-two blocks ($r{=}8$); the memory-attention module (40 adapter sites) and the
-mask decoder (28) carry rank-16 adapters; the prompt and memory encoders are
-trained directly. The amber path is the recurrence of
-Eq.~\ref{eq:recurrence}.
-\textbf{(c)}~The training objective. Clips of 16 frames are unrolled and the
-gradient is backpropagated through that recurrence with the memory bank left
-attached to the computation graph, so it reaches the cross-frame parameters
-along every path back to the start of the clip. Two of the four loss terms
-measure topology rather than area; the inset shows why, pairing the mask of
-frame~72 with its skeleton --- the centerline is $513$ of the mask's $4977$
-pixels, so severing a branch is nearly free under an area term.}
+\caption{\textbf{Methodology and architectural adaptation.}
+\textbf{(a) The task:} Conditioned exclusively on a single ground-truth mask at $t=0$ (navy), the model autonomously propagates predictions (teal) longitudinally without secondary prompting.
+\textbf{(b) Parameter-efficient adaptation:} The Hiera-tiny image encoder is frozen except for low-rank adapters ($r{=}8$) in its final two blocks, while rank-16 adapters are integrated into the memory-attention and mask decoders alongside fully fine-tuned prompt and memory encoders (the amber pathway illustrates temporal recurrence, Eq.~\ref{eq:recurrence}).
+\textbf{(c) Optimization and temporal backpropagation:} By maintaining the memory bank within the computation graph across unrolled 16-frame training clips, gradients continuously optimize cross-frame parameters, while topology-aware loss terms explicitly penalize structural fractures.}
 \label{fig:architecture}
 \end{figure}
 
@@ -1455,9 +1431,9 @@ held-out recordings (excluding the frame-0 prompt), with required per-frame
 supervision noted to contextualize the comparisons. Our proposed model
 significantly outperforms all methods across both topological metrics by a
 substantial margin. Furthermore, these results expose the limitations of
-area-based evaluation: $\mu$SAM and Cellpose-SAM yield virtually identical
-IoU scores ($0.562$ vs. $0.563$) despite a significant disparity in
-structural connectivity ($0.767$ vs. $0.725$ cbDice). SAM\,3.1 is reported in
+area-based evaluation: $\mu$SAM and Cellpose-SAM sit within $0.012$ IoU of
+one another ($0.575$ vs. $0.563$) yet differ by $0.067$ in structural
+connectivity ($0.792$ vs. $0.725$ cbDice). SAM\,3.1 is reported in
 both of the modes its video interface accepts; it cannot be given a mask
 prompt, and its concept mode is not target-aware, so its predictions are
 reduced to the target exactly as for the other automatic methods.}
@@ -1469,14 +1445,14 @@ Method & IoU & Dice & \textbf{cbDice} & clDice & Per-frame supervision \\
 \midrule
 \textbf{NeuroVestigo}            & \textbf{0.760} & \textbf{0.861} & \textbf{0.851} & \textbf{0.943} & 1 annotation (frame 0) \\
 SAM\,2 (zero-shot)       & 0.639 & 0.771 & 0.758 & 0.830 & 1 annotation (frame 0) \\
-$\mu$SAM (box-prompt)    & 0.562 & 0.702 & 0.767 & 0.804 & GT box, \emph{every} frame \\
+$\mu$SAM (box-prompt)    & 0.575 & 0.721 & 0.792 & 0.843 & GT box, \emph{every} frame \\
 SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{every} frame \\
 Cellpose-SAM             & 0.563 & 0.708 & 0.725 & 0.798 & none (automatic) \\
 NeuroQuantify            & 0.446 & 0.594 & 0.602 & 0.680 & none (automatic) \\
 Omnipose                 & 0.279 & 0.428 & 0.560 & 0.649 & none (automatic) \\
 SAM\,3.1 (text-prompt)   & 0.200 & 0.278 & 0.260 & 0.290 & none (automatic) \\
 \midrule
-\multicolumn{2}{l}{\emph{our margin over best method}} & & $0.083$ & $0.113$ & \\
+\multicolumn{2}{l}{\emph{our margin over best method}} & & $0.059$ & $0.100$ & \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1486,8 +1462,8 @@ The empirical performance of each method closely aligns with its underlying
 design priorities (Figure~\ref{fig:benchmark}). The baseline SAM\,2 reliably
 segments the main soma but fails to delineate fine, low-contrast processes,
 attaining an IoU of $0.639$ and a cbDice of $0.758$. Despite benefiting from
-a per-frame bounding box prompt, $\mu$SAM achieves only $0.562$ IoU and
-$0.767$ cbDice. Notably, Cellpose-SAM matches $\mu$SAM in terms of regional
+a per-frame bounding box prompt, $\mu$SAM achieves only $0.575$ IoU and
+$0.792$ cbDice. Notably, Cellpose-SAM nearly matches $\mu$SAM in regional
 overlap ($0.563$ IoU) but underperforms significantly in preserving
 topological connectivity ($0.725$ cbDice). This discrepancy perfectly
 illustrates the divergence between the two metric families discussed in
@@ -1592,7 +1568,7 @@ true morphological evolution with segmentation artefacts.
 \caption{\textbf{Temporal consistency across quartiles.} Mean cbDice is
 evaluated across temporal quartiles ($Q_1$--$Q_4$). All methods degrade
 (`Decay' $= Q_4 - Q_1$), but our single-prompt model is $1.8\times$ more
-stable than the best baseline. Strikingly, $\mu$SAM degrades $3.6\times$
+stable than the best baseline. Strikingly, $\mu$SAM degrades $2.8\times$
 faster and SAM\,3.1 $6.1\times$ faster despite exhaustive per-frame
 supervision, demonstrating that frame-wise prompting does not confer
 inherent temporal consistency.}
@@ -1605,8 +1581,8 @@ Method & Q1 & Q2 & Q3 & Q4 & Decay \\
 \textbf{NeuroVestigo}            & \textbf{0.876} & \textbf{0.887} & \textbf{0.833} & \textbf{0.807} & $\mathbf{-0.069}$ \\
 Cellpose-SAM             & 0.764 & 0.785 & 0.712 & 0.637 & $-0.126$ \\
 Omnipose                 & 0.609 & 0.617 & 0.556 & 0.458 & $-0.150$ \\
+$\mu$SAM (box-prompt)    & 0.860 & 0.859 & 0.780 & 0.669 & $-0.191$ \\
 SAM\,2 (zero-shot)       & 0.846 & 0.806 & 0.730 & 0.649 & $-0.197$ \\
-$\mu$SAM (box-prompt)    & 0.845 & 0.867 & 0.758 & 0.598 & $-0.247$ \\
 NeuroQuantify            & 0.694 & 0.710 & 0.568 & 0.436 & $-0.258$ \\
 SAM\,3.1 (point-prompt)  & 0.778 & 0.731 & 0.539 & 0.360 & $-0.418$ \\
 \bottomrule
@@ -1773,8 +1749,8 @@ Our analysis further highlights a critical dichotomy between spatial and
 topological optimization. Area-overlap metrics (e.g., IoU) paradoxically
 penalize minor boundary shifts more severely than catastrophic structural
 disconnections (Figure~\ref{fig:whytopology}). Consequently, methods
-exhibiting nearly identical IoU scores (e.g., $\mu$SAM and Cellpose-SAM)
-diverge significantly under topological evaluation (a $0.043$ cbDice gap).
+within $0.012$ IoU of one another (e.g., $\mu$SAM and Cellpose-SAM) diverge
+significantly under topological evaluation (a $0.067$ cbDice gap).
 Within our training objective, connectivity constraints --- particularly the
 supervoxel term --- dictate the primary optimization dynamics. Despite a
 deliberately small nominal coefficient of $0.3$, the supervoxel loss
@@ -1882,12 +1858,22 @@ here. Every value was selected on validation and applied unchanged to test;
 Table~\ref{tab:protocol} sets out the full configuration.
 \end{sloppypar}
 
-$\mu$SAM's mask selection was audited: it is asked for three candidate masks
-and its own highest-scoring one is kept. Restricting it to a single mask
-(\texttt{multimask\_output=False}) eliminates the large-box failures described
-in Section~\ref{sec:res:temporal} but scores $0.574$ against $0.595$
-validation IoU, so the shipped setting is the one favorable to it
-(\texttt{benchmark/sweep\_usam\_multimask.py}).
+$\mu$SAM's mask selection was audited. SAM returns three candidate masks for
+an \emph{ambiguous} prompt --- subpart, part and whole of the same object ---
+and a single mask otherwise; its documentation reserves the three-mask mode
+for sparse prompts such as a lone click and recommends
+\texttt{multimask\_output=False} for a box, which is unambiguous. We
+therefore report $\mu$SAM in single-mask mode. Keeping $\mu$SAM's own
+highest-scoring candidate of three scores marginally higher on validation
+($0.595$ against $0.574$ IoU) but lower on the test recordings ($0.562$
+against $0.575$ IoU, $0.767$ against $0.792$ cbDice), and it produces the
+box-filling selections audited in
+\texttt{benchmark/sweep\_usam\_multimask.py}: on $9\,\%$ of test frames,
+none earlier than $71\,\%$ through a recording, $\mu$SAM's confidence ranks
+a mask more than three times the ground-truth area above a better one it
+produced at the same time. Both configurations are scored in the repository
+(\texttt{usam} and \texttt{usam\_multimask}); the single-mask mode is used
+throughout the paper.
 
 Figure~\ref{fig:proofA81} repeats the qualitative comparison of
 Figure~\ref{fig:qualitative} on a second held-out recording, and
