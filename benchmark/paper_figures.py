@@ -14,6 +14,7 @@ Outputs -> paper_assets/figures/fig_{benchmark_test,temporal_consistency}.{pdf,p
 from __future__ import annotations
 
 import csv
+import json
 import os
 
 import numpy as np
@@ -62,6 +63,29 @@ def load_summary(split="test"):
     return rows
 
 
+SHIPPED = os.path.join(REPO, "checkpoints-16-frames")
+
+
+def shipped_val_reference():
+    """The validation scores of the SHIPPED run, read from its own log.
+
+    These were hardcoded as {"iou": 0.84, "dice": 0.91} with a caption saying
+    "8-frame", which was inherited from the superseded run and wrong: the
+    reported model trains and validates on 16-frame clips. Both the numbers
+    and the clip length now come from checkpoints-16-frames/ so neither can
+    go stale again. Do NOT read gpu-checkpoints/ -- that IS the 8-frame run.
+    """
+    rows = json.load(open(os.path.join(SHIPPED, "training_log.json")))
+    if isinstance(rows, dict):
+        rows = rows.get("epochs", list(rows.values()))
+    scored = [r for r in rows
+              if isinstance(r, dict) and r.get("val_iou") is not None]
+    best = max(scored, key=lambda r: r["val_iou"])
+    cfg = json.load(open(os.path.join(SHIPPED, "training_config.json")))
+    n = cfg.get("data", cfg)["num_frames"]
+    return {"iou": best["val_iou"], "dice": best["val_dice"]}, n, best["epoch"]
+
+
 def save(fig, name):
     os.makedirs(FIGDIR, exist_ok=True)
     for ext in ("pdf", "png"):
@@ -104,15 +128,8 @@ def fig_benchmark(split="test"):
                 ax.text(xi, mv + 0.012, f"{mv:.2f}", ha="center", va="bottom",
                         fontsize=7.4, color="#5A6472")
 
-    # gap-over-best-baseline callout on cbDice (placed in open space, no overlap)
-    ours_cl = float(rows["ours"]["cbdice_mean"]); best_cl = float(rows[comps[0]]["cbdice_mean"])
-    ax.annotate(f"+{ours_cl-best_cl:.2f} cbDice\nover best baseline",
-                xy=(1 + w, best_cl + 0.005), xytext=(1.55, 0.985),
-                arrowprops=dict(arrowstyle="->", color=NAVY, lw=1.0),
-                fontsize=8.2, color=NAVY, fontweight="bold", ha="left", va="top")
-
-    # dotted reference: ours under the STANDARD 8-frame val protocol (report headline)
-    val_ref = {"iou": 0.84, "dice": 0.91}
+    # dotted reference: ours under the clip-length validation protocol
+    val_ref, n_frames, best_ep = shipped_val_reference()
     keys = [k for k, _ in METRICS]
     for key, val in val_ref.items():
         xi = 0 + (keys.index(key) - 1) * w
@@ -123,8 +140,8 @@ def fig_benchmark(split="test"):
         ax.text(xi - w * 0.62, val, f"{val:.2f}", ha="right", va="center",
                 fontsize=6.6, color=NAVY, style="italic", zorder=7)
     # footnote below the axes -- inside the plot it lay over the 'ours' bars.
-    ax.text(0.0, -0.155, "– –  ours under the standard 8-frame validation protocol "
-            "(bars = harder full-video propagation)",
+    ax.text(0.0, -0.155, f"– –  ours under the {n_frames}-frame validation "
+            "protocol (bars = harder full-video propagation)",
             transform=ax.transAxes, fontsize=7, color=NAVY, style="italic", va="top")
 
     set_name = "held-out test set" if split == "test" else "validation set"
@@ -201,9 +218,8 @@ def fig_temporal():
     ax.set_ylim(0, 1.0); ax.set_xlim(1, T)
     ax.grid(color=GRID, lw=0.8); ax.set_axisbelow(True)
     ax.legend(loc="lower left", frameon=False, fontsize=8.5)
-    ax.set_title("Temporal consistency — ours holds segmentation across the whole sequence; "
-                 "single-frame tools cannot", loc="left", fontsize=10.5, color=NAVY,
-                 pad=12, weight="bold")
+    ax.set_title("Temporal consistency on the held-out test set",
+                 loc="left", fontsize=10.5, color=NAVY, pad=12, weight="bold")
     save(fig, "fig_temporal_consistency")
 
 
