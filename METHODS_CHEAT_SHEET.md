@@ -1,4 +1,9 @@
-# Training Methods Cheat Sheet
+# NeuroVestigo — Training Methods Cheat Sheet
+
+What each hyperparameter and loss term does, and why it is set where it is.
+The reported model is the sixteen-frame run; its weights ship in
+[neurons-labeling](https://github.com/adioiz/neurons-labeling) at
+`checkpoints-16-frames/lora_weights.pt`.
 
 **Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (~20 videos), tuned for NVIDIA B200.
 

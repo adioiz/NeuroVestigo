@@ -1,4 +1,6 @@
-# Complete Code Walkthrough: SAM 2 LoRA Fine-Tuning
+# NeuroVestigo — Complete Code Walkthrough
+
+File-by-file, how the SAM 2 LoRA+ adaptation is trained and benchmarked.
 
 This document explains **every file, every function, and every important line** with the mathematical and logical background. You should be able to read this and explain every aspect to your professor.
 
