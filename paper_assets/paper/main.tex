@@ -1523,13 +1523,12 @@ geometries like a neuron.
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=0.92\textwidth,height=0.439\textwidth,keepaspectratio]{fig_benchmark_test}
-  \caption{\textbf{Segmentation accuracy on the held-out test set.} Mean
-  $\pm$ s.d. over the four held-out recordings, scored on propagated frames
-  ($t\ge1$). Bars give IoU, Dice and cbDice; competing methods are ordered by
-  cbDice. The dashed reference marks NeuroVestigo under the sixteen-frame
-  validation protocol, against which the bars represent the harder task of
-  propagating an entire recording from a single annotation.}
+  \includegraphics[width=0.92\textwidth,height=0.414\textwidth,keepaspectratio]{fig_benchmark_test}
+  \caption{\textbf{Segmentation accuracy on the held-out test set.} Bars give
+  IoU, Dice and cbDice, scored on propagated frames ($t\ge1$); competing
+  methods are ordered by cbDice. Each recording is averaged over its own
+  frames first, so the bar is the mean of four recording-level scores and the
+  error bar is their standard deviation.}
   \label{fig:benchmark}
 \end{figure}
 

@@ -14,7 +14,6 @@ Outputs -> paper_assets/figures/fig_{benchmark_test,temporal_consistency}.{pdf,p
 from __future__ import annotations
 
 import csv
-import json
 import os
 
 import numpy as np
@@ -63,29 +62,6 @@ def load_summary(split="test"):
     return rows
 
 
-SHIPPED = os.path.join(REPO, "checkpoints-16-frames")
-
-
-def shipped_val_reference():
-    """The validation scores of the SHIPPED run, read from its own log.
-
-    These were hardcoded as {"iou": 0.84, "dice": 0.91} with a caption saying
-    "8-frame", which was inherited from the superseded run and wrong: the
-    reported model trains and validates on 16-frame clips. Both the numbers
-    and the clip length now come from checkpoints-16-frames/ so neither can
-    go stale again. Do NOT read gpu-checkpoints/ -- that IS the 8-frame run.
-    """
-    rows = json.load(open(os.path.join(SHIPPED, "training_log.json")))
-    if isinstance(rows, dict):
-        rows = rows.get("epochs", list(rows.values()))
-    scored = [r for r in rows
-              if isinstance(r, dict) and r.get("val_iou") is not None]
-    best = max(scored, key=lambda r: r["val_iou"])
-    cfg = json.load(open(os.path.join(SHIPPED, "training_config.json")))
-    n = cfg.get("data", cfg)["num_frames"]
-    return {"iou": best["val_iou"], "dice": best["val_dice"]}, n, best["epoch"]
-
-
 def save(fig, name):
     os.makedirs(FIGDIR, exist_ok=True)
     for ext in ("pdf", "png"):
@@ -119,30 +95,12 @@ def fig_benchmark(split="test"):
                error_kw=dict(ecolor="#9AA3AF", elinewidth=0.9, capsize=2.5), zorder=3,
                label=label)
         for xi, mv, m in zip(x + off, means, order):
-            if m == "ours":
-                # inside the bar: the 8-frame reference dashes sit just above
-                # these bars, and an outside label collides with them.
-                ax.text(xi, mv - 0.018, f"{mv:.2f}", ha="center", va="top",
-                        fontsize=7.6, fontweight="bold", color="white", zorder=8)
-            else:
-                ax.text(xi, mv + 0.012, f"{mv:.2f}", ha="center", va="bottom",
-                        fontsize=7.4, color="#5A6472")
+            ax.text(xi, mv + stds[list(x + off).index(xi)] + 0.012, f"{mv:.2f}",
+                    ha="center", va="bottom",
+                    fontsize=7.6 if m == "ours" else 7.4,
+                    fontweight="bold" if m == "ours" else "normal",
+                    color=NAVY if m == "ours" else "#5A6472")
 
-    # dotted reference: ours under the clip-length validation protocol
-    val_ref, n_frames, best_ep = shipped_val_reference()
-    keys = [k for k, _ in METRICS]
-    for key, val in val_ref.items():
-        xi = 0 + (keys.index(key) - 1) * w
-        ax.plot([xi - w * 0.55, xi + w * 0.55], [val, val], ls=(0, (2, 1.4)),
-                color=NAVY, lw=1.5, zorder=7)
-        # label to the LEFT of the segment: directly above the bar it would
-        # otherwise collide with the bar's own value label (0.91 vs 0.86).
-        ax.text(xi - w * 0.62, val, f"{val:.2f}", ha="right", va="center",
-                fontsize=6.6, color=NAVY, style="italic", zorder=7)
-    # footnote below the axes -- inside the plot it lay over the 'ours' bars.
-    ax.text(0.0, -0.155, f"– –  NeuroVestigo under the {n_frames}-frame "
-            "validation protocol (bars = harder full-video propagation)",
-            transform=ax.transAxes, fontsize=7, color=NAVY, style="italic", va="top")
 
     set_name = "held-out test set" if split == "test" else "validation set"
     vid_name = "held-out test videos" if split == "test" else "validation videos"
