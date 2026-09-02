@@ -87,7 +87,7 @@ If `sam3-env` is gone (cluster rebuild, purged home):
 ```bash
 conda create -y -n sam3-env python=3.12
 conda activate sam3-env
-pip install -e ~/Fine-tune-SAM2-model-for-Neurons-segmentation/sam3
+pip install -e ~/NeuroVestigo/sam3
 ```
 
 Wheel names must read `cp312`. If you see `cp39`, the env is not active.
@@ -101,7 +101,7 @@ The login node has no GPU. Get a GPU node first:
 ```bash
 srun --partition=B200-4h --gres=gpu:1 --pty bash
 conda activate sam3-env
-cd ~/Fine-tune-SAM2-model-for-Neurons-segmentation
+cd ~/NeuroVestigo
 python benchmark/run_sam3.py --probe
 ```
 

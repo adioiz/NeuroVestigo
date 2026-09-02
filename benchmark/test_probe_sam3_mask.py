@@ -2,7 +2,7 @@
 (as printed by stage A on the cluster). This cannot test SAM 3 -- it tests MY
 code for the bug classes that have cost four cluster runs."""
 import importlib.util, os, sys, numpy as np, torch
-R="/Users/adioiz/Documents/Learnings/Thesis/scripts/Fine-tune-SAM2-model-for-Neurons-segmentation"
+R="/Users/adioiz/Documents/Learnings/Thesis/scripts/NeuroVestigo"
 os.chdir(R); sys.path.insert(0, R)
 spec=importlib.util.spec_from_file_location("probe", "benchmark/probe_sam3_mask.py")
 probe=importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)

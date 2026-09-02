@@ -442,7 +442,7 @@ why an IoU-only comparison cannot tell you whether a config change helped.
 ## Project structure
 
 ```
-Fine-tune-SAM2-model-for-Neurons-segmentation/
+NeuroVestigo/
 ├── cli.py                   # training + data-prep CLI (the entry point)
 ├── README.md                # ← you are here
 ├── METHODS_CHEAT_SHEET.md   # what each hyperparameter does, and why

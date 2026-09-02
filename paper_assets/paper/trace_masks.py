@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 from skimage import measure, morphology
 
-REPO = "/Users/adioiz/Documents/Learnings/Thesis/scripts/Fine-tune-SAM2-model-for-Neurons-segmentation"
+REPO = "/Users/adioiz/Documents/Learnings/Thesis/scripts/NeuroVestigo"
 MASKS = os.path.join(REPO, "training_data", "masks")
 
 
