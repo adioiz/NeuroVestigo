@@ -294,31 +294,35 @@ of single neurons in phase-contrast time-lapse microscopy}}
 %---------------------------------------------------------------------
 \begin{abstract}
 \noindent
-Neurite outgrowth is read from label-free time-lapse microscopy, where
-phototoxicity rules out fluorescent reporters and morphology must be
-recovered from phase contrast alone. That recovery is still done by hand.
-Existing segmenters resolve the high-contrast soma but fragment or delete
-the one- to two-pixel-wide neurites that carry the biological signal; none
-preserve the identity of a single neuron across a multi-day recording; and
-area-based scores conceal precisely this failure, since a severed branch
-costs a handful of pixels while invalidating the morphology it defines.
-We present NeuroVestigo, a parameter-efficient adaptation of the promptable
-video model SAM\,2 \cite{ravi2025sam2} to label-free phase contrast.
-Dual-rank LoRA+ updates $5.56$\,M of $39.9$\,M weights ($13.9\,\%$), trained
-under a connectivity-preserving objective that penalizes topological breaks
-alongside pixel error and backpropagated through an undetached memory bank,
-so that drift across frames is optimized rather than merely measured. A
-single annotated mask at frame~0 propagates through the whole sequence.
-On four strictly held-out recordings, each propagated in full from that
-single mask across 72 to 92 consecutive frames acquired one per hour ($328$
-scored in total), the model reaches cbDice $0.851$, clDice $0.943$,
-Dice $0.861$ and IoU $0.760$,
-exceeding six competing methods---each run in its own most favorable
-mode---on every metric, and it degrades least over time (cbDice falls
-$0.069$ from the first to the last quartile of a recording, against $0.126$
-for the nearest baseline). The model ships inside \texttt{neurons-labeling},
-the napari plug-in used to build the dataset, and we release all
-twenty-nine annotated recordings.
+Neurite outgrowth analysis necessitates label-free time-lapse microscopy, as
+phototoxicity precludes the use of continuous fluorescent reporters.
+Extracting cellular morphology from phase-contrast data, however, remains
+highly reliant on labor-intensive manual tracing. Existing automated
+segmenters successfully resolve the high-contrast soma but frequently
+fragment or delete the ultra-fine, pixel-scale neurites that encode critical
+biological signals. Furthermore, current methods fail to preserve
+longitudinal instance identity, and conventional area-based metrics
+paradoxically obscure these failures---a severed branch incurs a negligible
+pixel penalty while catastrophically invalidating the underlying biological
+morphology. To address this, we introduce NeuroVestigo, a
+parameter-efficient adaptation of the promptable video foundation model
+SAM\,2 \cite{ravi2025sam2} for phase-contrast microscopy. Utilizing
+dual-rank LoRA+ to update merely $13.9\,\%$ ($5.56$\,M of $39.9$\,M) of the
+network weights, the architecture is optimized via a connectivity-preserving
+objective that explicitly penalizes topological fractures. By
+backpropagating through an undetached temporal memory bank, longitudinal
+drift is explicitly optimized rather than merely measured. Conditioned on a
+single annotated mask at frame~0, the model robustly segments entire
+multi-day sequences. Evaluated on four strictly held-out recordings
+(spanning 72 to 92 consecutive hourly frames, yielding $328$ total frames),
+NeuroVestigo achieves state-of-the-art performance (cbDice $0.851$, clDice
+$0.943$, Dice $0.861$, IoU $0.760$), outperforming six competitive baselines
+across all metrics. Furthermore, it demonstrates unprecedented temporal
+stability, exhibiting a minimal cbDice degradation of $0.069$ between the
+first and final quartiles, compared to $0.126$ for the strongest baseline.
+The inference model is publicly released within \texttt{neurons-labeling}, a
+napari plug-in designed for interactive curation, alongside our complete
+dataset of twenty-nine annotated recordings.
 \end{abstract}
 
 \noindent\textbf{Keywords:} neuron segmentation; cell tracking;
