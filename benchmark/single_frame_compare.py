@@ -149,17 +149,16 @@ def main():
                         Patch(fc=[1, .25, .2], label="extra (FP)")],
                loc="lower center", ncol=3, frameon=False, fontsize=10, bbox_to_anchor=(0.5, -0.03))
     if args.style == "raw":
-        fig.text(0.5, -0.055, "Automatic tools (Cellpose-SAM, Omnipose, NeuroQuantify) shown as raw "
-             "output — each colour is a separately detected region; they segment the whole field "
-             "(or shatter it), never isolating the target neuron the way ours does.",
+        fig.text(0.5, -0.055, "Automatic methods (Cellpose-SAM, Omnipose, NeuroQuantify) are shown "
+             "as native output; each color is one detected region. They segment the whole field "
+             "rather than isolating the specified neuron.",
              ha="center", fontsize=8.5, color="#5A6472", style="italic")
     # The title has to match the style: in 'raw' the automatic tools show their
     # native whole-field output, in 'target' every method is reduced to the
     # target neuron and scored identically.
-    title = ("Each method run its own way — ours isolates the target neuron; "
-             "automatic tools segment the whole field") if args.style == "raw" else \
-            ("Every method scored the same way on the same frames — "
-             "green is the branch structure each one loses")
+    title = ("Native output of each method on held-out test frames"
+             if args.style == "raw" else
+             "All methods reduced to the target neuron and scored identically")
     fig.suptitle(title, fontsize=13, color="#16324F", y=1.006, weight="bold")
     fig.tight_layout()
     os.makedirs(FIGDIR, exist_ok=True)
