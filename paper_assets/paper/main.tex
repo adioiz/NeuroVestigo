@@ -1822,32 +1822,13 @@ directly from sequential masks.
 All data, code and model weights required to reproduce this work are
 publicly available.
 
-\emph{Dataset.} The twenty-nine annotated phase-contrast recordings ---
-paired image stacks and single-neuron instance masks, including the four
-held-out test sequences --- are deposited at Zenodo,
-\todo{Zenodo DOI}, under \todo{data license}.
+\emph{Dataset.} The twenty-nine annotated phase-contrast recordings and masks are deposited at Zenodo, \todo{Zenodo DOI}.
 
-\begin{sloppypar}
-\emph{Training and evaluation code.} Adaptation, training and the full
-benchmark are at
+\emph{Training and evaluation code.} Adaptation, training and the full benchmark are at
 \url{https://github.com/adioiz/NeuroVestigo}.
-\end{sloppypar}
-\begin{sloppypar}
-Per-recording scores for every method are tracked in the repository under
-\texttt{benchmark/results/}; \texttt{benchmark/drift\_quartiles.py}
-regenerates Table~\ref{tab:drift} and \texttt{benchmark/run\_ours.py}
-reproduces the full-sequence propagation reported in
-Table~\ref{tab:main}.
-\end{sloppypar}
 
-\emph{Model and plug-in.} The LoRA adapter weights
-(\texttt{checkpoints-16-frames/lora\_weights.pt}, with the
-\texttt{training\_config.json} that produced them) and the
-\texttt{neurons-labeling} napari plug-in are at
-\url{https://github.com/adioiz/neurons-labeling}. The adapters are applied
-to the public SAM\,2.1 Hiera-tiny checkpoint \cite{ravi2025sam2}, which
-remains subject to its own license and is not redistributed here. Software
-in both repositories is released under \todo{software license}.
+\emph{Model and plug-in.} The weights and the \texttt{neurons-labeling} napari plug-in are at
+\url{https://github.com/adioiz/neurons-labeling}.
 
 \section*{Acknowledgements}
 \todo{Funding: agency names and grant numbers, to be supplied by O.S.}
