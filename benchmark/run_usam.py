@@ -63,6 +63,14 @@ def main():
                          "micro-SAM registry. Running the smallest variant would "
                          "understate the strongest prompted competitor.")
     ap.add_argument("--out-dir", default=OUT)
+    ap.add_argument("--single-mask", action="store_true",
+                    help="multimask_output=False. SAM returns three candidate "
+                         "masks for an AMBIGUOUS prompt (subpart/part/whole of "
+                         "the SAME object) and one mask otherwise; SAM's own "
+                         "guidance is to disable it for box prompts, which are "
+                         "unambiguous. Scores lower on validation (0.574 vs "
+                         "0.595 IoU) but removes the miscalibrated box-filling "
+                         "selections audited in sweep_usam_multimask.py.")
     args = ap.parse_args()
 
     import torch
@@ -84,7 +92,8 @@ def main():
                 target.append(np.zeros(g.shape, np.uint8)); continue
             predictor.set_image(np.stack([fr] * 3, -1))
             res = segment_from_box(predictor, gt_box_yxyx(g),
-                                   multimask_output=True, return_all=True)
+                                   multimask_output=not args.single_mask,
+                                   return_all=True)
             masks, scores = np.asarray(res[0]), np.asarray(res[1])
             masks = masks.reshape(-1, *g.shape)
             m = masks[int(np.argmax(scores))].astype(np.uint8)   # µSAM's own best-scoring mask
