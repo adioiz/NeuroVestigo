@@ -12,12 +12,15 @@
 %      (charts are vector .pdf; photographic panels are .png)
 %   4. Compile with pdfLaTeX  (Figures 1, 2 and 3 are native TikZ - no PNG needed)
 %
-%  CURRENT LAYOUT -- 9 figures / 4 tables:
+%  CURRENT LAYOUT -- 9 figures / 3 tables:
 %    Fig 1 pipeline (Intro, TikZ)      Fig 2 architecture (3.2, TikZ)
 %    Fig 3 whytopology (3.4, TikZ)     Fig 4 benchmark (4.1)
 %    Fig 5 temporal (4.2)              Fig 6 qualitative (4.3)
 %    Fig 7 culture / Fig 8 proofA81 / Fig 9 rawoutput  (all appendix)
-%    Tab 1 loss (3.3)   Tab 2 main (4.1)   Tab 3 drift (4.2)   Tab 4 protocol (appendix)
+%    Tab 1 main (4.1)   Tab 2 drift (4.2)   Tab 3 protocol (appendix)
+%  The loss-terms table was removed 2026-09: Eq. 3 already gives the four
+%  weights and the surrounding prose gives each term's rationale, so it
+%  restated the section rather than adding to it.
 %  Fig 3 was Fig 6 until it moved from Ablations into 3.4, where it is first
 %  cited -- placeins[section] will not let a float cross a \section boundary.
 %  KEEP EVERY FLOAT DECLARED IMMEDIATELY AFTER THE PARAGRAPH THAT FIRST CITES IT;
@@ -1123,30 +1126,8 @@ neurites. The Dice term \cite{milletari2016vnet} compares the two masks as
 regions and normalizes by their combined area, which makes it independent of
 how much of the frame the neuron occupies and supplies a gradient that
 depends on the mask as a whole rather than on pixels independently --- both
-properties that the per-pixel term lacks. Table~\ref{tab:loss} summarizes
-the four.
-
-\begin{table}[!htb]
-\centering
-\caption{\textbf{The four terms of the training loss.} Each addresses a
-distinct failure mode. The two topology terms are included because an error
-that splits or merges a branch alters the area of the mask very little while
-invalidating the morphology it is meant to describe.}
-\label{tab:loss}
-\small
-\begin{tabular}{l l c L{6.0cm}}
-\toprule
-Term & Operates on & Weight & What it enforces \\
-\midrule
-Focal \cite{lin2017focal}        & per pixel            & 3.0 & robustness to severe, recording-dependent imbalance \\
-Dice \cite{milletari2016vnet}    & region               & 2.0 & scale-invariant overlap on very small masks \\
-cbDice \cite{shi2024cbdice}      & skeleton $+$ EDT     & 0.3 & thin-branch topology; reweights by skeleton radius \\
-Supervoxel \cite{grim2025supervoxel} & connected components & 0.3 & penalizes splitting or merging a branch \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
+properties that the per-pixel term lacks. The four terms therefore act on
+pixels, regions, skeletons and connected components respectively.
 \paragraph{Centerline-boundary Dice.}
 cbDice \cite{shi2024cbdice} extends clDice \cite{shit2021cldice}, which
 compares the skeletons of prediction and target rather than their masks: a
