@@ -44,7 +44,7 @@ AMBER = "#E1A93B"   # SAM 3.1, matching the paper palette
 MUTE = ["#B9C2CC", "#A7B2BE", "#95A2B0", "#8391A1", "#7C8998", "#6E7C8C", "#617080"]  # muted greys
 GRID = "#E4E8ED"
 
-PRETTY = {"ours": "Ours", "sam2_zeroshot": "SAM 2\nzero-shot", "usam": "µSAM\n(box-prompt)",
+PRETTY = {"ours": "NeuroVestigo", "sam2_zeroshot": "SAM 2\nzero-shot", "usam": "µSAM\n(box-prompt)",
           "deepsea": "DeepSea\n(auto)", "cellpose_sam": "Cellpose-SAM\n(auto)",
           "omnipose": "Omnipose\n(auto)", "neuroquantify": "NeuroQuantify\n(phase-contrast)",
           "cellsam": "CellSAM\n(auto)", "trackastra_omnipose": "Omnipose +\nTrackastra",
@@ -140,8 +140,8 @@ def fig_benchmark(split="test"):
         ax.text(xi - w * 0.62, val, f"{val:.2f}", ha="right", va="center",
                 fontsize=6.6, color=NAVY, style="italic", zorder=7)
     # footnote below the axes -- inside the plot it lay over the 'ours' bars.
-    ax.text(0.0, -0.155, f"– –  ours under the {n_frames}-frame validation "
-            "protocol (bars = harder full-video propagation)",
+    ax.text(0.0, -0.155, f"– –  NeuroVestigo under the {n_frames}-frame "
+            "validation protocol (bars = harder full-video propagation)",
             transform=ax.transAxes, fontsize=7, color=NAVY, style="italic", va="top")
 
     set_name = "held-out test set" if split == "test" else "validation set"
@@ -155,8 +155,7 @@ def fig_benchmark(split="test"):
     # NB: do NOT re-add "most on connectivity". After the topology_resolution
     # fix the margin over the best baseline is 0.113 on IoU vs 0.078 on cbDice,
     # so that claim is false. Ours still leads every metric outright.
-    ax.set_title(f"Neuron segmentation on the {set_name} — ours leads every metric, "
-                 "from a single frame-0 annotation",
+    ax.set_title(f"Neuron segmentation on the {set_name}",
                  loc="left", fontsize=10.5, color=NAVY, pad=16, weight="bold")
     save(fig, f"fig_benchmark_{split}")
 
@@ -200,7 +199,7 @@ def fig_temporal():
               "cellpose_sam": dict(color="#C7CDD6", lw=1.4, alpha=0.85),
               "sam3.1": dict(color=AMBER, lw=1.6, alpha=0.9),
               "sam3.1_text": dict(color=AMBER, lw=1.2, alpha=0.7, ls=":")}
-    names = {"ours": "Ours (temporal propagation)", "sam2_zeroshot": "SAM 2 zero-shot",
+    names = {"ours": "NeuroVestigo (temporal propagation)", "sam2_zeroshot": "SAM 2 zero-shot",
              "usam": "µSAM (box-prompt)", "neuroquantify": "NeuroQuantify (phase-contrast)",
              "omnipose": "Omnipose", "cellpose_sam": "Cellpose-SAM",
              "sam3.1": "SAM 3.1 (point-prompt)", "sam3.1_text": "SAM 3.1 (text-prompt)"}

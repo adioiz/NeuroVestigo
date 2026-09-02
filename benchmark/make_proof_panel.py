@@ -28,7 +28,7 @@ DATA = os.path.join(REPO, "training_data")
 PRED = os.path.join(REPO, "benchmark", "predictions")
 FIGDIR = os.path.join(REPO, "paper_assets", "figures")
 
-PRETTY = {"ours": "Ours (fine-tuned)", "sam2_zeroshot": "SAM 2 (zero-shot)",
+PRETTY = {"ours": "NeuroVestigo", "sam2_zeroshot": "SAM 2 (zero-shot)",
           "usam": "µSAM (box-prompt)", "cellpose_sam": "Cellpose-SAM",
           "omnipose": "Omnipose", "neuroquantify": "NeuroQuantify",
           "sam3.1": "SAM 3.1 (point-prompt)",

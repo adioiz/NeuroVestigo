@@ -1422,7 +1422,7 @@ metric is blind to.}
 \label{fig:whytopology}
 \end{figure}
 
-Frame 0 contains the initial annotations used to prompt both our model and the baseline SAM 2; hence it is excluded from all quantitative evaluations. Consequently, all methods are assessed exclusively on the subsequent propagated frames ($t \ge 1$) across the four held-out recordings, comprising a total of 328 evaluation frames. Metrics are calculated on a per-frame basis using hard masks at the native resolution of each recording. For methods that require upsampled inputs, predictions are rescaled back to the native resolution prior to evaluation, ensuring a standardized spatial domain for all comparisons. To prevent longer sequences from disproportionately influencing the aggregate results, frame-level metrics are first averaged within each recording, and these recording-level scores are then weighted equally. Table~\ref{tab:main} reports the resulting means and standard deviations across the four test recordings. 
+Frame 0 contains the initial annotations used to prompt both NeuroVestigo and the baseline SAM\,2; hence it is excluded from all quantitative evaluations. Consequently, all methods are assessed exclusively on the subsequent propagated frames ($t \ge 1$) across the four held-out recordings, comprising a total of 328 evaluation frames. Metrics are calculated on a per-frame basis using hard masks at the native resolution of each recording. For methods that require upsampled inputs, predictions are rescaled back to the native resolution prior to evaluation, ensuring a standardized spatial domain for all comparisons. To prevent longer sequences from disproportionately influencing the aggregate results, frame-level metrics are first averaged within each recording, and these recording-level scores are then weighted equally. Table~\ref{tab:main} reports the resulting means and standard deviations across the four test recordings. 
 
 %=====================================================================
 \section{Results}
@@ -1431,11 +1431,11 @@ Frame 0 contains the initial annotations used to prompt both our model and the b
 \subsection{Comparison with existing methods}
 \label{sec:res:benchmark}
 
-Table~\ref{tab:main} compares our model against six methods,
+Table~\ref{tab:main} compares NeuroVestigo against six methods,
 spanning four distinct algorithmic families, on the four held-out recordings.
 Notably, our proposed approach outperforms all methods across every metric.
 The evaluated methods differ significantly in both their per-frame input
-requirements and output representations. Both our model and the baseline
+requirements and output representations. Both NeuroVestigo and the baseline
 SAM\,2 are initialized identically with a single ground-truth mask at
 frame~0, which is then propagated across the sequence to maintain consistent
 object identity temporally. In contrast, $\mu$SAM requires a ground-truth
@@ -1527,7 +1527,7 @@ geometries like a neuron.
   \caption{\textbf{Segmentation accuracy on the held-out test set.} Mean
   $\pm$ s.d. over the four held-out recordings, scored on propagated frames
   ($t\ge1$). Bars give IoU, Dice and cbDice; competing methods are ordered by
-  cbDice. The dashed reference marks our model under the sixteen-frame
+  cbDice. The dashed reference marks NeuroVestigo under the sixteen-frame
   validation protocol, against which the bars represent the harder task of
   propagating an entire recording from a single annotation.}
   \label{fig:benchmark}
@@ -1545,7 +1545,7 @@ margin of this magnitude is highly significant for targets as diminutive and
 intricately branched as these; because the object occupies only a minimal
 percentage of the frame, a single pixel of boundary error along a neurite
 disproportionately degrades the overall score. Furthermore, the
-propagation never fails outright: the lowest per-frame IoU our model records
+propagation never fails outright: the lowest per-frame IoU NeuroVestigo records
 across the 328 evaluated frames is $0.550$, and no frame falls below $0.3$,
 which is not true of any competing method
 (Figure~\ref{fig:qualitative}).
@@ -1635,7 +1635,7 @@ during these early frames.
   cbDice at each frame index, averaged over the four held-out recordings,
   with every method prompted or run as described in
   Table~\ref{tab:protocol}. Frame~0 is the given annotation and is excluded.
-  Our model is prompted once and remains close to its initial quality
+  NeuroVestigo is prompted once and remains close to its initial quality
   throughout, while the single-frame methods decline steadily; the widening
   separation to the right of the plot is the decay quantified in
   Table~\ref{tab:drift}.}
@@ -1671,7 +1671,7 @@ We conducted an ablation study to isolate the impact of three key components.
 Each configuration was trained following the schedule detailed in
 Section~\ref{sec:met:model} and evaluated using the established protocol.
 
-\emph{Adaptation.} Base SAM\,2 and our model share a backbone, prompt
+\emph{Adaptation.} Base SAM\,2 and NeuroVestigo share a backbone, prompt
 formulation, and inference procedure, differing exclusively in the learned
 adapters. As shown in Table~\ref{tab:main}, this parameter-efficient
 adaptation yields an absolute performance gain of $+0.121$ IoU and $+0.093$ cbDice.
@@ -1720,12 +1720,12 @@ the operational range, we adopt the smaller weight.
   method at three time points of \texttt{A71\_C1}, each run as described in
   Table~\ref{tab:protocol}. Overlay semantics: yellow, correctly segmented;
   green, ground-truth neurite missed; red, predicted pixels outside the
-  ground truth; per-panel IoU inset. Our model and SAM\,2 are prompted only
+  ground truth; per-panel IoU inset. NeuroVestigo and SAM\,2 are prompted only
   on frame~0 and every subsequent mask is produced by propagation, whereas
   $\mu$SAM and SAM\,3.1 receive ground-truth prompts on the frame shown. The
   progression down the column is the growth that makes the task harder: by
   frame~62 the arbor has roughly tripled in centerline length, and the
-  competing methods lose the thin distal branches that our model retains.}
+  competing methods lose the thin distal branches that NeuroVestigo retains.}
   \label{fig:qualitative}
 \end{figure}
 
@@ -1756,7 +1756,7 @@ the operational range, we adopt the smaller weight.
 %     IoU (0.562 / 0.563) yet 0.043 apart on cbDice (0.767 / 0.725).
 We introduced a parameter-efficient adaptation of SAM\,2 (via dual-rank
 LoRA+) for the longitudinal tracking of highly arborized neurons.
-Conditioned on a single initial mask, our model establishes
+Conditioned on a single initial mask, NeuroVestigo establishes
 state-of-the-art performance across all metrics on strictly held-out test
 sequences (Table~\ref{tab:main}). Ablations confirm these gains ($+0.121$
 IoU, $+0.093$ cbDice) stem entirely from the learned adapters, utilizing
@@ -1813,7 +1813,7 @@ segmentation. Future work will extend this framework to dense, multi-neuron
 environments by integrating collision-resolution protocols. Ultimately, once
 the derived quantities are validated against manual tracing
 \cite{berkovich2025neurite}, the high spatiotemporal consistency achieved by
-our model enables the automated, high-throughput extraction of longitudinal
+NeuroVestigo enables the automated, high-throughput extraction of longitudinal
 biological metrics --- such as neurite elongation and branching rates ---
 directly from sequential masks.
 
@@ -1922,7 +1922,7 @@ it judges empty.
 \begin{table}[!htb]
 \centering
 \caption{\textbf{How each method was run.} Methods differ in how much
-information they receive per frame. Our model and base SAM\,2 receive a
+information they receive per frame. NeuroVestigo and base SAM\,2 receive a
 single annotation for the whole recording; $\mu$SAM receives the
 ground-truth bounding box on \emph{every} frame. Input scale, backbone and
 detection thresholds were all chosen on the validation split only and applied
@@ -1981,12 +1981,12 @@ Cellpose-SAM       & automatic, instance          & none                & $\time
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\textwidth,height=0.498\textwidth,keepaspectratio]{single_frame_compare_test.png}
+  \includegraphics[width=\textwidth,height=0.515\textwidth,keepaspectratio]{single_frame_compare_test.png}
   \caption{\textbf{Raw output of each method, run as designed.}
   The automatic methods are shown as their native
   multi-instance output --- each color is one detected region --- rather
   than after reduction to the target, making explicit that they segment the
-  field rather than isolating a specified neuron. Our model and the
+  field rather than isolating a specified neuron. NeuroVestigo and the
   promptable baselines are shown as target overlays with per-frame IoU.}
   \label{fig:rawoutput}
 \end{figure}

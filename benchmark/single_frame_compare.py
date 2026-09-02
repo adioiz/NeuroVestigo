@@ -29,7 +29,7 @@ FIGDIR = os.path.join(REPO, "paper_assets", "figures")
 
 # six models (ours first). SAM 2 = zero-shot propagation; µSAM = box-prompt;
 # Cellpose-SAM / Omnipose / NeuroQuantify = automatic (shown as raw all-cell output).
-MODELS = [("ours", "Ours"),
+MODELS = [("ours", "NeuroVestigo"),
           ("sam2_zeroshot", "SAM 2\n(zero-shot)"),
           ("usam", "µSAM\n(box-prompt)"),
           ("cellpose_sam", "Cellpose-SAM\n(auto)"),

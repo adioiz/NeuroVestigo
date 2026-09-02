@@ -23,7 +23,8 @@ from benchmark.eval_masks import evaluate_stack
 
 # label -> predictions subdirectory. The SAM 3 sweep wrote one directory per
 # configuration, so the winning run does not carry the name it is scored under.
-METHODS = [("Ours", "ours_16f"), ("Cellpose-SAM", "cellpose_sam"),
+OURS_LABEL = "NeuroVestigo"
+METHODS = [(OURS_LABEL, "ours_16f"), ("Cellpose-SAM", "cellpose_sam"),
            ("Omnipose", "omnipose"), ("SAM 2 (zero-shot)", "sam2_zeroshot"),
            ("$\\mu$SAM (box-prompt)", "usam"), ("NeuroQuantify", "neuroquantify"),
            ("SAM 3.1 (point-prompt)", "sam3_final")]
@@ -64,13 +65,13 @@ def main():
 
     print("\n--- LaTeX rows for tab:drift ---")
     for lbl, m, dec in out:
-        b = (lambda x: f"\\textbf{{{x:.3f}}}") if lbl == "Ours" else (lambda x: f"{x:.3f}")
-        dd = f"$\\mathbf{{{dec:.3f}}}$" if lbl == "Ours" else f"${dec:.3f}$"
-        name = f"\\textbf{{{lbl}}}" if lbl == "Ours" else lbl
+        b = (lambda x: f"\\textbf{{{x:.3f}}}") if lbl == OURS_LABEL else (lambda x: f"{x:.3f}")
+        dd = f"$\\mathbf{{{dec:.3f}}}$" if lbl == OURS_LABEL else f"${dec:.3f}$"
+        name = f"\\textbf{{{lbl}}}" if lbl == OURS_LABEL else lbl
         print(f"{name:<24} & " + " & ".join(b(x) for x in m) + f" & {dd} \\\\")
 
-    ours = next(r for r in out if r[0] == "Ours")
-    others = [r for r in out if r[0] != "Ours"]
+    ours = next(r for r in out if r[0] == OURS_LABEL)
+    others = [r for r in out if r[0] != OURS_LABEL]
     best = max(others, key=lambda r: r[2])
     print(f"\nours decay        {ours[2]:.3f}")
     print(f"baseline range    {min(abs(r[2]) for r in others):.3f} .. {max(abs(r[2]) for r in others):.3f}")
