@@ -1112,10 +1112,14 @@ false splits and false merges directly, which cbDice, comparing centerlines,
 does not.
 
 \paragraph{The composite loss.}
-% NOTE (verified from gpu-checkpoints/training_log.json): loss_iou and
-% loss_class are identically 0.0 across every logged epoch - they are gated
-% on pred_obj_scores, which the training wrapper does not emit. The loss
-% actually optimised has FOUR terms. Do not reinstate the six-term form.
+% NOTE (re-verified 2026-09 against checkpoints-16-frames/training_log.json,
+% i.e. the SHIPPED run: loss_iou and loss_class are 0.000000 in all 13 logged
+% epochs). They are gated on pred_obj_scores, which the training wrapper does
+% not emit, so the loss actually optimized has FOUR terms. Do not reinstate
+% the six-term form.
+% Do NOT check this against gpu-checkpoints/ -- that is the SUPERSEDED run
+% (num_frames 8, topology_resolution 256). Both ran 110 epochs, so the epoch
+% count does not tell them apart; num_frames and topology_resolution do.
 We supervise the predicted mask with a weighted sum of four terms --- two
 that measure agreement in the conventional way, per pixel and per region,
 and two that measure topology:
@@ -1827,7 +1831,7 @@ held-out test sequences --- are deposited at Zenodo,
 \begin{sloppypar}
 \emph{Training and evaluation code.} Adaptation, training and the full
 benchmark are at
-\url{https://github.com/adioiz/Fine-tune-SAM2-model-for-Neurons-segmentation}.
+\url{https://github.com/adioiz/NeuroVestigo}.
 \end{sloppypar}
 \begin{sloppypar}
 Per-recording scores for every method are tracked in the repository under
@@ -1837,7 +1841,9 @@ reproduces the full-sequence propagation reported in
 Table~\ref{tab:main}.
 \end{sloppypar}
 
-\emph{Model and plug-in.} The LoRA adapter weights and the
+\emph{Model and plug-in.} The LoRA adapter weights
+(\texttt{checkpoints-16-frames/lora\_weights.pt}, with the
+\texttt{training\_config.json} that produced them) and the
 \texttt{neurons-labeling} napari plug-in are at
 \url{https://github.com/adioiz/neurons-labeling}. The adapters are applied
 to the public SAM\,2.1 Hiera-tiny checkpoint \cite{ravi2025sam2}, which
@@ -1853,14 +1859,22 @@ hand-annotated by E.\,N.~Berkovich as part of the M.Sc.\ research reported in
 preparing the primary cultures and for maintaining the live-imaging system on
 which these recordings were made.
 
+During the preparation of this manuscript the authors used Claude (Anthropic)
+to draft and edit text and to generate figure and analysis code. All output
+was reviewed and verified by the authors, who take full responsibility for
+the content of the published article.
+
 \section*{Author contributions}
-Contributions are stated using the CRediT taxonomy. A.O.: conceptualization,
-methodology, software, formal analysis, validation, visualization, writing
---- original draft. E.\,N.\,B.: investigation, data curation, resources,
-writing --- review and editing. S.C.: conceptualization, writing --- review
-and editing. O.O.: conceptualization, writing --- review and editing. O.S.:
-supervision, project administration, funding acquisition, resources, writing
---- review and editing. All authors read and approved the final manuscript.
+\begin{sloppypar}
+Contributions are stated using the CRediT taxonomy. Adi Oizerovich:
+conceptualization, methodology, software, formal analysis, validation,
+visualization, writing --- original draft. Efrat Naomi Berkovich:
+investigation, data curation, resources, writing --- review and editing.
+Sharon Cohen: writing --- review and editing. Ofek Ophir: writing --- review
+and editing. Orit Shefi: supervision, project administration, funding
+acquisition, resources, writing --- review and editing. All authors read and
+approved the final manuscript.
+\end{sloppypar}
 
 \section*{Declaration of interests}
 The authors declare no competing interests.
