@@ -81,7 +81,8 @@ that ever computes a metric, so no method can be scored by a different rule.
 
 ```bash
 # 1. run a method on the held-out test recordings
-python benchmark/run_ours.py --split test
+#    (run_ours.py defaults to the val split, so name the test recordings)
+python benchmark/run_ours.py --videos A71_C1 A81_C1 A12_C3_100k A12_C1_100k_2
 
 # 2. score whatever it wrote (same command for every method)
 python benchmark/score.py --pred-dir benchmark/predictions/ours \
