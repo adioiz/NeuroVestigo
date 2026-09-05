@@ -129,24 +129,38 @@ of single neurons in phase-contrast time-lapse microscopy}}
 %=====================================================================
 %  NUMBERS TO REFRESH AFTER THE FINAL TRAINING RUN
 %  ------------------------------------------------------------------
-%  SHIPPED MODEL: the 16-FRAME-CLIP run -- focal 3 / Dice 2 / cbDice 0.3 /
-%  supervoxel 0.3, topology_resolution 512, clips of 16 frames (all previous
-%  runs used 8). Full 110 epochs from scratch; BEST CHECKPOINT epoch 100.
-%  Weights: checkpoints-16-frames/lora_weights.pt.
-%  TEST (t>=1, full propagation): IoU 0.760 Dice 0.861 cbDice 0.851 clDice 0.943
-%  Validation under the same protocol is IoU 0.762 / cbDice 0.843 -- kept OUT of
-%  the paper deliberately. DL convention reports the test set; validation is what
-%  the model was selected on, so reporting it as a result is circular. It appears
-%  only where it justifies a competitor setting (Appendix).
+%  CHECKPOINT DIRECTORIES (2026-09). Only two exist and both are live:
+%    checkpoints/            SHIPPED -- 22 training recordings
+%    checkpoints-16-frames/  PREVIOUS -- 20 training recordings
+%  gpu-checkpoints/ has been DELETED. It was the superseded 8-frame /
+%  topology_resolution 256 run, and it is where the "8-frame validation"
+%  label on Figure 4 came from. Do not reinstate it.
 %
-%  PROTOCOL FACTS verified against checkpoints-16-frames (2026-08):
-%    num_frames 16, val_num_frames None -> VALIDATION CLIPS ARE ALSO 16 FRAMES
-%    (trainer.py: val_frames = config.data.val_num_frames or config.data.num_frames)
-%    clip_stride 4, steps/epoch 156, 110 epochs, 17160 optimiser steps
+%  SHIPPED MODEL: checkpoints/lora_weights.pt -- focal 3 / Dice 2 /
+%  cbDice 0.3 / supervoxel 0.3, topology_resolution 512, clips of 16 frames,
+%  22 training recordings. 110 epochs; BEST CHECKPOINT epoch 90.
+%  TEST (t>=1, full propagation): IoU 0.763 Dice 0.864 cbDice 0.855 clDice 0.946
+%  Validation is 0.8399 IoU at epoch 90 -- kept OUT of the paper deliberately.
+%  DL convention reports the test set; validation is what the model was
+%  selected on, so reporting it as a result is circular. It appears only
+%  where it justifies a competitor setting (Appendix).
+%
+%  PROTOCOL FACTS verified against checkpoints/training_config.json (2026-09):
+%    num_frames 16, val_num_frames 16 -> VALIDATION CLIPS ARE ALSO 16 FRAMES
+%    clip_stride 4, batch 2, 110 epochs, seed 42, hiera_rank 8
 %    early_stopping_patience 90 -> NEVER TRIGGERED; ran the full budget
-%    best epoch 100 (val_iou 0.8377), 635 s/epoch, 3.24 s/step, ~19.4 h total
-%  The paper previously said 8-frame clips, early stop at epoch 104, best epoch
-%  84, ten hours at 1.5 s/step -- all inherited from run D. Corrected.
+%    3.12 s/step (from the log); ~17 h total
+%  CAVEAT: the run RESUMED, and training_log.json now holds only epochs
+%  108-110, so best-epoch 90 / val_iou 0.8399 and the total wall-clock are
+%  NOT verifiable from the repo -- they come from Adi. Steps/epoch is derived
+%  (177); the same derivation gives 157 for the previous run, whose recorded
+%  value was 156, so treat the hours figure as approximate.
+%
+%  PREVIOUS MODEL (checkpoints-16-frames, 20 recordings, best epoch 100):
+%    TEST IoU 0.760 Dice 0.861 cbDice 0.851 clDice 0.943, val_iou 0.8377
+%  Adding the two recordings moved test IoU by +0.003 and left the decay at
+%  0.070. Written up as the "Training-set size" ablation; the larger set is
+%  shipped because it is the one released, not because it scores better.
 %
 %  WHY THIS RUN (bake-off of five, all scored identically, Aug 2026):
 %    D      3/2/0.3/0.3, topo_res 256 (BUGGY loss)  -- test cbDice 0.847
@@ -1091,14 +1105,11 @@ false splits and false merges directly, which cbDice, comparing centerlines,
 does not.
 
 \paragraph{The composite loss.}
-% NOTE (re-verified 2026-09 against checkpoints-16-frames/training_log.json,
-% i.e. the SHIPPED run: loss_iou and loss_class are 0.000000 in all 13 logged
-% epochs). They are gated on pred_obj_scores, which the training wrapper does
-% not emit, so the loss actually optimized has FOUR terms. Do not reinstate
-% the six-term form.
-% Do NOT check this against gpu-checkpoints/ -- that is the SUPERSEDED run
-% (num_frames 8, topology_resolution 256). Both ran 110 epochs, so the epoch
-% count does not tell them apart; num_frames and topology_resolution do.
+% NOTE: loss_iou and loss_class are identically 0.000000 in every logged
+% epoch of both checkpoints/ and checkpoints-16-frames/. They are gated on
+% pred_obj_scores, which the training wrapper does not emit, so the loss
+% actually optimized has FOUR terms. This is a property of the wrapper, not
+% of any one run. Do not reinstate the six-term form.
 We supervise the predicted mask with a weighted sum of four terms --- two
 that measure agreement in the conventional way, per pixel and per region,
 and two that measure topology:
