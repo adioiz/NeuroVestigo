@@ -32,7 +32,10 @@ PRETTY = {"ours": "NeuroVestigo", "sam2_zeroshot": "SAM 2 (zero-shot)",
           "usam": "µSAM (box-prompt)", "cellpose_sam": "Cellpose-SAM",
           "omnipose": "Omnipose", "neuroquantify": "NeuroQuantify",
           "sam3.1": "SAM 3.1 (point-prompt)",
-          "sam3.1_text": "SAM 3.1 (text: \"cells\")"}
+          "sam3.1_text": "SAM 3.1 (text: \"cells\")",
+          # model-vs-model variants, for internal comparison panels
+          "ours_16f": "NeuroVestigo (20 rec)",
+          "ours_22rec": "NeuroVestigo (22 rec)"}
 # Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
@@ -81,6 +84,9 @@ def main():
     ap.add_argument("--models", nargs="+",
                     default=["ours", "sam2_zeroshot", "usam", "sam3.1",
                              "cellpose_sam", "omnipose", "neuroquantify"])
+    ap.add_argument("--suffix", default="",
+                    help="appended to the output filename, so a comparison "
+                         "panel cannot overwrite the paper's proof figure")
     args = ap.parse_args()
 
     models = [m for m in args.models
@@ -137,7 +143,7 @@ def main():
                  fontsize=12.5, color="#16324F", y=1.008, weight="bold")
     fig.tight_layout()
     os.makedirs(FIGDIR, exist_ok=True)
-    out = os.path.join(FIGDIR, f"proof_{args.video}.png")
+    out = os.path.join(FIGDIR, f"proof_{args.video}{args.suffix}.png")
     fig.savefig(out, bbox_inches="tight", dpi=200)
     plt.close(fig)
     print("wrote", out, "| models:", ", ".join(models))
