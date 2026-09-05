@@ -6,7 +6,7 @@ Runs the EXACT training-validation protocol (8-frame clips, clip_stride=4, the
 wrapper's training-time flags) and computes per-frame IoU the same way
 validate_epoch does -- but memory-frugally (batch=1, per-frame encoding, no
 loss) so it fits on MPS. If this reports ~0.84 IoU it proves
-gpu-checkpoints/lora_weights.pt is the right checkpoint, and the lower
+checkpoints/lora_weights.pt is the right checkpoint, and the lower
 full-sequence number is purely the harder 73-frame propagation protocol.
 """
 import os, sys
@@ -25,7 +25,7 @@ from src.augmentations import VideoValidationTransform
 from benchmark.data import Dataset
 from benchmark.run_ours import _propagate_stream
 
-CKPT = os.path.join(REPO, "gpu-checkpoints", "lora_weights.pt")
+CKPT = os.path.join(REPO, "checkpoints", "lora_weights.pt")
 
 
 def iou(pred, gt):

@@ -1,6 +1,6 @@
 # Competitive analysis & positioning — neuron time-lapse segmentation + tracking
 
-*Prepared for the paper. Every non-obvious factual claim is followed by a primary-source URL. Numbers about your own model come from `gpu-checkpoints/training_log.json` and `REPORT.tex` (Run 7). This document is the research backbone for the Introduction, Related Work, and Discussion sections, and for the figure/benchmark plan.*
+*Prepared for the paper. Every non-obvious factual claim is followed by a primary-source URL. Numbers about your own model come from `gpu-checkpoints/training_log.json` and `REPORT.tex` (Run 7). That directory has since been deleted; the current run's log is `checkpoints/training_log.json`, and the run the Results table reports is `checkpoints-16-frames/`. This document is the research backbone for the Introduction, Related Work, and Discussion sections, and for the figure/benchmark plan.*
 
 ---
 

@@ -22,14 +22,16 @@ import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(REPO, "data_manifest.json")
-# The split is read from the SHIPPED model's own config. This was
-# gpu-checkpoints/ until that directory was removed, at which point
-# val_videos silently became empty -- TEST_VIDEOS below is hardcoded, so
-# test scoring kept working and nothing announced the loss.
+# The split is read from the SHIPPED model's own config, so the benchmark can
+# never disagree with training about what val is. This named gpu-checkpoints/
+# until that directory was deleted, at which point val_videos silently became
+# empty -- TEST_VIDEOS below is hardcoded, so test scoring kept working and
+# nothing announced the loss. It now names checkpoints/ (the 22-recording run).
 CONFIG = os.path.join(REPO, "checkpoints", "training_config.json")
 
 # True held-out TEST set: videos whose masks exist in neurons-labeling but were
-# NEVER prepared into training_data, so the shipped (25-video) model never saw them.
+# excluded from train/val by config.data.test_videos (src/trainer.py), so no
+# shipped model has ever seen them -- not the 25-recording run, not the 27.
 # A71_C1 / A81_C1 are entirely new series (cleanest); A12_C3_100k / A12_C1_100k_2 are
 # new fields from the same 100k batch (mild same-sample caveat).
 # NOTE: these must be `prepare`d into training_data/{images,masks}/<name>/ before use.

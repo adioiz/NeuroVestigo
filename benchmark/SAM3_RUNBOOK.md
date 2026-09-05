@@ -176,7 +176,7 @@ cat benchmark/results/val/summary.csv
 so scoring it would flatter those modes. Every competitor is scored the same way.
 
 `--split val` needs no `--videos` — it resolves the five recordings from
-`gpu-checkpoints/training_config.json`. If it errors that the val split is empty,
+`checkpoints/training_config.json`. If it errors that the val split is empty,
 that config lost its `val_videos`.
 
 **Pick the winning mode by val IoU.** Write it down; you need it twice below.
@@ -226,7 +226,7 @@ choice of prompt mode are on the record rather than asserted.
 |---|---|
 | `Access denied. This repository requires approval` | license not granted yet; the small configs download regardless, so check the directory SIZE |
 | wheels say `cp39` | `sam3-env` not active |
-| `TypeError: 'NoneType' object is not iterable` in a split | `data.val_videos` is null in `gpu-checkpoints/training_config.json` |
+| `TypeError: 'NoneType' object is not iterable` in a split | `data.val_videos` is null in `checkpoints/training_config.json` |
 | `--split test` scores nothing, no error | the four test recordings are missing from `data_manifest.json` |
 | GT file not found when scoring | manifest holds absolute Mac paths; `load_gt` falls back to `training_data/masks/<name>/`, so that recording needs `cli.py prepare` |
 | `unexpected propagate payload` | mask key differs on this build; add it to `_MASK_KEYS` |

@@ -37,7 +37,7 @@ from src.neuron_dataset import NeuronVideoDataset, neuron_collate_fn
 from src.augmentations import VideoValidationTransform
 
 DATA_DIR = os.path.join(REPO, "training_data")
-DEFAULT_CKPT = os.path.join(REPO, "gpu-checkpoints", "lora_weights.pt")
+DEFAULT_CKPT = os.path.join(REPO, "checkpoints", "lora_weights.pt")
 OUT_DIR = os.path.join(REPO, "benchmark", "predictions", "ours")
 
 

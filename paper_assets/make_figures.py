@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Publication-quality draft figures for the neuron SAM2 paper.
-All data is REAL and on-disk: gpu-checkpoints/training_log.json + REPORT.tex Run-7 numbers.
+All data is REAL and on-disk: checkpoints/training_log.json + REPORT.tex Run-7 numbers.
 Figures that require a competitor benchmark run (comparison grid, clDice bars, CTC) are
 NOT produced here -- they need eval_masks.py + competitor inference first.
 
@@ -45,8 +45,23 @@ ROOT = os.path.dirname(HERE)
 FIGDIR = os.path.join(HERE, "figures")
 os.makedirs(FIGDIR, exist_ok=True)
 
-log = json.load(open(os.path.join(ROOT, "gpu-checkpoints", "training_log.json")))
+# NOTE: training_log.json is rewritten from scratch on every --resume, so a run
+# that spanned several cluster jobs keeps only its LAST chunk. checkpoints/ (the
+# 22-recording run) resumed four times and retains epochs 108-110 only -- its true
+# best was 0.8399 @ ep90, which lives in the job's console log, not here. Fig 4
+# plots this series, so refuse to draw a curve that is really two points.
+LOG = os.environ.get("NV_TRAINING_LOG",
+                     os.path.join(ROOT, "checkpoints", "training_log.json"))
+log = json.load(open(LOG))
 val = [e for e in log if "val_iou" in e]
+if len(val) < 5:
+    raise SystemExit(
+        f"{LOG} has only {len(val)} epochs with val_iou -- a resumed run truncated "
+        f"it, and Fig 4's training curve would be meaningless. Point at the full "
+        f"log of the run the paper reports:\n"
+        f"  NV_TRAINING_LOG=checkpoints-16-frames/training_log.json python "
+        f"paper_assets/make_figures.py"
+    )
 best = max(val, key=lambda e: e["val_iou"])
 
 def save(fig, name):

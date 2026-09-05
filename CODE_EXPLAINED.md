@@ -2370,7 +2370,7 @@ a per-recording CSV and an updated row in `results/<split>/summary.csv`. Passing
 `data.test_videos` is not populated in the training config.
 
 **`data.py`** — `Dataset.split(name)` reads the authoritative train/val/test
-lists from `gpu-checkpoints/training_config.json`, so the benchmark and the
+lists from `checkpoints/training_config.json`, so the benchmark and the
 trainer cannot disagree about what "val" means. `load_gt()` prefers the manifest
 TIF and falls back to `training_data/masks/<name>/*.png`, which is what makes
 scoring work on a machine where the manifest's absolute paths do not resolve.

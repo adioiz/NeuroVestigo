@@ -17,22 +17,28 @@ itself, and the napari plug-in that runs it, are in the companion repository
 
 This repository fine-tunes SAM2 (Segment Anything Model 2) for neuron segmentation using **LoRA+** (Low-Rank Adaptation with asymmetric A/B learning rates) plus topology-preserving losses tailored to tree-like neurite structures.
 
-**The reported model is the sixteen-frame run**, whose weights are
-`checkpoints-16-frames/lora_weights.pt` (bundled in
-[neurons-labeling](https://github.com/adioiz/neurons-labeling)): 25 labeled
-recordings (20 train / 5 val / 4 held-out test), dual-rank LoRA (rank 16 on the
+**The current model is `checkpoints/lora_weights.pt`** — 31 labeled
+recordings (22 train / 5 val / 4 held-out test), dual-rank LoRA (rank 16 on the
 decoder and memory_attention, rank 8 on the last 2 Hiera trunk blocks), the
 full memory_attention forward pass with the memory bank left attached to the
 graph, and a 4-term loss — focal 3.0, Dice 2.0, cbDice 0.3, supervoxel 0.3 — at
 `topology_resolution` 512, over clips of **16** frames. It ran the full 110
-epochs; the best checkpoint is epoch 100. Held-out test performance is in
-[Results](#results).
+epochs; the best checkpoint is epoch 90, at val IoU 0.8399.
 
-> **`gpu-checkpoints/` is not that model.** It is the earlier 8-frame,
-> `topology_resolution` 256 run, kept because `benchmark/data.py` reads the
-> authoritative train/val/test split from its `training_config.json`. Both runs
-> lasted 110 epochs, so the epoch count does not tell them apart —
-> `num_frames` and `topology_resolution` do.
+> **The numbers in [Results](#results) were measured with the previous run**,
+> `checkpoints-16-frames/lora_weights.pt` (bundled in
+> [neurons-labeling](https://github.com/adioiz/neurons-labeling)) — the same
+> configuration over 29 recordings (20 train / 5 val / 4 test), best epoch 100
+> at val IoU 0.8377. `checkpoints/` adds two recordings (B11, B12) and gains
+> +0.0022 val IoU, which is inside this dataset's noise band; its Betti error
+> at the selected epoch is *worse* (b0 0.812 vs 0.660, lower is better). Until
+> the held-out test benchmark is re-run against it, the reported model is the
+> sixteen-frame run and the table below stands.
+
+> **`gpu-checkpoints/` no longer exists.** It held the earlier 8-frame,
+> `topology_resolution` 256 run. `benchmark/data.py` used to read the
+> authoritative split from its `training_config.json` and now reads
+> `checkpoints/training_config.json` instead.
 
 > **Read [Correctness fixes](#correctness-fixes) before interpreting any run before Run D.** Three defects — an inert cbDice term, a resampling artefact inside cbDice, and an elastic augmentation that misaligned images from their labels — were found and fixed after most of the run history below was recorded. They do not invalidate reported validation numbers (validation was never augmented), but they do explain why sweeping the loss weights produced differences too small to call.
 
@@ -134,10 +140,10 @@ labeled_coordinates/  -> ../neurons-labeling/labeled_coordinates/
 
 **No manual copying needed** — label in one repo, train in the other.
 
-The trained adapters are released in
+Training writes its adapters to `checkpoints/lora_weights.pt` (~22 MB: the
+LoRA matrices only, not a full SAM 2 checkpoint). The released adapters are in
 [neurons-labeling](https://github.com/adioiz/neurons-labeling) at
-`checkpoints-16-frames/lora_weights.pt` (~22 MB: the LoRA matrices only, not a
-full SAM 2 checkpoint). Loading them requires the base SAM 2 weights, which are
+`checkpoints-16-frames/lora_weights.pt`. Loading them requires the base SAM 2 weights, which are
 downloaded separately — see
 [Step 4](#step-4-use-the-fine-tuned-weights).
 
@@ -480,11 +486,13 @@ NeuroVestigo/
 │   ├── test_supervoxel_speed.py     # optimised detector is bit-identical
 │   └── test_betti.py                # Betti numbers on known shapes
 │
-├── gpu-checkpoints/         # NOT the shipped model: the earlier 8-frame run.
+├── checkpoints/             # current run (22 train recordings), gitignored
+│   ├── lora_weights.pt      #   best-epoch adapters, 22 MB
 │   ├── training_config.json #   read by benchmark/data.py for the splits
-│   └── training_log.json    #   per-epoch metrics
-│                            # The reported weights are in neurons-labeling,
-│                            # at checkpoints-16-frames/lora_weights.pt
+│   └── training_log.json    #   per-epoch metrics (LAST resume chunk only)
+│                            # The weights the Results table was measured with
+│                            # are in neurons-labeling, at
+│                            # checkpoints-16-frames/lora_weights.pt
 │
 ├── paper_assets/            # manuscript, figures, and their generators
 │   ├── paper/main.tex
