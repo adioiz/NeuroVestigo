@@ -153,5 +153,10 @@
     "name": "B12_C1_100k",
     "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 240523/distance in pixel 300, known distance 400,pixel aspect ratio 1, unit of length micron, 0.75 pixel to micron/100,000 seeding density/aligned movie per cell/tif/B12 C1.tif",
     "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/B12_C1_masks_100k.tif"
+  },
+  {
+    "name": "B28_C4_200k",
+    "image_tif": "/Volumes/Adi-SSD/EfratData/דאטה מסודר לאלון/IncuCyte cortex 240523/distance in pixel 300, known distance 400,pixel aspect ratio 1, unit of length micron, 0.75 pixel to micron/200,000 seeding density/aligned movie per cell/tif/B28 C4.tif",
+    "mask_tif": "/Users/adioiz/Documents/Learnings/Thesis/scripts/neurons-labeling/labeled_masks/B28_C4_masks_200k.tif"
   }
 ]
