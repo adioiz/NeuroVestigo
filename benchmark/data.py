@@ -22,7 +22,11 @@ import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MANIFEST = os.path.join(REPO, "data_manifest.json")
-CONFIG = os.path.join(REPO, "gpu-checkpoints", "training_config.json")
+# The split is read from the SHIPPED model's own config. This was
+# gpu-checkpoints/ until that directory was removed, at which point
+# val_videos silently became empty -- TEST_VIDEOS below is hardcoded, so
+# test scoring kept working and nothing announced the loss.
+CONFIG = os.path.join(REPO, "checkpoints", "training_config.json")
 
 # True held-out TEST set: videos whose masks exist in neurons-labeling but were
 # NEVER prepared into training_data, so the shipped (25-video) model never saw them.
