@@ -88,7 +88,7 @@ The Hiera encoder's base weights remain frozen — only the new LoRA A/B matrice
 
 ---
 
-## 3b. Prompt-Pathway Self-Distillation
+## 3b. Prompt-Pathway Distillation (Privileged-Information Teacher)
 
 **Why.** `_forward_memory` hands frame 0 the GT mask as a dense prompt and gives
 every later frame `None` — memory is their only spatial context. Per-frame
@@ -134,10 +134,23 @@ this — including the run the Results table reports — set
 improves first, since that is where the 9× gap is. A run that pulls b0 from ~0.70
 toward ~0.30 while IoU barely moves is the intended result.
 
-References: Hinton et al. arXiv:1503.02531 (soft targets); Zhang et al. ICCV 2019
-arXiv:1905.08094 and Furlanello et al. ICML 2018 arXiv:1805.04770
-(self-distillation); Bengio et al. NeurIPS 2015 arXiv:1506.03099 (scheduled
-sampling).
+**This is not self-distillation.** Teacher and student are the same weights on
+the same image, differing only in that the teacher receives the ground-truth mask
+as a prompt — information the student can never have at inference. That is
+*learning using privileged information*. It is not a second network (Born-Again)
+nor a deeper layer supervising a shallower one (Be Your Own Teacher); citing
+either points a reader at the wrong literature.
+
+The loss *functions* are the repo's own Dice and cbDice, not taken from the KD
+literature — Hinton's objective is temperature-scaled KL on softmax outputs,
+which does not transfer to binary segmentation. Using **cbDice** as a
+distillation target follows from the ~9× Betti-0 gap measured above and is not
+suggested by any of these papers.
+
+References:
+- Hinton, Vinyals & Dean, arXiv:1503.02531 — soft targets
+- Lopez-Paz, Bottou, Schölkopf & Vapnik, ICLR 2016, arXiv:1511.03643 — privileged information
+- Bengio, Vinyals, Jaitly & Shazeer, NeurIPS 2015, arXiv:1506.03099 — scheduled sampling
 
 ---
 

@@ -277,7 +277,7 @@ class SAM2TrainingWrapper(nn.Module):
         self.model = sam2_model
         self.num_frames = num_frames
         self.use_memory_path = use_memory_path
-        # Frame-0 prompt dropout + prompt-pathway self-distillation. Both are
+        # Frame-0 prompt dropout + prompt-pathway distillation. Both are
         # off by default; with both off _forward_memory is bit-identical to
         # the version that trained every shipped checkpoint.
         self.prompt_dropout = prompt_dropout
@@ -864,7 +864,7 @@ def build_training_model(config: TrainingConfig, device: str):
               f"(ramped over {config.prompt_dropout_warmup_epochs} epochs)")
     if config.loss.use_prompt_distill:
         k = config.loss.distill_frames_per_clip
-        print(f"  Prompt-pathway self-distillation: "
+        print(f"  Prompt-pathway distillation (privileged teacher): "
               f"{'every frame' if k <= 0 else f'{k} frames/clip'}, "
               f"dice={config.loss.distill_dice_weight} "
               f"cbdice={config.loss.distill_cbdice_weight}")

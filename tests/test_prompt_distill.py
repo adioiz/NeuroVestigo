@@ -1,4 +1,4 @@
-"""Prompt-pathway self-distillation + frame-0 prompt dropout.
+"""Prompt-pathway distillation (privileged teacher) + frame-0 prompt dropout.
 
 Motivation (measured, checkpoints-16-frames/training_log.json, best epoch):
 

@@ -221,7 +221,7 @@ class LossConfig:
     topology_resolution: int = 512
 
     # ------------------------------------------------------------------
-    # Prompt-pathway self-distillation  (measured motivation, Run D log)
+    # Prompt-pathway distillation from a privileged-information teacher
     # ------------------------------------------------------------------
     # In _forward_memory, frame 0 receives the GT mask as a dense prompt and
     # frames 1..T-1 receive `None` -- memory is their only spatial context.
@@ -235,7 +235,7 @@ class LossConfig:
     # without being handed an outline. Frames 1-15 are FLAT (0.017 total
     # drift), so this is one conditioning step, not accumulating error.
     #
-    # Self-distillation closes it from the inside: run the decoder a second
+    # Distillation closes it from the inside: run the decoder a second
     # time on frame t with that frame's GT as a dense prompt (the teacher,
     # no gradient), and train the ordinary memory-path prediction (the
     # student) to reproduce it. The target is the model's own stronger
@@ -243,8 +243,14 @@ class LossConfig:
     #
     # The distillation term is topological (cbDice) as well as regional
     # (Dice), because the 9x figure says connectivity is what the no-prompt
-    # pathway loses -- see Hinton et al. arXiv:1503.02531 for soft targets
-    # and Zhang et al. ICCV 2019 (arXiv:1905.08094) for self-distillation.
+    # pathway loses.
+    #
+    # This is NOT self-distillation. Teacher and student are the same weights
+    # on the same image; the teacher differs only in receiving the GT mask as
+    # a prompt -- information unavailable at inference. The correct frame is
+    # learning using privileged information:
+    #   Soft targets:           Hinton et al.,    arXiv:1503.02531
+    #   Privileged information: Lopez-Paz et al., ICLR 2016, arXiv:1511.03643
     # ON by default: this is part of how the model trains, not an experiment.
     # Consequence to be aware of -- checkpoints trained before this (including
     # the run the paper's Results table reports) were trained WITHOUT it, so

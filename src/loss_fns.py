@@ -1015,7 +1015,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             loss_supervoxel = self.supervoxel(pred_masks, targets)
 
         # ------------------------------------------------------------------
-        # Prompt-pathway self-distillation
+        # Prompt-pathway distillation (privileged-information teacher)
         # ------------------------------------------------------------------
         # `distill_teacher` is the SAME network decoding the SAME frame with
         # that frame's GT supplied as a dense prompt -- the conditioning regime
@@ -1030,9 +1030,19 @@ class MultiStepMultiMasksAndIous(nn.Module):
         # topology gap is ~9x the IoU gap, so the cbDice term is the one
         # carrying the argument.
         #
-        # Soft targets: Hinton et al. arXiv:1503.02531. Self-distillation:
-        # Zhang et al. ICCV 2019 (arXiv:1905.08094), Furlanello et al. ICML
-        # 2018 (arXiv:1805.04770).
+        # Framing matters for anyone extending this. The teacher is NOT a
+        # second network (Born-Again), nor a deeper layer supervising a
+        # shallower one (Be Your Own Teacher). It is the SAME weights on the
+        # SAME image, differing only in that it receives the ground-truth mask
+        # as a prompt -- information the student can never have at inference.
+        # That is learning using privileged information, not self-distillation.
+        #   Soft targets:            Hinton et al.,   arXiv:1503.02531
+        #   Privileged information:  Lopez-Paz et al., ICLR 2016, arXiv:1511.03643
+        # The loss FUNCTIONS are the repo's own Dice/cbDice, not taken from the
+        # KD literature: Hinton's objective is temperature-scaled KL on softmax
+        # outputs, which does not transfer to binary segmentation. Using cbDice
+        # as a distillation target is not from any paper -- it follows from the
+        # ~9x Betti-0 gap measured above.
         loss_distill_dice = torch.tensor(0.0, device=pred_masks.device)
         loss_distill_cbdice = torch.tensor(0.0, device=pred_masks.device)
         if "distill_student" in outputs and "distill_teacher" in outputs:
