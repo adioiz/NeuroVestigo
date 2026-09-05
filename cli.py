@@ -133,18 +133,6 @@ def cmd_train(args):
         config.loss.use_supervoxel = False
     if args.supervoxel_weight is not None:
         config.loss.loss_supervoxel_weight = args.supervoxel_weight
-    if args.prompt_distill:
-        config.loss.use_prompt_distill = True
-    if args.distill_dice_weight is not None:
-        config.loss.distill_dice_weight = args.distill_dice_weight
-    if args.distill_cbdice_weight is not None:
-        config.loss.distill_cbdice_weight = args.distill_cbdice_weight
-    if args.distill_frames is not None:
-        config.loss.distill_frames_per_clip = args.distill_frames
-    if args.prompt_dropout is not None:
-        config.prompt_dropout = args.prompt_dropout
-    if args.prompt_dropout_warmup is not None:
-        config.prompt_dropout_warmup_epochs = args.prompt_dropout_warmup
 
     # ----- Forward path -----
     if args.no_memory_attention:
@@ -321,35 +309,6 @@ def main():
         action="store_true",
         help="Disable BOTH cbDice and supervoxel losses (faster training on CPU/MPS)",
     )
-    # --- prompt-pathway experiments (both default off) ---
-    p_train.add_argument(
-        "--prompt-distill",
-        action="store_true",
-        help="Self-distil the frame-0 prompt pathway into the memory pathway "
-             "(teacher = same decoder given frame t's GT as a dense prompt)",
-    )
-    p_train.add_argument(
-        "--distill-dice-weight", type=float, default=None,
-        help="Weight for the Dice term of the distillation loss (default 1.0)",
-    )
-    p_train.add_argument(
-        "--distill-cbdice-weight", type=float, default=None,
-        help="Weight for the cbDice term of the distillation loss (default 0.5)",
-    )
-    p_train.add_argument(
-        "--distill-frames", type=int, default=None,
-        help="Teacher decoder calls per clip; 0 = every frame (default 4)",
-    )
-    p_train.add_argument(
-        "--prompt-dropout", type=float, default=None,
-        help="Probability of withholding frame 0's GT dense prompt "
-             "(scheduled sampling; 0 = off, try 0.3-0.5)",
-    )
-    p_train.add_argument(
-        "--prompt-dropout-warmup", type=int, default=None,
-        help="Epochs over which prompt dropout ramps from 0 to its full value",
-    )
-    # Performance optimization arguments
     p_train.add_argument(
         "--clip-stride",
         type=int,

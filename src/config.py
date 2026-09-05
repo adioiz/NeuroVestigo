@@ -245,7 +245,11 @@ class LossConfig:
     # (Dice), because the 9x figure says connectivity is what the no-prompt
     # pathway loses -- see Hinton et al. arXiv:1503.02531 for soft targets
     # and Zhang et al. ICCV 2019 (arXiv:1905.08094) for self-distillation.
-    use_prompt_distill: bool = False
+    # ON by default: this is part of how the model trains, not an experiment.
+    # Consequence to be aware of -- checkpoints trained before this (including
+    # the run the paper's Results table reports) were trained WITHOUT it, so
+    # they cannot be reproduced by this code with the defaults as they stand.
+    use_prompt_distill: bool = True
     distill_dice_weight: float = 1.0
     distill_cbdice_weight: float = 0.5
     # Teacher decoder calls per clip. The image encoder is shared, so each
@@ -324,8 +328,8 @@ class TrainingConfig:
     # prompt is withheld and frame 0 must be segmented from features alone,
     # which is the frames-1+ condition. Ramped from 0 over the warmup so an
     # early bad frame-0 prediction cannot poison a whole clip's memory bank.
-    # 0.0 disables it (default), leaving the forward pass bit-identical.
-    prompt_dropout: float = 0.0
+    # Set to 0.0 to reproduce a pre-distillation checkpoint exactly.
+    prompt_dropout: float = 0.4
     prompt_dropout_warmup_epochs: int = 40
 
     use_memory_attention_path: bool = True

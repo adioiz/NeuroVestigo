@@ -509,8 +509,21 @@ class SoftCBDiceLoss(nn.Module):
             ).float()
 
         # Collapse channel: [N, 1, H, W] -> [N, H, W].
+        #
+        # Threshold the target at 0.5, not at 0. `> 0` treats ANY non-zero
+        # value as foreground, which is correct for the binary GT this loss is
+        # normally given but silently wrong for a soft target: probabilities of
+        # 4.5e-5 (sigmoid of -10) are not background to `> 0`, so a soft mask
+        # collapses to all-ones and the loss stops depending on its target
+        # entirely -- a correct target and an all-0.5 target both scored an
+        # identical, NEGATIVE -0.1679. The resize branch above already
+        # re-binarises at 0.5, so this only bites when no resize fires
+        # (input resolution <= topology_resolution).
+        #
+        # For a binary target `> 0` and `> 0.5` are identical, so this changes
+        # nothing for any caller that passes GT masks.
         y_pred_prob = pred_prob.squeeze(1)
-        y_true = (target > 0).float().squeeze(1)
+        y_true = (target > 0.5).float().squeeze(1)
 
         # Skeletonise the HARD masks (reference behaviour): the skeleton
         # support is non-differentiable; gradients are reinjected below by
@@ -539,7 +552,21 @@ class SoftCBDiceLoss(nn.Module):
         )
 
         cb_dice = 2.0 * w_tprec * w_tsens / (w_tprec + w_tsens + 1e-8)
-        return 1.0 - cb_dice
+
+        # Clamp at 0. w_tprec and w_tsens are ratios of radius-weighted sums,
+        # not probabilities, and a SATURATED mask (prediction or target near
+        # all-foreground) drives them above 1 -- so cb_dice exceeds 1 and the
+        # "loss" goes negative. Measured on 64x64: a full target scores
+        # -0.3862, and an all-foreground prediction against a normal target
+        # scores -0.1669. A negative loss REWARDS saturation, giving the
+        # optimiser a degenerate direction to run in.
+        #
+        # This is a no-op wherever training actually operates: loss_cbdice
+        # across every logged epoch of checkpoints-16-frames, checkpoints and
+        # checkpoints-fixed stays in +0.11..+0.19, never once negative. It
+        # matters for the distillation term, whose target is a teacher mask
+        # that can saturate early in training rather than a clean GT mask.
+        return (1.0 - cb_dice).clamp_min(0.0)
 
 
 class SoftDiceCBDiceLoss(nn.Module):
@@ -1021,17 +1048,12 @@ class MultiStepMultiMasksAndIous(nn.Module):
             # student to be slightly sharper than its teacher, which is benign.
             loss_distill_dice = self.dice(student, teacher_prob)
 
-            # cbDice takes the BINARISED teacher, and must.
-            # SoftCBDiceLoss re-binarises its target only inside the resize
-            # branch (H > topology_resolution). When no resize happens, a soft
-            # target reaches the EDT/skeleton code raw, where every non-zero
-            # value counts as foreground -- so a teacher of all-0.5 and a
-            # perfect teacher both collapse to an all-ones mask and score an
-            # identical, negative "loss". Measured: -0.1679 for both. Threshold
-            # here so the term is correct at every topology_resolution rather
-            # than only when the resize happens to fire.
+            # cbDice thresholds its own target at 0.5 (see the note on y_true
+            # in SoftCBDiceLoss.forward), so the soft teacher can go straight
+            # in: skeletons are taken from the definite shape the teacher
+            # committed to, which is what a topology target should be.
             if self.use_cbdice:
-                loss_distill_cbdice = self.cbdice(student, (teacher_prob > 0.5).float())
+                loss_distill_cbdice = self.cbdice(student, teacher_prob)
 
         # IoU prediction loss: train the model to predict its own accuracy
         loss_iou = torch.tensor(0.0, device=pred_masks.device)

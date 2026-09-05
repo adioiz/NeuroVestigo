@@ -105,12 +105,55 @@ def test_cbdice_term_is_sensitive_to_teacher_content():
     assert flat > good + 1e-4, "term is ignoring the teacher's content"
 
 
-def test_soft_target_is_why_thresholding_is_needed():
-    """Pins the underlying SoftCBDiceLoss behaviour this guards against, so
-    the reason survives if someone later 'simplifies' the threshold away."""
+def test_cbdice_handles_soft_targets():
+    """SoftCBDiceLoss thresholded y_true at 0 rather than 0.5, so ANY non-zero
+    value read as foreground. A soft target (sigmoid(-10) = 4.5e-5 is not zero)
+    therefore collapsed to an all-ones mask: a correct target and an all-0.5
+    target both returned an identical -0.1679, i.e. a negative loss that had
+    stopped depending on its target. Checked at two resolutions because the
+    resize branch re-binarises and so masked the bug whenever it fired.
+    """
+    gt = torch.zeros(1, 1, 64, 64)
+    gt[:, :, 20:24, 5:60] = 1
+    gt[:, :, 10:50, 30:34] = 1
+    logits = gt * 20 - 10
+    soft = torch.sigmoid(logits)
+    flat = torch.full_like(gt, 0.5)
+
+    for res in (64, 32):  # 64 = no resize (bug was live), 32 = resize fires
+        cb = SoftCBDiceLoss(num_iter=5, topology_resolution=res)
+        assert cb(logits, gt).item() == 0.0, "binary target must be unaffected"
+        assert cb(logits, soft).item() == 0.0, "soft target must now score 0"
+        assert cb(logits, flat).item() > 0.5, "must depend on target content"
+        assert cb(logits, soft).item() >= 0.0, "a loss must never be negative"
+
+
+def test_cbdice_is_never_negative():
+    """w_tprec/w_tsens are ratios of radius-weighted sums, not probabilities, so
+    a SATURATED mask pushes them above 1 and cb_dice above 1 -- the loss then
+    went negative and rewarded saturation. Measured before the clamp: a full
+    target scored -0.3862, an all-foreground prediction against a normal target
+    -0.1669. Never observed in the GT path (logged loss_cbdice stays +0.11..
+    +0.19 across all three checkpoint dirs), but the distillation target is a
+    teacher mask, which can saturate early in training.
+    """
     cb = SoftCBDiceLoss(num_iter=5, topology_resolution=64)
     gt = torch.zeros(1, 1, 64, 64)
     gt[:, :, 20:24, 5:60] = 1
-    logits = gt * 20 - 10
-    assert cb(logits, gt).item() == 0.0                       # binary target: correct
-    assert cb(logits, torch.sigmoid(logits)).item() < 0.0     # soft target: negative
+    ones, tens = torch.ones(1, 1, 64, 64), torch.full((1, 1, 64, 64), 10.0)
+    torch.manual_seed(0)
+    assert cb(torch.randn(1, 1, 64, 64) * 3, ones).item() >= 0.0   # was -0.3862
+    assert cb(tens, gt).item() >= 0.0                              # was -0.1669
+    assert cb(gt * 20 - 10, gt).item() == 0.0                      # perfect still 0
+
+
+def test_binary_target_path_is_unchanged():
+    """The `> 0` -> `> 0.5` fix must be a no-op for every existing caller:
+    training only ever passes binary GT. These are the pre-fix values."""
+    gt = torch.zeros(2, 1, 64, 64)
+    gt[:, :, 20:24, 5:60] = 1
+    gt[:, :, 10:50, 30:34] = 1
+    cb = SoftCBDiceLoss(num_iter=5, topology_resolution=64)
+    assert cb(gt * 20 - 10, gt).item() == 0.0
+    torch.manual_seed(0)
+    assert abs(cb(torch.randn(2, 1, 64, 64) * 3, gt).item() - 0.83378118) < 1e-6

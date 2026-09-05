@@ -87,6 +87,59 @@ The Hiera encoder's base weights remain frozen — only the new LoRA A/B matrice
 
 ---
 
+## 3b. Prompt-Pathway Self-Distillation
+
+**Why.** `_forward_memory` hands frame 0 the GT mask as a dense prompt and gives
+every later frame `None` — memory is their only spatial context. Per-frame
+validation metrics at the shipped model's best epoch show the cost:
+
+| | frame 0 (prompted) | frames 1–15 (memory only) |
+|---|---|---|
+| IoU | 0.9466 | ~0.830 |
+| Betti-0 error | 0.080 | ~0.70 |
+
+The IoU gap is 12%; the topology gap is **~9×**. Losing the prompt does not blur
+the mask, it fragments neurites. Frames 1–15 drift only 0.017 in total, so this
+is a single conditioning step and not accumulating error — which means improving
+the no-prompt pathway lifts all fifteen frames together, and no new cliff appears
+between frames 1 and 2.
+
+**What runs.** Each step, `distill_frames_per_clip` frames (default 4, sampled at
+random per clip; 0 = every frame) are decoded a *second* time with that frame's
+GT as a dense prompt. That teacher is the model's own frame-0 regime, detached,
+so the loss only ever moves the student. The image encoder is shared, so a
+teacher frame costs one prompt-encoder + mask-decoder pass, not a full forward.
+
+Two terms, because the two gaps differ in size:
+
+| term | weight | target | why |
+|---|---|---|---|
+| `loss_distill_dice` | 1.0 | soft teacher | region agreement; the soft target carries which pixels the model finds ambiguous |
+| `loss_distill_cbdice` | 0.5 | teacher (thresholded internally) | skeleton agreement — the 9× gap is topological |
+
+**Frame-0 prompt dropout.** With probability `prompt_dropout` (default 0.4,
+ramped over `prompt_dropout_warmup_epochs` = 40) frame 0's prompt is withheld and
+the conditioning frame must be segmented from features alone. Without this, 1/T
+of the training signal goes to a regime that does not exist at inference —
+exposure bias. The ramp stops an early bad frame-0 prediction from poisoning a
+whole clip's memory bank.
+
+**Both are on by default.** They are part of how the model trains, not opt-in
+experiments, so there are no CLI flags. To reproduce a checkpoint trained before
+this — including the run the Results table reports — set
+`loss.use_prompt_distill = False` and `prompt_dropout = 0.0` in `src/config.py`.
+
+**Watch `val_betti0`, not only `val_iou`.** The mechanism predicts topology
+improves first, since that is where the 9× gap is. A run that pulls b0 from ~0.70
+toward ~0.30 while IoU barely moves is the intended result.
+
+References: Hinton et al. arXiv:1503.02531 (soft targets); Zhang et al. ICCV 2019
+arXiv:1905.08094 and Furlanello et al. ICML 2018 arXiv:1805.04770
+(self-distillation); Bengio et al. NeurIPS 2015 arXiv:1506.03099 (scheduled
+sampling).
+
+---
+
 ## 4. Optimizer & Schedule (LoRA+)
 
 **AdamW with three parameter groups:**

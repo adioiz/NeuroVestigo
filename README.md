@@ -35,6 +35,15 @@ epochs; the best checkpoint is epoch 90, at val IoU 0.8399.
 > the held-out test benchmark is re-run against it, the reported model is the
 > sixteen-frame run and the table below stands.
 
+> **Training now self-distils the prompt pathway.** Frame 0 receives the GT
+> mask as a dense prompt and later frames do not, which costs 12% IoU and ~9×
+> the Betti-0 error. Each step re-decodes a few frames with their own GT as a
+> prompt and trains the ordinary prediction toward that teacher, and frame 0's
+> prompt is withheld 40% of the time. Both are **on by default** — see
+> [Methods §3b](METHODS_CHEAT_SHEET.md). Checkpoints trained before this,
+> the Results table's included, need `use_prompt_distill = False` and
+> `prompt_dropout = 0.0` in `src/config.py` to reproduce.
+
 > **`gpu-checkpoints/` no longer exists.** It held the earlier 8-frame,
 > `topology_resolution` 256 run. `benchmark/data.py` used to read the
 > authoritative split from its `training_config.json` and now reads
