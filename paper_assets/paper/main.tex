@@ -1113,14 +1113,22 @@ does not.
 % pred_obj_scores, which the training wrapper does not emit, so the loss
 % actually optimized has FOUR terms. This is a property of the wrapper, not
 % of any one run. Do not reinstate the six-term form.
-We supervise the predicted mask with a weighted sum of four terms --- two
-that measure agreement in the conventional way, per pixel and per region,
-and two that measure topology:
+We supervise the predicted mask with a weighted sum of four terms against the
+ground truth --- two that measure agreement in the conventional way, per pixel
+and per region, and two that measure topology --- together with two further
+terms against a privileged teacher, introduced below:
 \begin{equation}
-\mathcal{L} = 3\,\mathcal{L}_{\text{focal}} + 2\,\mathcal{L}_{\text{Dice}}
- + 0.3\,\mathcal{L}_{\text{cbDice}} + 0.3\,\mathcal{L}_{\text{sv}} .
+\mathcal{L} = \underbrace{3\,\mathcal{L}_{\text{focal}}
+ + 2\,\mathcal{L}_{\text{Dice}}
+ + 0.3\,\mathcal{L}_{\text{cbDice}}
+ + 0.3\,\mathcal{L}_{\text{sv}}}_{\text{against the ground truth}}
+ + \underbrace{1.0\,\mathcal{L}^{\,T}_{\text{Dice}}
+ + 0.5\,\mathcal{L}^{\,T}_{\text{cbDice}}}_{\text{against the teacher}} .
 \label{eq:loss}
 \end{equation}
+The first four terms are described in this section; the superscript-$T$ terms
+are defined in the paragraph on distillation below, and are zero for the
+frames on which no teacher is decoded.
 The first two terms are the mask supervision under which SAM and SAM\,2 were
 trained \cite{kirillov2023sam,ravi2025sam2}; we keep it so that adaptation
 proceeds under the same supervision that produced the pretrained weights,
@@ -1276,38 +1284,24 @@ output; the critical masks are upsampled so that the loss itself is taken at
 full resolution. The resolution is not a free parameter: below the native
 size of the recordings the resampling erases the one- to two-pixel processes
 these terms exist to protect, and a perfect prediction no longer scores
-perfectly.\footnote{Two defects in our cbDice
-implementation were corrected after the reported runs and neither changes any
-number here. The target was binarised at $>0$ rather than $>0.5$, which is
-identical on the binary ground truth this loss is always given in training and
-wrong only for a soft target; and the returned value could go negative when a
-mask saturated, because the radius-weighted ratios are not probabilities and
-may exceed one. The value is now clamped at zero. Every logged
-\texttt{loss\_cbdice} across all checkpoint directories lies in
-$+0.11$--$0.19$ and is never negative, so no reported run entered either
-regime.}
+perfectly.
 
-\paragraph{Conditioning, and what the decoder can do without it.}
-% Measured on the validation split at the best epoch of the 20-recording run
+\paragraph{Where the deficit lies.}
+% Validation, best epoch of the 20-recording run
 % (checkpoints-16-frames/training_log.json, per_frame_iou / per_frame_betti0):
-%   frame 0  IoU 0.9466   Betti-0 error 0.0800
-%   frames 1-15 mean  IoU 0.8305   Betti-0 error 0.6987
-%   frame 1 -> frame 15 IoU drift 0.0170
-% The Betti-0 contrast is the sharper half of this argument -- a 12% IoU gap
-% against an 8.7x topology gap -- but Betti is not among the metrics this
-% paper reports, so the passage below is written on IoU alone. Reinstating
-% the Betti figures would strengthen it; see the note to Adi.
-The frame-0 prompt is not merely a starting point. On the validation split,
-at the best epoch, the model reaches IoU $0.947$ on the frame it is given as
-a dense mask prompt and $0.830$ on the fifteen frames it must reconstruct
-from memory alone --- a gap of $12\,\%$. That gap is not accumulated
-propagation error: across those fifteen frames the score falls by only
-$0.017$ in total, so almost the whole deficit is incurred at the single step
-where the dense prompt is withdrawn. The decoder is evidently capable of a
-$0.947$ mask on these images; what it cannot do is reach that quality without
-a spatial prior. This is a conditioning gap rather than a drift, and it is
-distinct from the longitudinal decay measured over whole recordings in
-Section~\ref{sec:res:temporal}, which acts on a horizon five times longer.
+%   frame 0 IoU 0.9466, Betti-0 err 0.0800; frames 1-15 mean 0.8305 / 0.6987;
+%   frame 1 -> frame 15 IoU drift 0.0170.
+% The Betti-0 contrast is 8.7x against a 12% IoU gap and is the sharper half
+% of this argument, but Betti is not a metric this paper reports.
+That a model scores better on a frame whose mask it was handed is not
+informative on its own. What is informative is where the deficit sits: across
+the fifteen frames that follow the prompt the score falls by only $0.017$,
+while the step from the prompted frame to the first unprompted one costs
+$0.117$. The memory pathway is therefore not degrading as it runs --- it
+starts worse and stays there. The same weights reach $0.947$ when given a
+dense prompt and $0.830$ without one, so the capability exists and is simply
+not reachable from the memory pathway alone. That is what the following two
+additions target.
 
 \paragraph{Distillation from a privileged teacher.}
 The measurement above identifies a pathway, not merely a deficit: the same
@@ -1318,8 +1312,10 @@ frame's ground-truth mask supplied as a dense prompt. This second decode uses
 the same network and the same weights; it differs only in receiving
 information --- the answer --- that is unavailable at inference. Its output is
 detached and used as the target for the ordinary memory-path prediction,
-through a Dice term on the teacher's soft probabilities and a cbDice term on
-its shape. Following \cite{hinton2015distilling} the target is the teacher's
+through a Dice term on the teacher's soft probabilities, weighted $1.0$, and a
+cbDice term on its shape, weighted $0.5$; four frames per clip are decoded
+twice, so the second decode is the only additional training cost and inference
+is unchanged. Following \cite{hinton2015distilling} the target is the teacher's
 probability map rather than a binarised mask, so the student is supervised by
 graded confidence rather than by a hard boundary. The construction is not
 generic self-distillation: teacher and student are one network with one set of
@@ -1855,6 +1851,23 @@ confirm our topological advantages reflect genuine structural preservation
 rather than loss-level overfitting. We therefore recommend that work on
 filamentous or branched cells report a connectivity metric alongside IoU
 rather than in place of it.
+
+Two additions to training follow from this and are described in
+Section~\ref{sec:met:loss}, but are not yet evaluated. The first is
+distillation from a privileged teacher: the same weights, decoding the same
+frame with its ground-truth mask supplied as a dense prompt, reach a quality
+the memory pathway does not, and that output is used to supervise the memory
+pathway directly. The construction is the privileged-information setting of
+\cite{lopezpaz2016unifying} rather than generic self-distillation --- there is
+one network and one set of weights, and the teacher differs only in receiving
+information withheld at inference. The second is dropout of the frame-0
+prompt, which removes a conditioning regime the model was trained in but is
+never evaluated in \cite{bengio2015scheduled}. Because the deficit they target
+is topological rather than regional, the mechanism predicts that connectivity
+should respond before area does; a result in which the topology metrics
+improve while IoU is roughly unchanged would be the expected outcome, not a
+null one. \todo{No results yet. Update this paragraph, the Results section and
+Table~\ref{tab:main} once checkpoints-distill has been benchmarked.}
 
 We acknowledge several limitations. First, our evaluation is constrained to
 a small held-out test set (four recordings); thus, our conclusions rely on
