@@ -1300,7 +1300,10 @@ while the step from the prompted frame to the first unprompted one costs
 $0.117$. The memory pathway is therefore not degrading as it runs --- it
 starts worse and stays there. The same weights reach $0.947$ when given a
 dense prompt and $0.830$ without one, so the capability exists and is simply
-not reachable from the memory pathway alone. That is what the following two
+not reachable from the memory pathway alone. The deficit is also more
+topological than regional: across the same frames the IoU falls by $12\,\%$
+while the Betti-0 error rises from $0.08$ to $0.70$, close to ninefold.
+Withdrawing the prompt does not blur the mask so much as fragment it. That is what the following two
 additions target.
 
 \paragraph{Distillation from a privileged teacher.}
@@ -1386,6 +1389,17 @@ model that has simply overfitted the loss function. In contrast, clDice is
 not optimized during training and does not rely on the differentiable
 skeletonization used in the loss, thereby serving as an independent
 validation metric that corroborates the performance rankings.
+
+One further quantity is used as a diagnostic only and is not reported as a
+benchmark result. The Betti-0 error is the absolute difference between the
+number of connected components in the prediction and in the target, counted
+per frame with eight-connected foreground and four-connected background. It
+registers a severed branch directly --- one break, one component --- where
+cbDice registers it as a weighted fraction. That directness is also its
+limitation: it is an integer difference, blind to whether the break is one
+pixel or a hundred, which makes it useful for locating a failure and poor for
+ranking methods. We therefore use it only where the question is \emph{where}
+quality is lost, and never in the comparisons of Section~\ref{sec:results}.
 
 \begin{figure}[!htb]
 \centering
