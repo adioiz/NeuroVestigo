@@ -339,7 +339,7 @@ stability, exhibiting a minimal cbDice degradation of $0.070$ between the
 first and final quartiles, compared to $0.126$ for the strongest baseline.
 The inference model is publicly released within \texttt{neurons-labeling}, a
 napari plug-in designed for interactive curation, alongside our complete
-dataset of thirty-one annotated recordings.
+dataset of thirty-two annotated recordings.
 \end{abstract}
 
 \noindent\textbf{Keywords:} neuron segmentation; cell tracking;
@@ -431,7 +431,7 @@ propagated, interactively corrected, and exported
 (Figure~\ref{fig:pipeline}). Because user corrections directly yield
 training data in the model's native consumption format, the tool
 fundamentally enables a continuous self-improvement cycle. Alongside the
-software, we release all thirty-one annotated recordings---including four
+software, we release all thirty-two annotated recordings---including four
 sequences explicitly annotated post-development to serve as a strict blind
 test set---establishing the first public benchmark for single-target
 longitudinal neurite tracking in this modality.
@@ -648,10 +648,13 @@ calibration is 1.5\,pixels per micron ($0.667\,\mu$m per pixel).
 \paragraph{Recordings.}
 Each analyzed recording is a rectangular crop of the full field centered on
 one target neuron, so that a single cell and its processes are followed
-throughout (Figure~\ref{fig:culture}). Thirty-one recordings were prepared,
+throughout (Figure~\ref{fig:culture}). Thirty-two recordings were prepared,
 spanning 148--615 pixels in width and 146--498 pixels in height
-(99--411\,$\mu$m and 98--333\,$\mu$m respectively), and comprising 57--93
-frames, most commonly 73. Because a neuron is a thin, branched object within
+(99--411\,$\mu$m and 98--333\,$\mu$m respectively), and comprising 57--97
+frames, most commonly 73. All but one were seeded at the lower of the two
+plating densities; \texttt{B28\_C4\_200k} is the single recording at the
+higher density, and is included so that the released set is not confined to
+one seeding condition. Because a neuron is a thin, branched object within
 a much larger field, the target occupies on average 2.5\,\% of the frame,
 and as little as 0.2\,\% in the sparsest frames --- the imbalance that
 motivates both the loss design (Section~\ref{sec:met:loss}) and the choice
@@ -661,7 +664,7 @@ of the frame on average) as neurons of different sizes are followed through
 different stages of outgrowth.
 
 \paragraph{Splits.}
-Twenty-two recordings were used for training and five for validation and
+Twenty-three recordings were used for training and five for validation and
 model selection. Four further recordings --- \texttt{A71\_C1}, \texttt{A81\_C1},
 \texttt{A12\_C3\_100k} and \texttt{A12\_C1\_100k\_2} --- were annotated only
 after model development was complete and used exclusively as a held-out test
@@ -713,7 +716,7 @@ has never encountered phase-contrast microscopy, and its zero-shot behavior
 on our recordings is characteristic: it segments the high-contrast soma
 reliably and loses the low-contrast processes
 (Section~\ref{sec:res:benchmark}). We use the smallest encoder variant, as
-with 27 annotated recordings performance is limited by the quantity of
+with 28 annotated recordings performance is limited by the quantity of
 supervision rather than by model capacity.
 
 \paragraph{Input representation.}
@@ -744,7 +747,7 @@ on a single GPU. The
 image encoder's 27{,}219{,}136 pretrained parameters are frozen in full:
 its representations of edges, texture and contrast are generic and were
 estimated from a corpus several orders of magnitude larger than ours, and
-fine-tuning them on 27 recordings would degrade rather than specialize them.
+fine-tuning them on 28 recordings would degrade rather than specialize them.
 What must change is not how features are computed but how they are selected,
 and that selection happens in attention, where the model determines which
 spatial locations and which stored memories bear on the current prediction.
@@ -1273,7 +1276,74 @@ output; the critical masks are upsampled so that the loss itself is taken at
 full resolution. The resolution is not a free parameter: below the native
 size of the recordings the resampling erases the one- to two-pixel processes
 these terms exist to protect, and a perfect prediction no longer scores
-perfectly.
+perfectly.\footnote{Two defects in our cbDice
+implementation were corrected after the reported runs and neither changes any
+number here. The target was binarised at $>0$ rather than $>0.5$, which is
+identical on the binary ground truth this loss is always given in training and
+wrong only for a soft target; and the returned value could go negative when a
+mask saturated, because the radius-weighted ratios are not probabilities and
+may exceed one. The value is now clamped at zero. Every logged
+\texttt{loss\_cbdice} across all checkpoint directories lies in
+$+0.11$--$0.19$ and is never negative, so no reported run entered either
+regime.}
+
+\paragraph{Conditioning, and what the decoder can do without it.}
+% Measured on the validation split at the best epoch of the 20-recording run
+% (checkpoints-16-frames/training_log.json, per_frame_iou / per_frame_betti0):
+%   frame 0  IoU 0.9466   Betti-0 error 0.0800
+%   frames 1-15 mean  IoU 0.8305   Betti-0 error 0.6987
+%   frame 1 -> frame 15 IoU drift 0.0170
+% The Betti-0 contrast is the sharper half of this argument -- a 12% IoU gap
+% against an 8.7x topology gap -- but Betti is not among the metrics this
+% paper reports, so the passage below is written on IoU alone. Reinstating
+% the Betti figures would strengthen it; see the note to Adi.
+The frame-0 prompt is not merely a starting point. On the validation split,
+at the best epoch, the model reaches IoU $0.947$ on the frame it is given as
+a dense mask prompt and $0.830$ on the fifteen frames it must reconstruct
+from memory alone --- a gap of $12\,\%$. That gap is not accumulated
+propagation error: across those fifteen frames the score falls by only
+$0.017$ in total, so almost the whole deficit is incurred at the single step
+where the dense prompt is withdrawn. The decoder is evidently capable of a
+$0.947$ mask on these images; what it cannot do is reach that quality without
+a spatial prior. This is a conditioning gap rather than a drift, and it is
+distinct from the longitudinal decay measured over whole recordings in
+Section~\ref{sec:res:temporal}, which acts on a horizon five times longer.
+
+\paragraph{Distillation from a privileged teacher.}
+The measurement above identifies a pathway, not merely a deficit: the same
+weights produce a much better mask when conditioned on a dense prompt. We
+therefore supervise the memory pathway with the prompt pathway. At each step,
+four frames are sampled from the clip and decoded a second time with that
+frame's ground-truth mask supplied as a dense prompt. This second decode uses
+the same network and the same weights; it differs only in receiving
+information --- the answer --- that is unavailable at inference. Its output is
+detached and used as the target for the ordinary memory-path prediction,
+through a Dice term on the teacher's soft probabilities and a cbDice term on
+its shape. Following \cite{hinton2015distilling} the target is the teacher's
+probability map rather than a binarised mask, so the student is supervised by
+graded confidence rather than by a hard boundary. The construction is not
+generic self-distillation: teacher and student are one network with one set of
+weights, differing only in access to privileged information, which is the
+setting formalised by \cite{lopezpaz2016unifying}.
+
+\paragraph{Frame-0 prompt dropout.}
+\begin{sloppypar}
+Previously every clip supplied the ground-truth prompt on frame~0, so a
+fraction $1/T$ of the training signal was spent in a conditioning regime that
+never occurs at inference, where the prompt is given once and every later
+frame is reconstructed from memory. We withhold the frame-0 prompt with
+probability $0.4$, ramped over the first forty epochs, so that the model is
+trained on the distribution it is evaluated under. This is the correction for
+exposure bias of \cite{bengio2015scheduled}, applied to a spatial prompt
+rather than to a token sequence.
+\end{sloppypar}
+
+Both additions are enabled by default and introduce no new parameters: the
+trainable count remains $5{,}557{,}250$ of $39{,}876{,}930$.
+\todo{Results for this configuration are PENDING. Nothing in this manuscript
+is yet measured with distillation or prompt dropout enabled; every reported
+number is the model without them. Do not describe them as improving anything
+until checkpoints-distill has been benchmarked.}
 
 \paragraph{Optimization.}
 Training uses AdamW \cite{loshchilov2019adamw} with decoupled weight decay
@@ -1656,23 +1726,30 @@ long-term target retention. This strongly suggests that the primary
 bottleneck for processing lengthy sequences resides within the memory pathway
 rather than the mask decoder.
 
-\emph{Training-set size.} Adding two further recordings to the training
-split --- twenty to twenty-two, all from the same culture protocol and
-imaging modality --- moves the test scores by $+0.003$ IoU and $+0.005$
-cbDice, and leaves the temporal decay unchanged at $0.070$. Per recording the
-two models trade places, two better and two worse, and the only metric whose
-per-frame difference reaches significance is cbDice ($p = 0.011$ over the 328
-frames), which is also the only one of the two topology metrics that appears
-in the training objective; clDice, which does not, is worse on more frames
-than it is better on ($146$ against $175$). The benchmark has therefore
-plateaued with respect to additional recordings of this kind. This is what
-should be expected: the marginal recording is another instance of a
-morphology and an acquisition the model has already seen many times, so it
-supplies little information that the existing training set does not already
-contain. Escaping the plateau plausibly requires variation the dataset does
-not currently span --- other culture conditions, magnifications or cell
-types --- rather than more of the same, and we report the larger training set
-because it is the one released, not because it measurably improves the model.
+\emph{Training-set size.} We tested directly whether more recordings of the
+same kind help. Adding two recordings to the training split --- twenty to
+twenty-two, same culture protocol, same modality --- moves the held-out mean
+IoU from $0.7599$ to $0.7633$, a difference of $+0.0035$. The direction is
+not consistent across recordings: two improve ($+0.0209$, $+0.0076$) and two
+degrade ($-0.0080$, $-0.0067$), giving a paired $t = 0.51$ on three degrees
+of freedom, $p = 0.65$. Validation moved by a comparable amount, $0.8377$ to
+$0.8399$. The temporal decay is unchanged at $0.070$.
+
+The relevant question is not whether this difference is significant --- it
+plainly is not --- but what size of effect this benchmark could resolve. The
+standard deviation of the paired per-recording difference is $0.0136$, so
+with four test recordings a two-sided paired test at $\alpha = 0.05$ requires
+$|\Delta\mathrm{IoU}| > 0.0217$. The observed rate is $+0.0017$ IoU per added
+recording, so reaching that threshold at this rate would take on the order of
+thirteen recordings in total --- roughly eleven beyond the two already
+added. We therefore read the model as saturated with respect to recordings of
+this kind at this scale: a further recording of the same cell type under the
+same protocol contributes samples rather than information, and the benchmark
+would not detect its effect even if one existed. This is a weaker claim than
+``more data would help'', and a more defensible one; what the evidence
+supports is that additional variation --- other culture conditions,
+magnifications or cell types --- is the direction likely to matter, not more
+of the same.
 
 \emph{Topology weighting.} The two topology terms exhibit markedly
 different optimization dynamics. At a coefficient of just $0.3$, the
@@ -1808,7 +1885,7 @@ directly from sequential masks.
 All data, code and model weights required to reproduce this work are
 publicly available.
 
-\emph{Dataset.} The thirty-one annotated phase-contrast recordings and masks are deposited at Zenodo, \todo{Zenodo DOI}.
+\emph{Dataset.} The thirty-two annotated phase-contrast recordings and masks are deposited at Zenodo, \todo{Zenodo DOI}.
 
 \emph{Training and evaluation code.} Adaptation, training and the full benchmark are at
 \url{https://github.com/adioiz/NeuroVestigo}.
