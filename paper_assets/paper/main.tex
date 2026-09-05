@@ -1318,12 +1318,42 @@ detached and used as the target for the ordinary memory-path prediction,
 through a Dice term on the teacher's soft probabilities, weighted $1.0$, and a
 cbDice term on its shape, weighted $0.5$; four frames per clip are decoded
 twice, so the second decode is the only additional training cost and inference
-is unchanged. Following \cite{hinton2015distilling} the target is the teacher's
-probability map rather than a binarised mask, so the student is supervised by
-graded confidence rather than by a hard boundary. The construction is not
-generic self-distillation: teacher and student are one network with one set of
-weights, differing only in access to privileged information, which is the
-setting formalised by \cite{lopezpaz2016unifying}.
+is unchanged.
+
+Writing $\hat{m}_t$ for the memory-path prediction at frame $t$ and
+\begin{equation}
+\tilde{m}_t = \mathrm{Dec}\!\big(E(I_t),\, \mathrm{PromptEnc}(m_t)\big)
+\label{eq:teacher}
+\end{equation}
+for the teacher --- the same network decoding the same frame with the
+ground-truth mask $m_t$ supplied as a dense prompt --- the two terms are, for
+a set $\mathcal{S}_k \subset \{1,\dots,T\}$ of $k=4$ frame indices drawn
+uniformly at random at each step,
+\begin{equation}
+\mathcal{L}^{T}_{\bullet}
+ = \frac{1}{k}\sum_{t \in \mathcal{S}_k}
+   \mathcal{L}_{\bullet}\!\Big(\hat{m}_t,\;
+   \sigma\big(\mathrm{sg}[\tilde{m}_t]\big)\Big),
+\qquad \bullet \in \{\text{Dice},\ \text{cbDice}\},
+\label{eq:distill}
+\end{equation}
+where $\sigma$ is the logistic function and $\mathrm{sg}[\cdot]$ the
+stop-gradient, so the term moves the student and never the teacher.
+
+Following \cite{hinton2015distilling} the target is the teacher's probability
+map rather than a binarised mask, so the student is supervised by graded
+confidence rather than by a hard boundary; we apply no temperature, as the
+output is a per-pixel logistic rather than a distribution over classes.
+The construction is not generic self-distillation: teacher and student are one
+network with one set of weights, differing only in access to privileged
+information, which is the setting formalised by \cite{lopezpaz2016unifying}.
+It departs from the generalised distillation of that work in one respect. There
+the ground-truth and teacher objectives are traded off convexly, as
+$(1-\lambda)\,\ell(y,\cdot) + \lambda\,\ell(s,\cdot)$; here the teacher terms
+of Eq.~\ref{eq:distill} are added on top of the full ground-truth loss rather
+than substituted for part of it, so there is no $\lambda$ and the total
+supervision increases. The teacher is a source of additional signal, not an
+alternative target.
 
 \paragraph{Frame-0 prompt dropout.}
 \begin{sloppypar}
