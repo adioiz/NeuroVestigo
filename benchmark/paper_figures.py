@@ -34,7 +34,9 @@ PRED = os.path.join(REPO, "benchmark", "predictions")
 PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final",
             # uSAM is reported in single-mask mode (multimask_output=False),
             # SAM's documented setting for an unambiguous box prompt.
-            "usam": "usam_single"}
+            "usam": "usam_single",
+            # shipped model: trained on 22 recordings
+            "ours": "ours_22rec"}
 
 mpl.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],

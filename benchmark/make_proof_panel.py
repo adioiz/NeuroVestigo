@@ -40,7 +40,7 @@ PRETTY = {"ours": "NeuroVestigo", "sam2_zeroshot": "SAM 2 (zero-shot)",
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
 PRED_DIR = {"sam3.1": "sam3_final", "sam3.1_text": "sam3_text_final",
-            "usam": "usam_single"}
+            "usam": "usam_single", "ours": "ours_22rec"}
 
 
 def load_gray(video, t):

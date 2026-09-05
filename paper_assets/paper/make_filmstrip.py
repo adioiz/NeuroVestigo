@@ -4,12 +4,12 @@ the frame-0 ground-truth prompt and the model's own propagated masks overlaid.
 
 Frame 0 carries the ground-truth mask -- that is the prompt the model is given.
 Every later frame carries the PREDICTION of the shipped 16-frame model, read
-from benchmark/predictions/ours_16f/.  Nothing here is ground truth except
+from benchmark/predictions/ours_22rec/.  Nothing here is ground truth except
 frame 0, so the panel shows what the model actually produces.
 
 Before drawing, the script re-scores the stack against the ground truth and
 refuses to write the figure if the mean IoU does not match the number recorded
-in benchmark/results/test/ours_16f.csv -- that is the guard against silently
+in benchmark/results/test/ours_22rec.csv -- that is the guard against silently
 plotting a superseded run.
 """
 import csv
@@ -25,8 +25,8 @@ from skimage import measure
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEQ = "A71_C1"
 FRAMES = [0, 12, 24, 36, 48, 60, 72]
-PRED = os.path.join(REPO, "benchmark", "predictions", "ours_16f", f"{SEQ}.tif")
-SCORES = os.path.join(REPO, "benchmark", "results", "test", "ours_16f.csv")
+PRED = os.path.join(REPO, "benchmark", "predictions", "ours_22rec", f"{SEQ}.tif")
+SCORES = os.path.join(REPO, "benchmark", "results", "test", "ours_22rec.csv")
 IMAGES = os.path.join(REPO, "training_data", "images", SEQ)
 MASKS = os.path.join(REPO, "training_data", "masks", SEQ)
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fig2_filmstrip.png")
@@ -70,7 +70,7 @@ def check_stack(stack):
                  f"{want:.4f}. Refusing to draw a stack that is not the "
                  f"reported run.")
     print(f"  verified: mean IoU over t>=1 is {got:.4f}, matches "
-          f"ours_16f.csv ({want:.4f})")
+          f"ours_22rec.csv ({want:.4f})")
     return got
 
 

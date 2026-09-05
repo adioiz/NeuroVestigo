@@ -24,7 +24,7 @@ from benchmark.eval_masks import evaluate_stack
 # label -> predictions subdirectory. The SAM 3 sweep wrote one directory per
 # configuration, so the winning run does not carry the name it is scored under.
 OURS_LABEL = "NeuroVestigo"
-METHODS = [(OURS_LABEL, "ours_16f"), ("Cellpose-SAM", "cellpose_sam"),
+METHODS = [(OURS_LABEL, "ours_22rec"), ("Cellpose-SAM", "cellpose_sam"),
            ("Omnipose", "omnipose"), ("SAM 2 (zero-shot)", "sam2_zeroshot"),
            ("$\\mu$SAM (box-prompt)", "usam_single"), ("NeuroQuantify", "neuroquantify"),
            ("SAM 3.1 (point-prompt)", "sam3_final")]
