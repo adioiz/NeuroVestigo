@@ -6,7 +6,8 @@ Results table was measured with is the earlier sixteen-frame run, whose weights
 ship in [neurons-labeling](https://github.com/adioiz/neurons-labeling) at
 `checkpoints-16-frames/lora_weights.pt`.
 
-**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (31 recordings: 22 train / 5 val / 4 held-out test), tuned for NVIDIA B200.
+**Project:** Fine-tuning SAM 2 (Segment Anything Model 2) for neuron time-lapse microscopy segmentation, using LoRA+ on a small dataset (32 recordings: 23 train / 5 val / 4 held-out test, i.e. 28 seen by
+the model), tuned for NVIDIA B200.
 
 ---
 

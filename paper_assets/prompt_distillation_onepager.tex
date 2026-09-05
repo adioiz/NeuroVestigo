@@ -1,0 +1,123 @@
+\documentclass[9pt,a4paper]{extarticle}
+\usepackage[margin=1.35cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage[table]{xcolor}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{acc}{HTML}{1E5F8C}
+\definecolor{ours}{HTML}{9C4221}
+\definecolor{lite}{HTML}{F2F4F7}
+
+\titleformat{\section}{\bfseries\color{acc}\normalsize}{}{0pt}{}
+\titlespacing{\section}{0pt}{6pt}{2pt}
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.08}
+\pagestyle{empty}
+
+\newcommand{\sg}{\mathrm{sg}}
+
+\begin{document}
+
+{\Large\bfseries Distilling the Prompt Pathway}\\[1pt]
+{\color{acc}\rule{\textwidth}{1pt}}\\[2pt]
+{\small NeuroVestigo --- closing the frame-0 conditioning gap in SAM\,2 video propagation}
+
+\section{What}
+SAM\,2 segments the first frame of a clip with the ground-truth mask supplied as a \emph{dense prompt}, and every
+later frame with no prompt at all --- memory cross-attention is their only spatial context. The two regimes are
+not equally good. We train the no-prompt pathway to reproduce what the prompted pathway already achieves, using
+the model itself as the teacher.
+
+\section{Why --- the measurement that motivates it}
+Per-frame validation metrics, shipped 16-frame model, best epoch (110-epoch run, 5 validation recordings):
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+ & frame 0 (prompted) & frames 1--15 (memory only) & gap \\
+\midrule
+IoU            & 0.9466 & $\sim$0.830 & $-12\%$ \\
+Betti-0 error  & 0.080  & $\sim$0.70  & $\mathbf{\sim 9\times}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two facts do the work. First, the topology gap is an order of magnitude larger than the region gap: losing the
+prompt does not blur the mask, it \textbf{fragments neurites}. Second, frames 1$\to$15 drift only \textbf{0.017 in
+total} --- essentially flat. So this is a \emph{single conditioning step}, not accumulating propagation error.
+There are only two regimes, prompted and not, and every unprompted frame sits at the same level. Improving that
+pathway therefore lifts all fifteen frames together; no new cliff appears at frame 2.
+
+The decoder can produce a 0.947 mask of these images. It simply cannot reach that without a spatial prior.
+
+\section{How}
+\textbf{(a) Teacher with privileged information.} At $k=4$ randomly sampled frames per clip, decode a second time
+with that frame's ground truth as the dense prompt. Same weights, same image features (the encoder runs once);
+the teacher differs only in receiving information unavailable at inference. Its output is detached.
+
+\textbf{(b) Prompt dropout.} Frame 0's prompt is withheld with probability $p$, so the conditioning frame is
+sometimes segmented from features alone --- the regime every other frame is always in. Ramped over $E_w$ epochs
+so an early bad frame-0 prediction cannot poison a clip's memory bank.
+
+\section{Math}
+Let $f_\theta$ be the network, $x_t$ frame $t$, $m_t$ its ground-truth mask, $M_{<t}$ the memory bank, and $\pi$
+the dense prompt. Teacher and student differ \emph{only} in $\pi$:
+\[
+\underbrace{\tilde{y}_t = f_\theta\!\left(x_t,\ \pi = m_t\right)}_{\text{teacher: privileged}}
+\qquad\qquad
+\underbrace{\hat{y}_t = f_\theta\!\left(x_t,\ \pi = \varnothing,\ M_{<t}\right)}_{\text{student: inference-time}}
+\]
+\[
+\mathcal{L}_{\text{KD}}
+= \lambda_1\,\mathcal{L}_{\text{Dice}}\!\left(\hat{y}_t,\ \sg\!\left[\sigma(\tilde{y}_t)\right]\right)
++ \lambda_2\,\mathcal{L}_{\text{cbDice}}\!\left(\hat{y}_t,\ \sg\!\left[\sigma(\tilde{y}_t)\right]\right),
+\qquad \lambda_1=1.0,\ \lambda_2=0.5
+\]
+with $\sg[\cdot]$ the stop-gradient, so the loss only ever moves the student. The target is
+$\sigma(\tilde y_t)\in[0,1]$, \emph{soft}: it encodes which pixels the model finds genuinely ambiguous, which a
+binary mask cannot. Dice accepts this directly,
+$\mathcal{L}_{\text{Dice}}(a,b)=1-\frac{2\sum\sigma(a)b+\epsilon}{\sum\sigma(a)+\sum b+\epsilon}$.
+Prompt dropout at epoch $e$:
+\[
+\pi_0 = \begin{cases} m_0 & \text{w.p. } 1-p_e\\ \varnothing & \text{w.p. } p_e\end{cases}
+\qquad p_e = p\cdot\min\!\left(1,\ e/E_w\right),\qquad p=0.4,\ E_w=40 .
+\]
+Full objective (weights as shipped):
+\[
+\mathcal{L}=3.0\,\mathcal{L}_{\text{focal}}+2.0\,\mathcal{L}_{\text{Dice}}+0.3\,\mathcal{L}_{\text{cbDice}}
++0.3\,\mathcal{L}_{\text{sv}}+1.0\,\mathcal{L}^{\text{KD}}_{\text{Dice}}+0.5\,\mathcal{L}^{\text{KD}}_{\text{cbDice}}
+\]
+
+\section{Provenance --- what is borrowed, what is ours}
+\begin{center}
+\rowcolors{2}{lite}{white}
+\begin{tabular}{>{\raggedright\arraybackslash}p{7.4cm}>{\raggedright\arraybackslash}p{9.4cm}}
+\toprule
+\textbf{Component} & \textbf{Source} \\
+\midrule
+Training a student on a teacher's \emph{soft} outputs & Hinton, Vinyals \& Dean, arXiv:1503.02531 \\
+Teacher holding information the student will never have & Lopez-Paz, Bottou, Sch\"olkopf \& Vapnik, ICLR 2016, arXiv:1511.03643 \\
+Withholding the prompt during training (exposure bias) & Bengio, Vinyals, Jaitly \& Shazeer, NeurIPS 2015, arXiv:1506.03099 \\
+\textcolor{ours}{Teacher = the same weights, differing only in conditioning} & \textcolor{ours}{\textbf{ours}} --- not a second network, not a deeper layer, not a prior generation \\
+\textcolor{ours}{Using \textbf{cbDice} as the distillation target} & \textcolor{ours}{\textbf{ours}} --- follows from the $9\times$ topology gap above; no paper suggests it \\
+\textcolor{ours}{The frame-0 conditioning gap as a measured defect} & \textcolor{ours}{\textbf{ours}} --- the per-frame IoU/Betti split that motivates all of it \\
+The loss functions themselves & the repo's existing Dice / cbDice. \emph{Not} from the KD literature: Hinton's objective is temperature-scaled KL on softmax, which does not transfer to binary segmentation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Cost and how it will be judged}
+No new parameters: 5{,}557{,}250 trainable of 39{,}876{,}930 (13.9\%), unchanged. The image encoder is shared, so
+each teacher frame costs one prompt-encoder $+$ mask-decoder pass; with $k=4$ of 16 frames the measured overhead is
+$\approx$30--40\% per step.
+
+\textbf{Read Betti-0 before IoU.} The mechanism predicts topology moves first, since that is where the $9\times$
+gap is. A run that pulls validation $b_0$ from $\sim$0.70 toward $\sim$0.30 while IoU barely moves is the intended
+result, not a null one. \emph{Status: training in progress; no result yet.}
+
+\end{document}

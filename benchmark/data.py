@@ -31,7 +31,8 @@ CONFIG = os.path.join(REPO, "checkpoints", "training_config.json")
 
 # True held-out TEST set: videos whose masks exist in neurons-labeling but were
 # excluded from train/val by config.data.test_videos (src/trainer.py), so no
-# shipped model has ever seen them -- not the 25-recording run, not the 27.
+# shipped model has ever seen them -- not the 25-recording run, not the 27,
+# not the 28. (Those counts are train+val, i.e. what a model actually saw.)
 # A71_C1 / A81_C1 are entirely new series (cleanest); A12_C3_100k / A12_C1_100k_2 are
 # new fields from the same 100k batch (mild same-sample caveat).
 # NOTE: these must be `prepare`d into training_data/{images,masks}/<name>/ before use.
