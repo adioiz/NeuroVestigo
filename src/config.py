@@ -220,6 +220,40 @@ class LossConfig:
     # The defensible claim is finer skeleton/EDT detail, not topology rescue.
     topology_resolution: int = 512
 
+    # ------------------------------------------------------------------
+    # Prompt-pathway self-distillation  (measured motivation, Run D log)
+    # ------------------------------------------------------------------
+    # In _forward_memory, frame 0 receives the GT mask as a dense prompt and
+    # frames 1..T-1 receive `None` -- memory is their only spatial context.
+    # The per-frame validation metrics show what that costs:
+    #
+    #     frame 0 (prompted)      IoU 0.9466   betti0_err 0.080
+    #     frames 1-15 (no prompt) IoU ~0.830   betti0_err ~0.70
+    #
+    # The IoU gap is 12%; the topology gap is ~9x. The decoder can clearly
+    # produce a 0.947 mask of these images -- it just cannot reach that
+    # without being handed an outline. Frames 1-15 are FLAT (0.017 total
+    # drift), so this is one conditioning step, not accumulating error.
+    #
+    # Self-distillation closes it from the inside: run the decoder a second
+    # time on frame t with that frame's GT as a dense prompt (the teacher,
+    # no gradient), and train the ordinary memory-path prediction (the
+    # student) to reproduce it. The target is the model's own stronger
+    # branch, so nothing is imported from outside the network.
+    #
+    # The distillation term is topological (cbDice) as well as regional
+    # (Dice), because the 9x figure says connectivity is what the no-prompt
+    # pathway loses -- see Hinton et al. arXiv:1503.02531 for soft targets
+    # and Zhang et al. ICCV 2019 (arXiv:1905.08094) for self-distillation.
+    use_prompt_distill: bool = False
+    distill_dice_weight: float = 1.0
+    distill_cbdice_weight: float = 0.5
+    # Teacher decoder calls per clip. The image encoder is shared, so each
+    # extra frame costs one prompt-encoder + mask-decoder pass, not a full
+    # forward. 0 = every frame; a small number sampled at random per clip
+    # gets most of the signal and acts as regularisation.
+    distill_frames_per_clip: int = 4
+
 
 @dataclass
 class TrainingConfig:
@@ -283,6 +317,17 @@ class TrainingConfig:
     # path (interpolate previous prediction as a dense prompt on each frame),
     # which is faster but leaves the memory_attention LoRAs inactive. Keep
     # True unless you want to A/B compare against the legacy behavior.
+    # Frame-0 prompt dropout (scheduled sampling, Bengio et al. NeurIPS 2015,
+    # arXiv:1506.03099). Frame 0 currently ALWAYS gets the GT dense prompt, so
+    # 1/T of the training signal is spent on a conditioning regime that does
+    # not exist at inference -- classic exposure bias. With probability p the
+    # prompt is withheld and frame 0 must be segmented from features alone,
+    # which is the frames-1+ condition. Ramped from 0 over the warmup so an
+    # early bad frame-0 prediction cannot poison a whole clip's memory bank.
+    # 0.0 disables it (default), leaving the forward pass bit-identical.
+    prompt_dropout: float = 0.0
+    prompt_dropout_warmup_epochs: int = 40
+
     use_memory_attention_path: bool = True
 
     # Path to a train_state.pt checkpoint to resume from. When set, the
@@ -303,6 +348,8 @@ class TrainingConfig:
             "loss_dice": self.loss.loss_dice_weight,
             "loss_cbdice": self.loss.loss_cbdice_weight,
             "loss_supervoxel": self.loss.loss_supervoxel_weight,
+            "loss_distill_dice": self.loss.distill_dice_weight,
+            "loss_distill_cbdice": self.loss.distill_cbdice_weight,
             "loss_iou": self.loss.loss_iou_weight,
             "loss_class": self.loss.loss_class_weight,
         }

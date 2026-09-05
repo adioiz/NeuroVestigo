@@ -268,11 +268,23 @@ class SAM2TrainingWrapper(nn.Module):
         sam2_model: nn.Module,
         num_frames: int = 8,
         use_memory_path: bool = True,
+        prompt_dropout: float = 0.0,
+        prompt_dropout_warmup_epochs: int = 0,
+        use_prompt_distill: bool = False,
+        distill_frames_per_clip: int = 4,
     ):
         super().__init__()
         self.model = sam2_model
         self.num_frames = num_frames
         self.use_memory_path = use_memory_path
+        # Frame-0 prompt dropout + prompt-pathway self-distillation. Both are
+        # off by default; with both off _forward_memory is bit-identical to
+        # the version that trained every shipped checkpoint.
+        self.prompt_dropout = prompt_dropout
+        self.prompt_dropout_warmup_epochs = prompt_dropout_warmup_epochs
+        self.use_prompt_distill = use_prompt_distill
+        self.distill_frames_per_clip = distill_frames_per_clip
+        self.current_epoch = 0
 
         # When the memory path is active, force the SAM decoder to be exercised
         # on the conditioning frame too. By default SAM 2 has
@@ -311,6 +323,59 @@ class SAM2TrainingWrapper(nn.Module):
             # _forward_sam_heads entirely and called sam_mask_decoder
             # directly.
             self.model.pred_obj_scores = False
+
+    def set_epoch(self, epoch: int) -> None:
+        """Training loop calls this once per epoch so the prompt-dropout
+        curriculum can ramp. Without it dropout stays at its epoch-0 value."""
+        self.current_epoch = epoch
+
+    def _prompt_dropout_p(self) -> float:
+        """Current frame-0 prompt-dropout probability, ramped linearly over
+        `prompt_dropout_warmup_epochs` and then held at `prompt_dropout`."""
+        if self.prompt_dropout <= 0.0 or not self.training:
+            return 0.0
+        w = self.prompt_dropout_warmup_epochs
+        if w <= 0:
+            return self.prompt_dropout
+        return self.prompt_dropout * min(1.0, self.current_epoch / w)
+
+    def _distill_frames(self, T: int) -> List[int]:
+        """Which frames get a teacher this step. Sampling a few at random per
+        clip costs a fraction of the decoder passes of doing all T, and the
+        randomness spreads the signal over every frame index across a run."""
+        if not (self.use_prompt_distill and self.training):
+            return []
+        k = self.distill_frames_per_clip
+        if k <= 0 or k >= T:
+            return list(range(T))
+        return sorted(random.sample(range(T), k))
+
+    @torch.no_grad()
+    def _teacher_mask(self, vf_bn, fs, gt_t):
+        """The model's own frame-0 conditioning regime, applied at frame t.
+
+        Raw (memory-free) features plus the GT mask as a dense prompt -- exactly
+        what track_step does on the initial conditioning frame, which is the
+        setup that measures 0.9466 IoU / 0.080 Betti-0 error. Only the prompt
+        encoder and mask decoder run here: the image encoder's output is reused
+        and memory_attention is skipped entirely.
+
+        Returns high-res mask LOGITS [BN, 1, H, W], no gradient.
+        """
+        BN = vf_bn[-1].shape[1]
+        pix_feat = vf_bn[-1].permute(1, 2, 0).view(BN, self.model.hidden_dim, *fs[-1])
+        high_res_features = [
+            x.permute(1, 2, 0).view(x.size(1), x.size(2), *sz)
+            for x, sz in zip(vf_bn[:-1], fs[:-1])
+        ] or None
+        out = self.model._forward_sam_heads(
+            backbone_features=pix_feat,
+            point_inputs=None,
+            mask_inputs=gt_t,
+            high_res_features=high_res_features,
+            multimask_output=False,
+        )
+        return out[4]  # high_res_masks
 
     def forward(
         self,
@@ -375,6 +440,21 @@ class SAM2TrainingWrapper(nn.Module):
         }
         per_frame_preds = []
 
+        # Option B: withhold frame 0's dense prompt on a fraction of clips, so
+        # the conditioning frame is sometimes segmented from features alone --
+        # the regime every other frame is always in. Decided once per clip, not
+        # per frame: frame 0 is the only prompted frame.
+        # Guarded so the RNG is not touched when dropout is off: an
+        # unconditional random() call consumes a draw from the global stream
+        # and would shift every downstream augmentation sample, silently
+        # breaking reproducibility against every previous run.
+        _p_drop = self._prompt_dropout_p()
+        drop_frame0_prompt = _p_drop > 0.0 and random.random() < _p_drop
+
+        # Option A: frames that additionally get a teacher pass this step.
+        distill_ts = self._distill_frames(T)
+        teacher_preds: List[torch.Tensor] = []
+
         for t in range(T):
             # Slice frame-t features out of the B*T-batched backbone_out.
             # Layout is [clip0_t0, clip0_t1, ..., clip0_t(T-1), clip1_t0, ...]
@@ -397,7 +477,14 @@ class SAM2TrainingWrapper(nn.Module):
             vf_bn = [x.repeat_interleave(N_obj, dim=1) for x in vf]
             vpe_bn = [x.repeat_interleave(N_obj, dim=1) for x in vpe]
 
-            mask_input = frame0_masks if t == 0 else None
+            mask_input = None if (t > 0 or drop_frame0_prompt) else frame0_masks
+
+            # Teacher: same features, but handed frame t's GT as a dense prompt.
+            # Must run BEFORE track_step, which appends frame t to output_dict.
+            if t in distill_ts:
+                teacher_preds.append(
+                    self._teacher_mask(vf_bn, fs, gt_masks[:, t].reshape(BN, 1, H, W).float())
+                )
 
             out_t = self.model.track_step(
                 frame_idx=t,
@@ -431,7 +518,23 @@ class SAM2TrainingWrapper(nn.Module):
                  .contiguous()
         )
 
-        return {"pred_masks": pred_masks}
+        out: Dict[str, torch.Tensor] = {"pred_masks": pred_masks}
+
+        # Student/teacher pair for the distillation term. Both are logits in
+        # [B, Td, N_obj, H, W]; the teacher carries no gradient, so the loss
+        # pulls the student toward it and never the reverse.
+        if teacher_preds:
+            idx = torch.as_tensor(distill_ts, device=pred_masks.device)
+            teacher = (
+                torch.stack(teacher_preds, dim=1).squeeze(2)
+                     .view(B, N_obj, len(distill_ts), H, W)
+                     .permute(0, 2, 1, 3, 4)
+                     .contiguous()
+            )
+            out["distill_student"] = pred_masks.index_select(1, idx)
+            out["distill_teacher"] = teacher.detach()
+
+        return out
 
     # =====================================================================
     # Legacy "simple" forward (interpolated-mask propagation). Kept as a
@@ -751,7 +854,20 @@ def build_training_model(config: TrainingConfig, device: str):
         model,
         num_frames=config.data.num_frames,
         use_memory_path=config.use_memory_attention_path,
+        prompt_dropout=config.prompt_dropout,
+        prompt_dropout_warmup_epochs=config.prompt_dropout_warmup_epochs,
+        use_prompt_distill=config.loss.use_prompt_distill,
+        distill_frames_per_clip=config.loss.distill_frames_per_clip,
     )
+    if config.prompt_dropout > 0:
+        print(f"  Frame-0 prompt dropout: p={config.prompt_dropout} "
+              f"(ramped over {config.prompt_dropout_warmup_epochs} epochs)")
+    if config.loss.use_prompt_distill:
+        k = config.loss.distill_frames_per_clip
+        print(f"  Prompt-pathway self-distillation: "
+              f"{'every frame' if k <= 0 else f'{k} frames/clip'}, "
+              f"dice={config.loss.distill_dice_weight} "
+              f"cbdice={config.loss.distill_cbdice_weight}")
     if config.use_memory_attention_path:
         print("  Forward pass: full memory_attention path (track_step API)")
     else:
@@ -1191,6 +1307,9 @@ def train(config: TrainingConfig = None):
 
     for epoch in range(start_epoch, config.num_epochs):
         model.train()
+        # Drives the prompt-dropout curriculum. No-op when dropout is off.
+        if hasattr(model, "set_epoch"):
+            model.set_epoch(epoch)
         # Loss tensors stay on-device — no .item() inside the step loop.
         # We only sync at logging boundaries (every log_every_n_steps and at
         # end of epoch). Each .item() is a cudaStreamSynchronize, so per-step

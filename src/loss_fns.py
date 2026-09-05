@@ -987,6 +987,52 @@ class MultiStepMultiMasksAndIous(nn.Module):
         if self.use_supervoxel:
             loss_supervoxel = self.supervoxel(pred_masks, targets)
 
+        # ------------------------------------------------------------------
+        # Prompt-pathway self-distillation
+        # ------------------------------------------------------------------
+        # `distill_teacher` is the SAME network decoding the SAME frame with
+        # that frame's GT supplied as a dense prompt -- the conditioning regime
+        # frame 0 enjoys, which measures IoU 0.9466 / Betti-0 err 0.080 against
+        # ~0.830 / ~0.70 for the memory-only pathway. Training the ordinary
+        # prediction to reproduce it transfers an ability the model already has
+        # into the pathway that lacks it. The teacher arrives detached, so this
+        # only ever moves the student.
+        #
+        # Two terms, because the two gaps are not the same size: Dice for
+        # region agreement, cbDice for skeleton/connectivity agreement. The
+        # topology gap is ~9x the IoU gap, so the cbDice term is the one
+        # carrying the argument.
+        #
+        # Soft targets: Hinton et al. arXiv:1503.02531. Self-distillation:
+        # Zhang et al. ICCV 2019 (arXiv:1905.08094), Furlanello et al. ICML
+        # 2018 (arXiv:1805.04770).
+        loss_distill_dice = torch.tensor(0.0, device=pred_masks.device)
+        loss_distill_cbdice = torch.tensor(0.0, device=pred_masks.device)
+        if "distill_student" in outputs and "distill_teacher" in outputs:
+            student = outputs["distill_student"]
+            teacher_prob = torch.sigmoid(outputs["distill_teacher"])
+
+            # Dice takes the SOFT teacher. DiceLoss sigmoids its first argument
+            # and treats the second as a target in [0, 1], so probabilities pass
+            # through correctly -- and the soft target is the point (Hinton's
+            # "dark knowledge": it says which pixels the model finds genuinely
+            # ambiguous). Note soft Dice against a soft target has a non-zero
+            # floor, so this term never reads 0; the residual gradient asks the
+            # student to be slightly sharper than its teacher, which is benign.
+            loss_distill_dice = self.dice(student, teacher_prob)
+
+            # cbDice takes the BINARISED teacher, and must.
+            # SoftCBDiceLoss re-binarises its target only inside the resize
+            # branch (H > topology_resolution). When no resize happens, a soft
+            # target reaches the EDT/skeleton code raw, where every non-zero
+            # value counts as foreground -- so a teacher of all-0.5 and a
+            # perfect teacher both collapse to an all-ones mask and score an
+            # identical, negative "loss". Measured: -0.1679 for both. Threshold
+            # here so the term is correct at every topology_resolution rather
+            # than only when the resize happens to fire.
+            if self.use_cbdice:
+                loss_distill_cbdice = self.cbdice(student, (teacher_prob > 0.5).float())
+
         # IoU prediction loss: train the model to predict its own accuracy
         loss_iou = torch.tensor(0.0, device=pred_masks.device)
         if "pred_ious" in outputs:
@@ -1013,6 +1059,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
             self.weight_dict.get("loss_dice", 2.0) * loss_dice +
             self.weight_dict.get("loss_cbdice", 1.0) * loss_cbdice +
             self.weight_dict.get("loss_supervoxel", 1.0) * loss_supervoxel +
+            self.weight_dict.get("loss_distill_dice", 0.0) * loss_distill_dice +
+            self.weight_dict.get("loss_distill_cbdice", 0.0) * loss_distill_cbdice +
             self.weight_dict.get("loss_iou", 1.0) * loss_iou +
             self.weight_dict.get("loss_class", 1.0) * loss_class
         )
@@ -1023,6 +1071,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
             "loss_dice": loss_dice,
             "loss_cbdice": loss_cbdice,
             "loss_supervoxel": loss_supervoxel,
+            "loss_distill_dice": loss_distill_dice,
+            "loss_distill_cbdice": loss_distill_cbdice,
             "loss_iou": loss_iou,
             "loss_class": loss_class,
         }
