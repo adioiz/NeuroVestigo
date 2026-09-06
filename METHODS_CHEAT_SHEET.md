@@ -105,18 +105,38 @@ is a single conditioning step and not accumulating error — which means improvi
 the no-prompt pathway lifts all fifteen frames together, and no new cliff appears
 between frames 1 and 2.
 
-**What runs.** Each step, `distill_frames_per_clip` frames (default 4, sampled at
-random per clip; 0 = every frame) are decoded a *second* time with that frame's
-GT as a dense prompt. That teacher is the model's own frame-0 regime, detached,
-so the loss only ever moves the student. The image encoder is shared, so a
-teacher frame costs one prompt-encoder + mask-decoder pass, not a full forward.
+**What runs.** From epoch `distill_start_epoch` (40), each step decodes
+**frame 1 plus `distill_frames_per_clip` random frames from 2+** a second time
+with that frame's GT as a dense prompt. Frame 0 joins only when its prompt was
+dropped. That teacher is the model's own frame-0 regime, detached, so the loss
+only ever moves the student. The image encoder is shared, so a teacher frame
+costs one prompt-encoder + mask-decoder pass, not a full forward.
+
+Three choices here come from the first run's failure (val 0.8340 vs a 0.8377
+baseline, then flat for 44 epochs):
+
+- **Frame 1 is mandatory.** It is the defect — the first frame with no dense
+  prompt, where IoU steps from 0.947 to ~0.83. Sampling it 4/16 of the time
+  spent most of the budget on frames 2–15, which sit at frame 1's level anyway.
+- **Nothing before epoch 40.** Teacher and student share weights, so early on
+  the target moves: the prompted pathway gained **+0.072 IoU across epochs
+  2–16** and only **+0.002 from epoch 30 on**, while the student gained +0.024
+  overall and the gap *widened* 0.039 → 0.092. Waiting for a stationary teacher
+  is what freezing it would buy, without a second copy of the weights.
+- **Weights 0.2 / 0.1, not 1.0 / 0.5.** At the old values the two terms were
+  **36% of `core_loss`** — a third of the gradient budget aimed at a target the
+  student cannot reach, since the teacher is handed the answer. At 0.2/0.1 they
+  are ~10%: an auxiliary regulariser, which is what they should be.
+
+Net compute is *lower* than the first run: 5 frames × 70 epochs = 350 teacher
+passes against 4 × 110 = 440.
 
 Two terms, because the two gaps differ in size:
 
 | term | weight | target | why |
 |---|---|---|---|
-| `loss_distill_dice` | 1.0 | soft teacher | region agreement; the soft target carries which pixels the model finds ambiguous |
-| `loss_distill_cbdice` | 0.5 | teacher (thresholded internally) | skeleton agreement — the 9× gap is topological |
+| `loss_distill_dice` | 0.2 | soft teacher | region agreement; the soft target carries which pixels the model finds ambiguous |
+| `loss_distill_cbdice` | 0.1 | teacher (thresholded internally) | skeleton agreement — the 9× gap is topological |
 
 **Frame-0 prompt dropout.** With probability `prompt_dropout` (default 0.4,
 ramped over `prompt_dropout_warmup_epochs` = 40) frame 0's prompt is withheld and

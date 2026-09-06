@@ -272,6 +272,7 @@ class SAM2TrainingWrapper(nn.Module):
         prompt_dropout_warmup_epochs: int = 0,
         use_prompt_distill: bool = False,
         distill_frames_per_clip: int = 4,
+        distill_start_epoch: int = 0,
     ):
         super().__init__()
         self.model = sam2_model
@@ -284,6 +285,7 @@ class SAM2TrainingWrapper(nn.Module):
         self.prompt_dropout_warmup_epochs = prompt_dropout_warmup_epochs
         self.use_prompt_distill = use_prompt_distill
         self.distill_frames_per_clip = distill_frames_per_clip
+        self.distill_start_epoch = distill_start_epoch
         self.current_epoch = 0
 
         # When the memory path is active, force the SAM decoder to be exercised
@@ -339,16 +341,51 @@ class SAM2TrainingWrapper(nn.Module):
             return self.prompt_dropout
         return self.prompt_dropout * min(1.0, self.current_epoch / w)
 
-    def _distill_frames(self, T: int) -> List[int]:
-        """Which frames get a teacher this step. Sampling a few at random per
-        clip costs a fraction of the decoder passes of doing all T, and the
-        randomness spreads the signal over every frame index across a run."""
+    def _distill_frames(self, T: int, frame0_prompt_dropped: bool = False) -> List[int]:
+        """Which frames get a teacher this step.
+
+        FRAME 1 IS ALWAYS INCLUDED. It is the defect: frame 0 has the dense
+        prompt and scores 0.947, frame 1 is the first frame without one and
+        drops to ~0.83. Sampling it only k/T of the time spent most of the
+        budget on frames 2..15, which sit at the same level as frame 1 and so
+        carry the same signal more weakly. Frame 1 is where the step happens.
+
+        Frame 0 joins the pool only when its prompt was dropped, because that
+        is the only time it is in the no-prompt regime -- otherwise student and
+        teacher both see the GT mask there and the term is ~0, i.e. a wasted
+        decoder pass.
+
+        The remaining `distill_frames_per_clip` come at random from frames 2+,
+        which spreads coverage over every index across a run.
+
+        NOT ACTIVE BEFORE `distill_start_epoch`. The teacher shares weights
+        with the student, so early on it is a moving target: measured over the
+        first run, the prompted pathway gained +0.072 IoU across epochs 2-16
+        and only +0.002 from epoch 30 onward. Distilling during the first
+        window chases a target that outruns the student (teacher +0.077 vs
+        student +0.024 over that run, with the gap WIDENING 0.039 -> 0.092).
+        Waiting until the teacher is stationary is what a fixed teacher would
+        buy, without a second copy of the weights.
+        """
         if not (self.use_prompt_distill and self.training):
             return []
+        if self.current_epoch < self.distill_start_epoch:
+            return []
+
+        mandatory = [1] if T > 1 else [0]
+        if frame0_prompt_dropped and T > 1:
+            mandatory.insert(0, 0)
+
+        # Frames 2+ only. Frame 0 is never a random candidate: unless its
+        # prompt was dropped (handled above) student and teacher both see the
+        # GT mask there, so the term is ~0 and the decoder pass is wasted.
+        pool = [t for t in range(2, T) if t not in mandatory]
         k = self.distill_frames_per_clip
-        if k <= 0 or k >= T:
-            return list(range(T))
-        return sorted(random.sample(range(T), k))
+        if k <= 0 or k >= len(pool):
+            extra = pool
+        else:
+            extra = random.sample(pool, k)
+        return sorted(mandatory + extra)
 
     @torch.no_grad()
     def _teacher_mask(self, vf_bn, fs, gt_t):
@@ -452,7 +489,7 @@ class SAM2TrainingWrapper(nn.Module):
         drop_frame0_prompt = _p_drop > 0.0 and random.random() < _p_drop
 
         # Option A: frames that additionally get a teacher pass this step.
-        distill_ts = self._distill_frames(T)
+        distill_ts = self._distill_frames(T, frame0_prompt_dropped=drop_frame0_prompt)
         teacher_preds: List[torch.Tensor] = []
 
         for t in range(T):
@@ -858,14 +895,16 @@ def build_training_model(config: TrainingConfig, device: str):
         prompt_dropout_warmup_epochs=config.prompt_dropout_warmup_epochs,
         use_prompt_distill=config.loss.use_prompt_distill,
         distill_frames_per_clip=config.loss.distill_frames_per_clip,
+        distill_start_epoch=config.loss.distill_start_epoch,
     )
     if config.prompt_dropout > 0:
         print(f"  Frame-0 prompt dropout: p={config.prompt_dropout} "
               f"(ramped over {config.prompt_dropout_warmup_epochs} epochs)")
     if config.loss.use_prompt_distill:
         k = config.loss.distill_frames_per_clip
-        print(f"  Prompt-pathway distillation (privileged teacher): "
-              f"{'every frame' if k <= 0 else f'{k} frames/clip'}, "
+        print(f"  Prompt-pathway distillation (privileged teacher): frame 1 + "
+              f"{'all others' if k <= 0 else f'{k} random'}, from epoch "
+              f"{config.loss.distill_start_epoch}, "
               f"dice={config.loss.distill_dice_weight} "
               f"cbdice={config.loss.distill_cbdice_weight}")
     if config.use_memory_attention_path:

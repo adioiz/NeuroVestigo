@@ -157,3 +157,61 @@ def test_binary_target_path_is_unchanged():
     assert cb(gt * 20 - 10, gt).item() == 0.0
     torch.manual_seed(0)
     assert abs(cb(torch.randn(2, 1, 64, 64) * 3, gt).item() - 0.83378118) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Frame selection: frame 1 is the defect, so it is never left to chance.
+# ---------------------------------------------------------------------------
+
+def _stub(k=4, start=40, epoch=50, enabled=True):
+    """SAM2TrainingWrapper's frame chooser without building SAM 2."""
+    import torch.nn as nn
+    from src.trainer import SAM2TrainingWrapper
+
+    w = SAM2TrainingWrapper.__new__(SAM2TrainingWrapper)
+    nn.Module.__init__(w)
+    w.use_prompt_distill = enabled
+    w.distill_frames_per_clip = k
+    w.distill_start_epoch = start
+    w.current_epoch = epoch
+    w.training = True
+    return w
+
+
+def test_frame_one_is_always_distilled():
+    """Frame 0 carries the dense prompt and scores 0.947; frame 1 is the first
+    without one and drops to ~0.83. That step IS the defect, so frame 1 is
+    mandatory rather than sampled k/T of the time."""
+    import random
+    random.seed(0)
+    w = _stub()
+    for _ in range(500):
+        frames = w._distill_frames(16)
+        assert 1 in frames
+        assert len(frames) == 5          # frame 1 + 4 extra
+        assert 0 not in frames           # no prompt dropped -> no signal there
+
+
+def test_frame_zero_joins_only_when_its_prompt_was_dropped():
+    """With the prompt withheld, frame 0 is in the no-prompt regime and worth
+    a teacher. With the prompt present, student and teacher both see the GT
+    mask and the term is ~0 -- a wasted decoder pass."""
+    w = _stub()
+    assert 0 not in w._distill_frames(16, frame0_prompt_dropped=False)
+    frames = w._distill_frames(16, frame0_prompt_dropped=True)
+    assert 0 in frames and 1 in frames and len(frames) == 6
+
+
+def test_distillation_waits_for_a_stationary_teacher():
+    """Teacher and student share weights, so early on the target moves: over
+    the first run the prompted pathway gained +0.072 IoU across epochs 2-16 but
+    only +0.002 from epoch 30 on, while the gap to the student WIDENED from
+    0.039 to 0.092. Starting late is what freezing the teacher would buy."""
+    for epoch, expected_on in ((0, False), (39, False), (40, True), (90, True)):
+        w = _stub(start=40, epoch=epoch)
+        assert bool(w._distill_frames(16)) is expected_on
+
+
+def test_disabled_and_all_frames_modes():
+    assert _stub(enabled=False)._distill_frames(16) == []
+    assert _stub(k=0)._distill_frames(16) == list(range(1, 16))

@@ -256,12 +256,30 @@ class LossConfig:
     # the run the paper's Results table reports) were trained WITHOUT it, so
     # they cannot be reproduced by this code with the defaults as they stand.
     use_prompt_distill: bool = True
-    distill_dice_weight: float = 1.0
-    distill_cbdice_weight: float = 0.5
-    # Teacher decoder calls per clip. The image encoder is shared, so each
-    # extra frame costs one prompt-encoder + mask-decoder pass, not a full
-    # forward. 0 = every frame; a small number sampled at random per clip
-    # gets most of the signal and acts as regularisation.
+    # Weights cut 1.0/0.5 -> 0.2/0.1 after the first run. At the old values the
+    # two distillation terms were 32-37% of core_loss for the whole run -- a
+    # third of the gradient budget aimed at a target the student cannot reach,
+    # since the teacher is handed the ground-truth mask. That run peaked at
+    # val_iou 0.8340 against the 0.8377 baseline and then sat flat for 44
+    # epochs. At 0.2/0.1 the terms are ~10% of the loss: a regulariser, which
+    # is what an auxiliary objective should be.
+    distill_dice_weight: float = 0.2
+    distill_cbdice_weight: float = 0.1
+    # Distillation is OFF until this epoch. The teacher shares weights with the
+    # student, so early in training it is a moving target -- measured over the
+    # first run, the prompted pathway gained +0.072 IoU across epochs 2-16 and
+    # only +0.002 from epoch 30 onward, while the student gained +0.024 overall
+    # and the gap WIDENED from 0.039 to 0.092. Starting once the teacher is
+    # stationary is what freezing it would buy, without a second copy of the
+    # weights in memory.
+    distill_start_epoch: int = 40
+    # EXTRA teacher frames per clip, on top of frame 1 which is always
+    # distilled (and frame 0 when its prompt was dropped). Frame 1 is the
+    # defect itself -- the first frame without a dense prompt, where IoU steps
+    # from 0.947 down to ~0.83 -- so sampling it only k/T of the time spent
+    # most of the budget on frames 2..15, which sit at frame 1's level anyway.
+    # The image encoder is shared, so each extra frame costs one prompt-encoder
+    # + mask-decoder pass, not a full forward. 0 = every remaining frame.
     distill_frames_per_clip: int = 4
 
 
