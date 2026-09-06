@@ -207,7 +207,9 @@ def test_distillation_waits_for_a_stationary_teacher():
     the first run the prompted pathway gained +0.072 IoU across epochs 2-16 but
     only +0.002 from epoch 30 on, while the gap to the student WIDENED from
     0.039 to 0.092. Starting late is what freezing the teacher would buy."""
-    for epoch, expected_on in ((0, False), (39, False), (40, True), (90, True)):
+    # epoch here is the loop's 0-indexed counter; start=40 is stated in
+    # printed terms, so it fires at counter 39 (printed "Epoch 40/110").
+    for epoch, expected_on in ((0, False), (38, False), (39, True), (90, True)):
         w = _stub(start=40, epoch=epoch)
         assert bool(w._distill_frames(16)) is expected_on
 
@@ -215,3 +217,78 @@ def test_distillation_waits_for_a_stationary_teacher():
 def test_disabled_and_all_frames_modes():
     assert _stub(enabled=False)._distill_frames(16) == []
     assert _stub(k=0)._distill_frames(16) == list(range(1, 16))
+
+
+def test_start_epoch_means_the_epoch_as_printed():
+    """The training loop counts epochs from 0 but prints epoch+1, and
+    distill_start_epoch is stated in printed terms. Without the +1 in the gate
+    it fires one epoch after the log says it should."""
+    for printed, on in ((39, False), (40, True), (41, True)):
+        w = _stub(start=40, epoch=printed - 1)
+        assert bool(w._distill_frames(16)) is on, f"printed epoch {printed}"
+
+
+def test_no_teacher_at_validation():
+    """Distillation is a training-time signal. A teacher at validation would
+    both waste decoder passes and pollute val_loss."""
+    w = _stub()
+    w.training = False
+    assert w._distill_frames(16) == []
+
+
+def test_frame_selection_survives_short_clips():
+    for T in (1, 2, 3, 16):
+        frames = _stub()._distill_frames(T)
+        assert len(frames) == len(set(frames))
+        assert all(0 <= t < T for t in frames)
+
+
+def test_teacher_and_student_frames_stay_aligned():
+    """The highest-risk silent bug in the whole feature: teacher_preds is built
+    inside the frame loop while the student is gathered afterwards by
+    index_select. If those two orderings ever diverge, the loss compares one
+    frame's student against another frame's teacher and trains on noise --
+    with no error and a perfectly ordinary-looking loss curve.
+    """
+    import torch
+
+    B, N, T, H, W = 2, 4, 16, 8, 8
+    ts = _stub()._distill_frames(T)
+
+    # Teacher: appended in loop order, value == frame index.
+    preds = [torch.full((B * N, 1, H, W), float(t)) for t in ts]
+    teacher = (
+        torch.stack(preds, dim=1).squeeze(2)
+             .view(B, N, len(ts), H, W)
+             .permute(0, 2, 1, 3, 4)
+             .contiguous()
+    )
+    # Student: gathered from the full stack, value == frame index.
+    pred_masks = torch.arange(T).float().view(1, T, 1, 1, 1).expand(B, T, N, H, W)
+    student = pred_masks.contiguous().index_select(1, torch.as_tensor(ts))
+
+    assert torch.equal(teacher, student)
+
+
+def test_prompt_dropout_ramp_and_rng_hygiene():
+    """p must reach its full value by the end of the warmup, be 0 at eval, and
+    -- when disabled -- consume no draws from the global RNG, which would
+    shift every downstream augmentation sample versus previous runs."""
+    import random
+
+    w = _stub()
+    w.prompt_dropout, w.prompt_dropout_warmup_epochs = 0.4, 40
+    assert w._prompt_dropout_p() == 0.4          # epoch 50, past warmup
+    w.current_epoch = 0
+    assert w._prompt_dropout_p() == 0.0
+    w.training = False
+    assert w._prompt_dropout_p() == 0.0
+
+    off = _stub()
+    off.prompt_dropout, off.prompt_dropout_warmup_epochs = 0.0, 40
+    random.seed(7)
+    for _ in range(50):
+        off._prompt_dropout_p()
+    after = random.random()
+    random.seed(7)
+    assert after == random.random()

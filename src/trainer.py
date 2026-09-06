@@ -369,7 +369,11 @@ class SAM2TrainingWrapper(nn.Module):
         """
         if not (self.use_prompt_distill and self.training):
             return []
-        if self.current_epoch < self.distill_start_epoch:
+        # current_epoch is the loop's 0-indexed counter, but the log prints
+        # epoch+1 and distill_start_epoch is stated in those printed terms --
+        # 40 means the epoch shown as "Epoch 40/110". Without the +1 it would
+        # fire one epoch late, which is harmless but makes the log lie.
+        if (self.current_epoch + 1) < self.distill_start_epoch:
             return []
 
         mandatory = [1] if T > 1 else [0]
@@ -1346,9 +1350,18 @@ def train(config: TrainingConfig = None):
 
     for epoch in range(start_epoch, config.num_epochs):
         model.train()
-        # Drives the prompt-dropout curriculum. No-op when dropout is off.
-        if hasattr(model, "set_epoch"):
-            model.set_epoch(epoch)
+        # Drives the prompt-dropout curriculum and the distillation gate.
+        # Called unconditionally on purpose: with a hasattr() guard, a model
+        # that somehow lost set_epoch would silently pin current_epoch at 0,
+        # which switches distillation off forever AND holds prompt dropout at
+        # p=0 -- and because loss_distill_* is legitimately 0.000 before
+        # distill_start_epoch, the log would look completely normal while both
+        # features were dead. Fail loudly instead.
+        model.set_epoch(epoch)
+        if (epoch + 1) == model.distill_start_epoch and model.use_prompt_distill:
+            print(f"  [distill] activating at epoch {epoch+1} "
+                  f"(teacher is stationary by now); loss_distill_* should "
+                  f"become non-zero from this epoch on")
         # Loss tensors stay on-device — no .item() inside the step loop.
         # We only sync at logging boundaries (every log_every_n_steps and at
         # end of epoch). Each .item() is a cudaStreamSynchronize, so per-step
