@@ -1,16 +1,16 @@
 \documentclass[9pt,a4paper]{extarticle}
-\usepackage[margin=1.35cm]{geometry}
+\usepackage[margin=1.3cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage[table]{xcolor}
 \usepackage{titlesec}
 \usepackage{parskip}
-\usepackage{enumitem}
 \usepackage[hidelinks]{hyperref}
 
 \definecolor{acc}{HTML}{1E5F8C}
 \definecolor{ours}{HTML}{9C4221}
+\definecolor{bad}{HTML}{B03030}
 \definecolor{lite}{HTML}{F2F4F7}
 
 \titleformat{\section}{\bfseries\color{acc}\normalsize}{}{0pt}{}
@@ -18,7 +18,6 @@
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.08}
 \pagestyle{empty}
-
 \newcommand{\sg}{\mathrm{sg}}
 
 \begin{document}
@@ -47,26 +46,16 @@ Betti-0 error  & 0.080  & $\sim$0.70  & $\mathbf{\sim 9\times}$ \\
 \end{tabular}
 \end{center}
 
-Two facts do the work. First, the topology gap is an order of magnitude larger than the region gap: losing the
-prompt does not blur the mask, it \textbf{fragments neurites}. Second, frames 1$\to$15 drift only \textbf{0.017 in
-total} --- essentially flat. So this is a \emph{single conditioning step}, not accumulating propagation error.
-There are only two regimes, prompted and not, and every unprompted frame sits at the same level. Improving that
-pathway therefore lifts all fifteen frames together; no new cliff appears at frame 2.
+The topology gap is an order of magnitude larger than the region gap: losing the prompt does not blur the mask,
+it \textbf{fragments neurites}. And frames 1$\to$15 drift only \textbf{0.017 in total}, so this is a \emph{single
+conditioning step}, not accumulating propagation error --- there are two regimes, prompted and not, and every
+unprompted frame sits at the same level. Improving that pathway lifts all fifteen frames together.
 
-The decoder can produce a 0.947 mask of these images. It simply cannot reach that without a spatial prior.
+The decoder can produce a 0.947 mask of these images. It cannot reach that without a spatial prior.
 
-\section{How}
-\textbf{(a) Teacher with privileged information.} At $k=4$ randomly sampled frames per clip, decode a second time
-with that frame's ground truth as the dense prompt. Same weights, same image features (the encoder runs once);
-the teacher differs only in receiving information unavailable at inference. Its output is detached.
-
-\textbf{(b) Prompt dropout.} Frame 0's prompt is withheld with probability $p$, so the conditioning frame is
-sometimes segmented from features alone --- the regime every other frame is always in. Ramped over $E_w$ epochs
-so an early bad frame-0 prediction cannot poison a clip's memory bank.
-
-\section{Math}
-Let $f_\theta$ be the network, $x_t$ frame $t$, $m_t$ its ground-truth mask, $M_{<t}$ the memory bank, and $\pi$
-the dense prompt. Teacher and student differ \emph{only} in $\pi$:
+\section{Definitions}
+Let $f_\theta$ be the network, $x_t$ frame $t$, $m_t$ its ground-truth mask, $M_{<t}$ the memory bank, $\pi$ the
+dense prompt. Teacher and student are the \textbf{same weights on the same image}, differing only in $\pi$:
 \[
 \underbrace{\tilde{y}_t = f_\theta\!\left(x_t,\ \pi = m_t\right)}_{\text{teacher: privileged}}
 \qquad\qquad
@@ -75,23 +64,67 @@ the dense prompt. Teacher and student differ \emph{only} in $\pi$:
 \[
 \mathcal{L}_{\text{KD}}
 = \lambda_1\,\mathcal{L}_{\text{Dice}}\!\left(\hat{y}_t,\ \sg\!\left[\sigma(\tilde{y}_t)\right]\right)
-+ \lambda_2\,\mathcal{L}_{\text{cbDice}}\!\left(\hat{y}_t,\ \sg\!\left[\sigma(\tilde{y}_t)\right]\right),
-\qquad \lambda_1=1.0,\ \lambda_2=0.5
++ \lambda_2\,\mathcal{L}_{\text{cbDice}}\!\left(\hat{y}_t,\ \sg\!\left[\sigma(\tilde{y}_t)\right]\right)
 \]
-with $\sg[\cdot]$ the stop-gradient, so the loss only ever moves the student. The target is
-$\sigma(\tilde y_t)\in[0,1]$, \emph{soft}: it encodes which pixels the model finds genuinely ambiguous, which a
-binary mask cannot. Dice accepts this directly,
-$\mathcal{L}_{\text{Dice}}(a,b)=1-\frac{2\sum\sigma(a)b+\epsilon}{\sum\sigma(a)+\sum b+\epsilon}$.
-Prompt dropout at epoch $e$:
+$\sg[\cdot]$ is the stop-gradient. The Dice target is \emph{soft}, $\sigma(\tilde y_t)\in[0,1]$: it encodes which
+pixels the model finds genuinely ambiguous, which a binary mask cannot. Prompt dropout withholds frame 0's prompt
+with probability $p_e = p\cdot\min(1, e/E_w)$, so the conditioning frame is sometimes in the student's regime too.
+
+\section{The gradient, and why $\lambda$ decides the outcome}
+Differentiating through the stop-gradient leaves \textbf{one} path --- the student's:
 \[
-\pi_0 = \begin{cases} m_0 & \text{w.p. } 1-p_e\\ \varnothing & \text{w.p. } p_e\end{cases}
-\qquad p_e = p\cdot\min\!\left(1,\ e/E_w\right),\qquad p=0.4,\ E_w=40 .
+\nabla_\theta \mathcal{L}_{\text{KD}}
+= \frac{\partial \mathcal{L}_{\text{KD}}}{\partial \hat{y}_t}\cdot\frac{\partial \hat{y}_t}{\partial \theta},
+\qquad\text{no term through } \tilde y_t .
 \]
-Full objective (weights as shipped):
+But $\theta$ is \emph{shared}, so the target $\sg[\sigma(f_\theta(x,m))]$ is itself a function of the $\theta$
+being updated. Two consequences.
+
+\textbf{(i) It is not minimising a function.} With the stop-gradient the update is not $\nabla$ of any scalar in
+$\theta$: this is a dynamical system, not an optimisation problem, with no energy descended and no convergence
+guarantee. (Structurally the situation of BYOL / SimSiam, which need an EMA or predictor to stay stable.)
+
+\textbf{(ii) $\mathcal{L}_{\text{KD}}$ has a floor above zero.} Reaching $0$ would need
+$f_\theta(x,\varnothing,M) = f_\theta(x,m)$ for one $\theta$ --- impossible, because $m$ carries information absent
+from $x$. So $\nabla_\theta\mathcal{L}_{\text{KD}} \neq 0$ \emph{always}, and it pushes $\theta$ forever. Writing
+the full objective with $\alpha$ for the distillation weight:
 \[
-\mathcal{L}=3.0\,\mathcal{L}_{\text{focal}}+2.0\,\mathcal{L}_{\text{Dice}}+0.3\,\mathcal{L}_{\text{cbDice}}
-+0.3\,\mathcal{L}_{\text{sv}}+1.0\,\mathcal{L}^{\text{KD}}_{\text{Dice}}+0.5\,\mathcal{L}^{\text{KD}}_{\text{cbDice}}
+\mathcal{L}=\mathcal{L}_{\text{GT}}+\alpha\,\mathcal{L}_{\text{KD}}
+\;\Longrightarrow\;
+\nabla\mathcal{L}_{\text{GT}}(\theta^\star)=-\alpha\,\nabla\mathcal{L}_{\text{KD}}(\theta^\star)\neq 0,
+\qquad
+\boxed{\;\theta^\star-\theta_{\text{GT}} \approx -\alpha\,H^{-1}\nabla\mathcal{L}_{\text{KD}}\;}
 \]
+with $H$ the Hessian of $\mathcal{L}_{\text{GT}}$. \textbf{You converge somewhere that is not the ground-truth
+optimum, displaced in proportion to $\alpha$.} That is not a flaw to remove but a dial to set: part of
+$\nabla\mathcal{L}_{\text{KD}}$ points toward shapes the architecture can actually represent (useful
+regularisation), and part points at the unreachable residual (bias, linear in $\alpha$). Small $\alpha$: benefit
+dominates. Large $\alpha$: bias dominates.
+
+\section{Run 1 --- measured, and what it cost}
+\begin{center}
+\rowcolors{2}{lite}{white}
+\begin{tabular}{>{\raggedright\arraybackslash}p{5.0cm}>{\raggedright\arraybackslash}p{5.3cm}>{\raggedright\arraybackslash}p{6.0cm}}
+\toprule
+\textbf{Mistake} & \textbf{Evidence} & \textbf{Fix} \\
+\midrule
+$\alpha$ far too large & the two terms were \textcolor{bad}{\textbf{36\% of \texttt{core\_loss}}} for the whole run
+& $\lambda_1,\lambda_2:\ 1.0/0.5 \to 0.2/0.1$, giving $\approx$10\% --- displacement shrinks $5\times$ \\
+Target still moving & teacher $+0.072$ IoU over epochs 2--16 vs student $+0.024$ over the \emph{whole} run; gap
+\textcolor{bad}{widened} $0.039\to0.092$ & start at epoch 40, where the teacher is stationary
+($+0.002$ after epoch 30). Same benefit as freezing it, no second copy of $\theta$ \\
+Frame 1 left to chance & sampled 4 of 16 at random, so the one frame that fails got $\sim$25\% of the budget
+& frame 1 \textbf{always} distilled, $+4$ random from frames 2+ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Result: \textbf{val IoU 0.8340} against a \textbf{0.8377} baseline, then flat for 44 epochs --- the signature of
+converging to the optimum of the wrong objective, exactly as the boxed equation predicts.
+
+\textbf{Why frame 1 and not any other.} The memory bank is causal: frame 1's prediction enters $M_{<t}$ for every
+later $t$, so $\partial\mathcal{L}(t)/\partial(\text{quality at frame }1)\neq 0$ for all $t>1$, while frame 12
+influences only three frames. Frame 1 has the largest downstream influence in the clip.
 
 \section{Provenance --- what is borrowed, what is ours}
 \begin{center}
@@ -104,7 +137,8 @@ Training a student on a teacher's \emph{soft} outputs & Hinton, Vinyals \& Dean,
 Teacher holding information the student will never have & Lopez-Paz, Bottou, Sch\"olkopf \& Vapnik, ICLR 2016, arXiv:1511.03643 \\
 Withholding the prompt during training (exposure bias) & Bengio, Vinyals, Jaitly \& Shazeer, NeurIPS 2015, arXiv:1506.03099 \\
 \textcolor{ours}{Teacher = the same weights, differing only in conditioning} & \textcolor{ours}{\textbf{ours}} --- not a second network, not a deeper layer, not a prior generation \\
-\textcolor{ours}{Using \textbf{cbDice} as the distillation target} & \textcolor{ours}{\textbf{ours}} --- follows from the $9\times$ topology gap above; no paper suggests it \\
+\textcolor{ours}{\textbf{cbDice} as the distillation target} & \textcolor{ours}{\textbf{ours}} --- follows from the $9\times$ topology gap; no paper suggests it \\
+\textcolor{ours}{Anchoring on frame 1 via the causal memory argument} & \textcolor{ours}{\textbf{ours}} \\
 \textcolor{ours}{The frame-0 conditioning gap as a measured defect} & \textcolor{ours}{\textbf{ours}} --- the per-frame IoU/Betti split that motivates all of it \\
 The loss functions themselves & the repo's existing Dice / cbDice. \emph{Not} from the KD literature: Hinton's objective is temperature-scaled KL on softmax, which does not transfer to binary segmentation \\
 \bottomrule
@@ -113,11 +147,11 @@ The loss functions themselves & the repo's existing Dice / cbDice. \emph{Not} fr
 
 \section{Cost and how it will be judged}
 No new parameters: 5{,}557{,}250 trainable of 39{,}876{,}930 (13.9\%), unchanged. The image encoder is shared, so
-each teacher frame costs one prompt-encoder $+$ mask-decoder pass; with $k=4$ of 16 frames the measured overhead is
-$\approx$30--40\% per step.
+each teacher frame costs one prompt-encoder $+$ mask-decoder pass. Net compute is \emph{below} run 1:
+$5\times70 = 350$ teacher passes against $4\times110 = 440$.
 
-\textbf{Read Betti-0 before IoU.} The mechanism predicts topology moves first, since that is where the $9\times$
-gap is. A run that pulls validation $b_0$ from $\sim$0.70 toward $\sim$0.30 while IoU barely moves is the intended
-result, not a null one. \emph{Status: training in progress; no result yet.}
+\textbf{Read Betti-0 before IoU} --- the mechanism predicts topology moves first, since that is where the $9\times$
+gap is. And because distillation is off until epoch 40, the run carries its own control: epochs 1--39 are ordinary
+training, so a bend in the curve \emph{at that boundary} is the effect. \emph{Status: run 2 in progress.}
 
 \end{document}
