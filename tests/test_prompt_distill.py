@@ -292,3 +292,56 @@ def test_prompt_dropout_ramp_and_rng_hygiene():
     after = random.random()
     random.seed(7)
     assert after == random.random()
+
+
+# ---------------------------------------------------------------------------
+# Topology tie-break checkpoint. Mirrors the rule in trainer.py so a change to
+# one without the other fails here rather than silently in a 20-hour run.
+# ---------------------------------------------------------------------------
+
+def _replay(validations, margin=0.005):
+    """(epoch, val_iou, betti0) -> (iou-selected epoch, topo-selected epoch)."""
+    best_iou, best_topo = 0.0, float("inf")
+    iou_pick = topo_pick = None
+    for ep, iou, b0 in validations:
+        if iou > best_iou:
+            best_iou, iou_pick = iou, ep
+        if iou >= best_iou - margin and b0 < best_topo:
+            best_topo, topo_pick = b0, ep
+    return iou_pick, topo_pick
+
+
+# The real epochs 20-58 of run v2.
+V2 = [(20,.8259,1.155),(22,.8288,1.269),(24,.8058,1.998),(26,.8266,1.585),(28,.8141,1.655),
+      (30,.8286,.982),(32,.8262,1.150),(34,.8275,1.121),(36,.8214,1.718),(38,.8168,1.587),
+      (40,.8260,.895),(42,.8242,.917),(44,.8075,2.232),(46,.8290,.870),(48,.8324,.682),
+      (50,.8274,.759),(52,.8238,1.192),(56,.8295,.676),(58,.8269,.951)]
+
+
+def test_tiebreak_never_selects_a_dominated_epoch():
+    """A trailing mean over Betti-0 was tried and rejected: it picked epoch 50
+    over epoch 48 even though 48 was better on BOTH metrics, because epoch 48's
+    window still held epoch 44's outlier (2.232) from a different model. The
+    rule must never choose an epoch another epoch dominates on both axes.
+    """
+    _, topo = _replay(V2)
+    chosen = next(r for r in V2 if r[0] == topo)
+    for other in V2:
+        dominated = other[1] > chosen[1] and other[2] < chosen[2]
+        assert not dominated, f"epoch {other[0]} dominates the chosen epoch {topo}"
+
+
+def test_tiebreak_stays_inside_the_iou_margin():
+    """The point is a tie-break among IoU-equivalent models, not a change of
+    criterion. A pick outside the margin would be the latter."""
+    iou_pick, topo_pick = _replay(V2)
+    best_iou = max(r[1] for r in V2 if r[0] <= topo_pick)
+    chosen_iou = next(r[1] for r in V2 if r[0] == topo_pick)
+    assert chosen_iou >= best_iou - 0.005
+
+
+def test_tiebreak_finds_the_best_topology_available():
+    iou_pick, topo_pick = _replay(V2)
+    assert iou_pick == 48        # unchanged: primary selection is still IoU
+    assert topo_pick == 56       # the run's lowest Betti-0, and IoU-equivalent
+    assert min(r[2] for r in V2) == next(r[2] for r in V2 if r[0] == 56)

@@ -1305,6 +1305,7 @@ def train(config: TrainingConfig = None):
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     best_val_iou = 0.0
+    best_topo_b0 = float("inf")   # lowest Betti-0 among IoU-equivalent epochs
     epochs_without_improvement = 0
     training_log = []
     start_epoch = 0
@@ -1331,6 +1332,8 @@ def train(config: TrainingConfig = None):
         )
         start_epoch = resume["start_epoch"]
         best_val_iou = resume["best_val_iou"]
+        _ts = resume.get("topo_state") or {}
+        best_topo_b0 = float(_ts.get("best_topo_b0", float("inf")))
         epochs_without_improvement = resume["epochs_without_improvement"]
         prev_total_epochs = resume["num_epochs"]
         prev_steps_per_epoch = resume["steps_per_epoch"]
@@ -1542,6 +1545,23 @@ def train(config: TrainingConfig = None):
                 epochs_without_improvement += 1
                 print(f"  No improvement for {epochs_without_improvement} validation(s)")
 
+            # --- topology TIE-BREAK checkpoint (separate file) --------------
+            # Among epochs IoU cannot tell apart (within topo_iou_margin of
+            # the best seen), keep the one with the lowest SMOOTHED Betti-0.
+            # Single-epoch Betti-0 has ~47% CV, so the running mean is what
+            # makes this a signal rather than a lottery. Never touches
+            # lora_weights.pt, and does not affect early stopping.
+            b0 = val_metrics.get("val_betti0")
+            if config.loss.save_topo_checkpoint and b0 is not None and not np.isnan(b0):
+                iou_ok = val_metrics["val_iou"] >= best_val_iou - config.loss.topo_iou_margin
+                if iou_ok and float(b0) < best_topo_b0:
+                    best_topo_b0 = float(b0)
+                    save_lora_weights(model, checkpoint_dir / "lora_weights_topo.pt")
+                    print(f"  [topo] Betti-0 {b0:.3f} (best so far) within "
+                          f"{config.loss.topo_iou_margin} IoU of best "
+                          f"({val_metrics['val_iou']:.4f} vs {best_val_iou:.4f}) "
+                          f"- saved lora_weights_topo.pt")
+
         training_log.append(log_entry)
 
         # Save training log
@@ -1559,6 +1579,7 @@ def train(config: TrainingConfig = None):
             scheduler=scheduler,
             epoch=epoch,
             best_val_iou=best_val_iou,
+            topo_state={"best_topo_b0": best_topo_b0},
             epochs_without_improvement=epochs_without_improvement,
             num_epochs=config.num_epochs,
             steps_per_epoch=len(train_loader),

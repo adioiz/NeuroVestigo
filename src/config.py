@@ -273,6 +273,38 @@ class LossConfig:
     # stationary is what freezing it would buy, without a second copy of the
     # weights in memory.
     distill_start_epoch: int = 40
+
+    # ------------------------------------------------------------------
+    # Topology tie-break checkpoint  ->  lora_weights_topo.pt
+    # ------------------------------------------------------------------
+    # The primary checkpoint stays selected on val_iou, for comparability:
+    # the baseline and every competitor were chosen that way, and switching
+    # criteria after seeing the numbers is a researcher degree of freedom a
+    # reviewer will rightly flag.
+    #
+    # But once IoU saturates, "best IoU" is close to arbitrary. Measured over
+    # epochs 40-58 of the first v2 run: val_iou sd 0.0072 on a mean of 0.8252
+    # (0.9% CV) -- every epoch within 0.006 of every other. Among models that
+    # IoU cannot tell apart, preferring the one with better topology is a
+    # TIE-BREAK, not a change of criterion.
+    #
+    # Betti-0 is noisy -- 47% CV over those epochs, swinging 0.676 to 2.232
+    # between adjacent validations, 54x noisier than IoU in relative terms. A
+    # trailing mean was tried to damp that and REJECTED: replayed on the real
+    # v2 log it selected epoch 50 over epoch 48, although 48 was better on both
+    # metrics (IoU 0.8324 vs 0.8274, b0 0.682 vs 0.759). The window at epoch 48
+    # still contained epoch 44's outlier of 2.232 -- a DIFFERENT model -- so
+    # smoothing across epochs misattributes one model's measurement to another.
+    #
+    # Raw Betti-0 it is. That does track noise, so this file is not a claim
+    # about which checkpoint is better: it PRESERVES THE OPTION. Which of the
+    # two wins is settled on the held-out test set, where clDice and cbDice are
+    # scored, not on this rule.
+    #
+    # Saves to a SEPARATE file. lora_weights.pt is untouched, early stopping is
+    # unaffected, and training dynamics are identical.
+    save_topo_checkpoint: bool = True
+    topo_iou_margin: float = 0.005   # "indistinguishable on IoU" band
     # EXTRA teacher frames per clip, on top of frame 1 which is always
     # distilled (and frame 0 when its prompt was dropped). Frame 1 is the
     # defect itself -- the first frame without a dense prompt, where IoU steps

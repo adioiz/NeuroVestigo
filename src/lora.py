@@ -261,6 +261,7 @@ def save_train_state(
     epochs_without_improvement: int,
     num_epochs: int,
     steps_per_epoch: int,
+    topo_state: Optional[dict] = None,
 ) -> None:
     """Save a full training-state checkpoint so a run can resume mid-schedule.
 
@@ -314,6 +315,10 @@ def save_train_state(
             "epoch": int(epoch),
             "best_val_iou": float(best_val_iou),
             "epochs_without_improvement": int(epochs_without_improvement),
+            # Tie-break bookkeeping for lora_weights_topo.pt. Optional and
+            # defaulted on load, so checkpoints written before this existed
+            # still resume cleanly.
+            "topo_state": topo_state or {},
             "num_epochs": int(num_epochs),
             "steps_per_epoch": int(steps_per_epoch),
         },
@@ -355,6 +360,7 @@ def load_train_state(
         "epochs_without_improvement": int(state["epochs_without_improvement"]),
         "num_epochs": int(state.get("num_epochs", 0)),
         "steps_per_epoch": int(state.get("steps_per_epoch", 0)),
+        "topo_state": state.get("topo_state") or {},
     }
 
 
