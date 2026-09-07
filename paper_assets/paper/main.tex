@@ -1286,180 +1286,71 @@ size of the recordings the resampling erases the one- to two-pixel processes
 these terms exist to protect, and a perfect prediction no longer scores
 perfectly.
 
-\paragraph{Where the deficit lies.}
-% Validation, best epoch of the 20-recording run
-% (checkpoints-16-frames/training_log.json, per_frame_iou / per_frame_betti0):
-%   frame 0 IoU 0.9466, Betti-0 err 0.0800; frames 1-15 mean 0.8305 / 0.6987;
-%   frame 1 -> frame 15 IoU drift 0.0170.
-% The Betti-0 contrast is 8.7x against a 12% IoU gap and is the sharper half
-% of this argument, but Betti is not a metric this paper reports.
-That a model scores better on a frame whose mask it was handed is not
-informative on its own. What is informative is where the deficit sits: across
-the fifteen frames that follow the prompt the score falls by only $0.017$,
-while the step from the prompted frame to the first unprompted one costs
-$0.117$. The memory pathway is therefore not degrading as it runs --- it
-starts worse and stays there. The same weights reach $0.947$ when given a
-dense prompt and $0.830$ without one, so the capability exists and is simply
-not reachable from the memory pathway alone. The deficit is also more
-topological than regional: across the same frames the IoU falls by $12\,\%$
-while the Betti-0 error rises from $0.08$ to $0.70$, close to ninefold.
-Withdrawing the prompt does not blur the mask so much as fragment it. That is what the following two
-additions target.
-
-\paragraph{Distillation from a privileged teacher.}
-The measurement above identifies a pathway, not merely a deficit: the same
-weights produce a much better mask when conditioned on a dense prompt. We
-therefore supervise the memory pathway with the prompt pathway. Selected
-frames of the clip are decoded a second time with that frame's ground-truth
-mask supplied as a dense prompt. This second decode uses the same network and
-the same weights; it differs only in receiving information --- the answer ---
-that is unavailable at inference. Its output is detached and used as the
-target for the ordinary memory-path prediction.
-
-Writing $\hat{y}_t$ for the memory-path prediction at frame $t$ and
+\paragraph{Distilling the prompt pathway.}
+Frame~0 is segmented with the ground-truth mask as a dense prompt and every
+later frame without one, and the two regimes are not equally good: on
+validation the model reaches IoU $0.947$ on the prompted frame against
+$0.830$ on the fifteen that follow, with the Betti-0 error rising from $0.08$
+to $0.70$. Across those fifteen frames the score falls by only $0.017$, so
+almost the whole deficit is incurred at the single step where the prompt is
+withdrawn rather than accumulated over the clip. The same weights already
+produce the better mask; what they cannot do is reach it without a spatial
+prior. We therefore use the prompted pathway as supervision for the
+unprompted one. Writing $\tilde{y}_t = f_\theta(x_t,\,\pi = m_t)$ for a second
+decode of frame~$t$ with its ground-truth mask as the dense prompt, and
+$\hat{y}_t = f_\theta(x_t,\,\pi = \varnothing,\, M_{<t})$ for the ordinary
+prediction, the teacher terms of Eq.~\ref{eq:loss} are
 \begin{equation}
-\tilde{y}_t = f_\theta\!\left(x_t,\ \pi = m_t\right),
-\qquad
-\hat{y}_t = f_\theta\!\left(x_t,\ \pi = \varnothing,\ M_{<t}\right),
-\label{eq:teacher}
-\end{equation}
-for the teacher and student --- the same $\theta$ on the same image, differing
-only in the dense prompt $\pi$ --- the distillation term over a set
-$\mathcal{S}$ of distilled frames is
-\begin{equation}
-\mathcal{L}_{\text{KD}}
+\mathcal{L}^{\,T}_{\bullet}
  = \frac{1}{|\mathcal{S}|}\sum_{t \in \mathcal{S}}
-   \Big[\,
-   \lambda_1\,\mathcal{L}_{\text{Dice}}\big(\hat{y}_t,\,
-     \mathrm{sg}[\sigma(\tilde{y}_t)]\big)
- + \lambda_2\,\mathcal{L}_{\text{cbDice}}\big(\hat{y}_t,\,
-     \mathrm{sg}[\sigma(\tilde{y}_t)]\big)\Big],
+   \mathcal{L}_{\bullet}\big(\hat{y}_t,\ \mathrm{sg}[\sigma(\tilde{y}_t)]\big),
+\qquad \bullet \in \{\text{Dice},\ \text{cbDice}\},
 \label{eq:distill}
 \end{equation}
-with $\sigma$ the logistic function and $\mathrm{sg}[\cdot]$ the
-stop-gradient, so the term moves the student and never the teacher. Following
-\cite{hinton2015distilling} the Dice target is the teacher's soft probability
-map rather than a binarised mask: it encodes which pixels the model finds
-genuinely ambiguous, which a binary mask cannot. We apply no temperature ---
-Hinton's objective is temperature-scaled KL on a softmax, which does not
-transfer to a per-pixel logistic --- and the cbDice term has no counterpart in
-that literature; we use it because the gap it addresses is topological.
-Teacher and student are one network with one set of weights, differing only in
-access to privileged information, the setting formalised by
-\cite{lopezpaz2016unifying}. It departs from the generalised distillation of
-that work in one respect: there the ground-truth and teacher objectives are
-traded off convexly, as $(1-\lambda)\,\ell(y,\cdot) + \lambda\,\ell(s,\cdot)$,
-whereas here $\mathcal{L}_{\text{KD}}$ is added on top of the full
-ground-truth loss, so the total supervision increases.
+with $\mathrm{sg}[\cdot]$ the stop-gradient. Teacher and student are one
+network with one set of weights, differing only in access to information
+withheld at inference --- the privileged-information setting of
+\cite{lopezpaz2016unifying} --- and following \cite{hinton2015distilling} the
+Dice target is the teacher's probabilities rather than a binarised mask.
+$\mathcal{S}$ holds frame~1 always, four frames drawn from frames~2 onward,
+and frame~0 on the steps where its prompt was withheld, since only then is it
+in the unprompted regime. Frame~1 is anchored rather than sampled because the
+memory bank is causal: its prediction enters $M_{<t}$ for every later $t$, so
+it has the largest downstream influence in the clip. Separately, the frame-0
+prompt is itself withheld with probability $p_e = p\,\min(1,\,e/E_w)$,
+$p = 0.4$ and $E_w = 40$, so that training matches the conditioning regime of
+inference \cite{bengio2015scheduled}.
 
-$\mathcal{S}$ always contains frame~1, plus four further frames drawn
-uniformly from frames~2 onward, and frame~0 as well on those steps where its
-prompt was withheld. Frame~0 is otherwise excluded rather than merely
-unsampled: with its prompt present, teacher and student both see the
-ground-truth mask there, $\hat{y}_0 = \tilde{y}_0$ and the term is identically
-zero, so the decode would be wasted. The two additions therefore interact ---
-prompt dropout is what places frame~0 in the student's regime and so makes it
-worth distilling at all. Frame~1 is anchored rather than sampled
-because the memory bank is causal: its prediction enters $M_{<t}$ for every
-later $t$, so $\partial\mathcal{L}(t)/\partial(\text{quality at frame }1)\neq
-0$ for all $t>1$, whereas frame~12 influences only three frames. Frame~1 has
-the largest downstream influence of any frame in the clip, and it is also the
-frame at which the conditioning gap is incurred. Distillation is inactive
-until epoch~40; the reason is given below. The image encoder is shared, so
-each distilled frame costs one prompt-encoder and mask-decoder pass and no
-encoder pass. Five frames over the seventy epochs in which distillation is
-active is $350$ teacher decodes, fewer than the $440$ that four frames over
-all one hundred and ten epochs would have required.
-
-\paragraph{Why the distillation weight must be small.}
-The stop-gradient in Eq.~\ref{eq:distill} leaves one differentiable path, the
-student's, and no term through $\tilde{y}_t$. But $\theta$ is shared, so the
-target $\mathrm{sg}[\sigma(f_\theta(x,m))]$ is itself a function of the
-$\theta$ being updated, and two consequences follow. First, the update is not
-the gradient of any scalar function of $\theta$: it is a dynamical system
-rather than an optimisation problem, with no energy descended and no
-convergence guarantee --- structurally the situation of BYOL and SimSiam,
-which require an exponential moving average or a predictor head to remain
-stable. Second, and more consequentially here,
-$\mathcal{L}_{\text{KD}}$ has a floor strictly above zero. Reaching zero would
-require $f_\theta(x,\varnothing,M) = f_\theta(x,m)$ for a single $\theta$,
-which is impossible, because $m$ carries information absent from $x$. The
-distillation gradient therefore never vanishes. Writing the full objective
-with $\alpha$ for the distillation weight, a stationary point $\theta^\star$
-satisfies
+\paragraph{Setting the distillation weight.}
+$\mathcal{L}_{\text{KD}}$ cannot reach zero: that would require
+$f_\theta(x,\varnothing,M) = f_\theta(x,m)$ for a single $\theta$, and $m$
+carries information absent from $x$. Its gradient therefore never vanishes,
+and a stationary point of
+$\mathcal{L}_{\text{GT}} + \alpha\,\mathcal{L}_{\text{KD}}$ satisfies
 \begin{equation}
-\nabla\mathcal{L}_{\text{GT}}(\theta^\star)
- = -\alpha\,\nabla\mathcal{L}_{\text{KD}}(\theta^\star) \neq 0,
-\qquad
 \theta^\star - \theta_{\text{GT}}
  \approx -\alpha\,H^{-1}\nabla\mathcal{L}_{\text{KD}},
 \label{eq:displacement}
 \end{equation}
-with $H$ the Hessian of $\mathcal{L}_{\text{GT}}$. The model converges to a
-point displaced from the ground-truth optimum in proportion to $\alpha$. This
-is not a defect to be removed but a quantity to be set: part of
-$\nabla\mathcal{L}_{\text{KD}}$ points toward shapes the architecture can
-represent, which is useful regularisation, and part toward the unreachable
-residual, which is bias linear in $\alpha$.
-
-A first configuration confirmed the prediction. With $\lambda_1=1.0$,
-$\lambda_2=0.5$ and five frames sampled uniformly from epoch~0, the two
-distillation terms accounted for $36\,\%$ of the training objective
-throughout, and validation IoU converged to $0.834$ against a baseline of
-$0.838$, reaching its best value at epoch~52 and remaining flat for the
-following forty-four epochs. Converging early, below baseline, and then
-ceasing to improve is the signature Eq.~\ref{eq:displacement} describes: the
-optimum of a displaced objective. Two further measurements from that run
-inform the configuration above. The teacher was still improving while it was
-being distilled from --- it gained $0.072$ IoU over epochs~2--16 against the
-student's $0.024$ over the entire run, so the gap between them widened from
-$0.039$ to $0.092$ rather than closing --- which is why distillation now
-begins at epoch~40, by which point the teacher has gained only $0.002$ since
-epoch~30 and is effectively stationary, giving the benefit of a frozen teacher
-without a second copy of $\theta$. And frame~1 was left to chance, drawing
-roughly a quarter of the budget, which is why it is now anchored. The weights
-$\lambda_1=0.2$, $\lambda_2=0.1$ bring the distillation share to
-approximately $10\,\%$, shrinking the displacement of
-Eq.~\ref{eq:displacement} about fivefold.
-
-This failure mode is not particular to our setting. \cite{zhang2023blindly}
-make the general argument that a discrepancy between the teacher's output
-distribution and the ground truth makes blind imitation of the teacher
-actively harmful, and propose perturbing the distillation objective to pull
-the effective teacher back toward the ground truth. Our situation is the
-strong form of the premise they start from: the discrepancy is not incidental
-but structural, since the teacher is conditioned on information the student is
-denied, so no amount of training can remove it. Eq.~\ref{eq:displacement} is
-the quantitative statement of that, and run~1 is a measured instance ---
-distillation at $36\,\%$ of the objective, converging below baseline and then
-flat. We reduce $\alpha$ rather than reshape the loss, which is the blunter of
-the two remedies but requires no change to the objective's form.
-
-Because distillation is inactive for epochs~1--39, the run carries its own
-internal control: those epochs are ordinary training under the objective of
-Eq.~\ref{eq:loss} with $\alpha=0$, so any change of trajectory at the
-epoch-40 boundary is attributable to the intervention without a separate
-baseline run.
-
-\paragraph{Frame-0 prompt dropout.}
-\begin{sloppypar}
-Previously every clip supplied the ground-truth prompt on frame~0, so a
-fraction $1/T$ of the training signal was spent in a conditioning regime that
-never occurs at inference, where the prompt is given once and every later
-frame is reconstructed from memory. We withhold the frame-0 prompt with probability
-$p_e = p\,\min(1,\, e/E_w)$, taking $p = 0.4$ and a ramp of $E_w = 40$
-epochs, so that the model is trained on the distribution it is evaluated
-under. This is the correction for
-exposure bias of \cite{bengio2015scheduled}, applied to a spatial prompt
-rather than to a token sequence.
-\end{sloppypar}
-
-Both additions are enabled by default and introduce no new parameters: the
-trainable count remains $5{,}557{,}250$ of $39{,}876{,}930$.
-\todo{Results for this configuration are PENDING. Nothing in this manuscript
-is yet measured with distillation or prompt dropout enabled; every reported
-number is the model without them. Do not describe them as improving anything
-until checkpoints-distill has been benchmarked.}
+with $H$ the Hessian of $\mathcal{L}_{\text{GT}}$: the model converges
+displaced from the supervised optimum in proportion to $\alpha$. Part of that
+gradient is useful regularisation and part is bias, so $\alpha$ is a dial
+between them rather than a hyperparameter to be maximised. A first
+configuration, $\lambda_1 = 1.0$ and $\lambda_2 = 0.5$ from epoch~0, put the
+teacher terms at $36\,\%$ of the objective and converged to validation IoU
+$0.834$ against a baseline of $0.838$, reaching its best at epoch~52 and
+remaining flat for the forty-four that followed --- convergence to the
+optimum of a displaced objective. \cite{zhang2023blindly} argue generally
+that imitating a teacher whose distribution differs from the ground truth is
+harmful; here that difference is structural rather than incidental. We
+therefore take $\lambda_1 = 0.2$ and $\lambda_2 = 0.1$, and begin at
+epoch~40, by which point the teacher has gained $0.002$ since epoch~30 and is
+effectively stationary. Epochs~1--39 are then ordinary training, so the run
+carries its own control. No new parameters are introduced.
+\todo{Results PENDING. Every number in this manuscript is the model without
+distillation or prompt dropout. If the current configuration does not beat
+the baseline, report the conditioning-gap measurement and
+Eq.~\ref{eq:displacement} as the contribution and do not present it as a win.}
 
 \paragraph{Optimization.}
 Training uses AdamW \cite{loshchilov2019adamw} with decoupled weight decay
@@ -1983,37 +1874,20 @@ rather than loss-level overfitting. We therefore recommend that work on
 filamentous or branched cells report a connectivity metric alongside IoU
 rather than in place of it.
 
-Two additions to training follow from this and are described in
-Section~\ref{sec:met:loss}; neither is yet evaluated on the test set. The
-first distils the prompt pathway into the memory pathway: the same weights,
-decoding the same frame with its ground-truth mask supplied as a dense
-prompt, reach a quality the memory pathway does not, and that output
-supervises the memory pathway directly. This is the privileged-information
-setting of \cite{lopezpaz2016unifying} rather than generic self-distillation
---- one network, one set of weights, differing only in access to information
-withheld at inference. The second withholds the frame-0 prompt during
-training, removing a conditioning regime the model was trained in but is never
-evaluated in \cite{bengio2015scheduled}.
-
-The analysis around Eq.~\ref{eq:displacement} is worth separating from
-whether this particular model improves. An auxiliary distillation loss whose
-teacher holds privileged information cannot reach zero, because the student
-is denied the information the target was produced with. Its gradient
-therefore never vanishes, and the trained model settles not at the optimum of
-the supervised objective but at a point displaced from it in proportion to the
-weight on that loss. The consequence is practical: such a term is a
-regulariser with a bias attached, and the weight is the dial between them, not
-a detail to be tuned by search. Our first configuration set it high enough
-that the bias dominated, and the resulting model converged early and below
-baseline --- which is the predicted behaviour, not an anomaly. We state this
-because the same reasoning applies to any auxiliary objective built on a
-teacher that the student structurally cannot match, a construction that is
-becoming common.
-\todo{No test-set results yet. If the current configuration does not beat the
-baseline either, the contribution here is the conditioning-gap measurement and
-the displacement analysis, not the method --- report it that way and do not
-dress it as a win. Update this paragraph, the Results section and
-Table~\ref{tab:main} once the run has been benchmarked.}
+Two additions to training are described in Section~\ref{sec:met:loss} and are
+not yet evaluated: distillation of the prompt pathway into the memory pathway,
+and dropout of the frame-0 prompt. One observation from them generalises
+beyond this model. An auxiliary distillation loss whose teacher holds
+privileged information cannot reach zero, because the student is denied the
+information the target was produced with; its gradient therefore never
+vanishes, and the trained model settles not at the optimum of the supervised
+objective but at a point displaced from it in proportion to the weight on that
+loss (Eq.~\ref{eq:displacement}). Such a term is a regulariser with a bias
+attached, and its weight is the dial between them rather than a quantity to be
+tuned upward. Our first configuration set it high enough that the bias
+dominated, and the model converged early and below baseline --- the predicted
+behaviour rather than an anomaly. The same reasoning applies to any auxiliary
+objective built on a teacher the student structurally cannot match.
 
 We acknowledge several limitations. First, our evaluation is constrained to
 a small held-out test set (four recordings); thus, our conclusions rely on
