@@ -413,7 +413,16 @@ class SAM2TrainingWrapper(nn.Module):
         Returns high-res mask LOGITS [BN, 1, H, W], no gradient.
         """
         BN = vf_bn[-1].shape[1]
-        pix_feat = vf_bn[-1].permute(1, 2, 0).view(BN, self.model.hidden_dim, *fs[-1])
+        # `+ no_mem_embed` is not optional. SAM 2 builds an initial conditioning
+        # frame's features as `current_vision_feats[-1] + self.no_mem_embed`
+        # (sam2_base.py, directly_add_no_mem_embed=True), and no_mem_embed is a
+        # TRAINED parameter -- it is in the unfrozen set, so the model learns to
+        # expect it. Omitting it fed the teacher features in a form the model
+        # never sees. Measured cost on real validation frames with the shipped
+        # weights: 0.9417 -> 0.9410 mean IoU, so small, but there is no reason
+        # to hand the teacher an out-of-distribution input.
+        feat = vf_bn[-1] + self.model.no_mem_embed
+        pix_feat = feat.permute(1, 2, 0).view(BN, self.model.hidden_dim, *fs[-1])
         high_res_features = [
             x.permute(1, 2, 0).view(x.size(1), x.size(2), *sz)
             for x, sz in zip(vf_bn[:-1], fs[:-1])
