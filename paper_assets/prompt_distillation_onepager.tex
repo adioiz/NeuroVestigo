@@ -68,7 +68,21 @@ dense prompt. Teacher and student are the \textbf{same weights on the same image
 \]
 $\sg[\cdot]$ is the stop-gradient. The Dice target is \emph{soft}, $\sigma(\tilde y_t)\in[0,1]$: it encodes which
 pixels the model finds genuinely ambiguous, which a binary mask cannot. Prompt dropout withholds frame 0's prompt
-with probability $p_e = p\cdot\min(1, e/E_w)$, so the conditioning frame is sometimes in the student's regime too.
+with probability $p_e = p\cdot\min(1, e/E_w)$, with $p=0.4$ and $E_w=40$.
+
+\textbf{Where the two mechanisms meet.} Which frames are distilled depends on whether the prompt was dropped:
+\[
+\mathcal{D} \;=\;
+\underbrace{\{1\}}_{\text{always}}
+\;\cup\;
+\underbrace{\{0\ \text{iff}\ \pi_0=\varnothing\}}_{\text{only when dropped}}
+\;\cup\;
+\underbrace{\text{sample}(k,\ \{2,\dots,T-1\})}_{k=4}
+\]
+Frame 0 is excluded whenever it keeps its prompt, because then student and teacher receive the same input and
+$\hat y_0 = \tilde y_0$ exactly --- the term is identically zero and the decoder pass is wasted. Dropout is what
+puts frame 0 into the student's regime in the first place, and therefore what makes it worth a teacher at all.
+This is the only place the two additions interact.
 
 \section{The gradient, and why $\lambda$ decides the outcome}
 Differentiating through the stop-gradient leaves \textbf{one} path --- the student's:
@@ -114,7 +128,7 @@ Target still moving & teacher $+0.072$ IoU over epochs 2--16 vs student $+0.024$
 \textcolor{bad}{widened} $0.039\to0.092$ & start at epoch 40, where the teacher is stationary
 ($+0.002$ after epoch 30). Same benefit as freezing it, no second copy of $\theta$ \\
 Frame 1 left to chance & sampled 4 of 16 at random, so the one frame that fails got $\sim$25\% of the budget
-& frame 1 \textbf{always} distilled, $+4$ random from frames 2+ \\
+& frame 1 \textbf{always} distilled, $+4$ random from frames 2+, $+$ frame 0 when its prompt was dropped \\
 \bottomrule
 \end{tabular}
 \end{center}

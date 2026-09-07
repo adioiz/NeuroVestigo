@@ -359,11 +359,20 @@ class SAM2TrainingWrapper(nn.Module):
         which spreads coverage over every index across a run.
 
         NOT ACTIVE BEFORE `distill_start_epoch`. The teacher shares weights
-        with the student, so early on it is a moving target: measured over the
-        first run, the prompted pathway gained +0.072 IoU across epochs 2-16
-        and only +0.002 from epoch 30 onward. Distilling during the first
-        window chases a target that outruns the student (teacher +0.077 vs
-        student +0.024 over that run, with the gap WIDENING 0.039 -> 0.092).
+        with the student, so early on it is a moving target. Measured over the
+        first run, from per-frame validation IoU (t0 = prompted = the teacher's
+        regime, t1 = the student):
+
+            teacher, epochs 2-16   +0.072    <- nearly all of its total gain
+            teacher, epochs 30-96  +0.002    <- stationary from here
+            teacher, whole run     +0.077
+            student,  whole run    +0.024
+            gap t0-t1              0.039 -> 0.092   (WIDENED, never closed)
+
+        The +0.072 and +0.077 are the same quantity over different windows,
+        not two estimates of one number. Distilling during that first window
+        chases a target moving three times faster than the student can follow,
+        so successive updates point at different places and largely cancel.
         Waiting until the teacher is stationary is what a fixed teacher would
         buy, without a second copy of the weights.
         """
