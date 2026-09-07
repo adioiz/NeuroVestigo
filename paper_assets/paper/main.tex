@@ -1422,6 +1422,19 @@ $\lambda_1=0.2$, $\lambda_2=0.1$ bring the distillation share to
 approximately $10\,\%$, shrinking the displacement of
 Eq.~\ref{eq:displacement} about fivefold.
 
+This failure mode is not particular to our setting. \cite{zhang2023blindly}
+make the general argument that a discrepancy between the teacher's output
+distribution and the ground truth makes blind imitation of the teacher
+actively harmful, and propose perturbing the distillation objective to pull
+the effective teacher back toward the ground truth. Our situation is the
+strong form of the premise they start from: the discrepancy is not incidental
+but structural, since the teacher is conditioned on information the student is
+denied, so no amount of training can remove it. Eq.~\ref{eq:displacement} is
+the quantitative statement of that, and run~1 is a measured instance ---
+distillation at $36\,\%$ of the objective, converging below baseline and then
+flat. We reduce $\alpha$ rather than reshape the loss, which is the blunter of
+the two remedies but requires no change to the objective's form.
+
 Because distillation is inactive for epochs~1--39, the run carries its own
 internal control: those epochs are ordinary training under the objective of
 Eq.~\ref{eq:loss} with $\alpha=0$, so any change of trajectory at the
