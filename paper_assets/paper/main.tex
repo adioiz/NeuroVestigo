@@ -1353,7 +1353,13 @@ whereas here $\mathcal{L}_{\text{KD}}$ is added on top of the full
 ground-truth loss, so the total supervision increases.
 
 $\mathcal{S}$ always contains frame~1, plus four further frames drawn
-uniformly from frames~2 onward. Frame~1 is anchored rather than sampled
+uniformly from frames~2 onward, and frame~0 as well on those steps where its
+prompt was withheld. Frame~0 is otherwise excluded rather than merely
+unsampled: with its prompt present, teacher and student both see the
+ground-truth mask there, $\hat{y}_0 = \tilde{y}_0$ and the term is identically
+zero, so the decode would be wasted. The two additions therefore interact ---
+prompt dropout is what places frame~0 in the student's regime and so makes it
+worth distilling at all. Frame~1 is anchored rather than sampled
 because the memory bank is causal: its prediction enters $M_{<t}$ for every
 later $t$, so $\partial\mathcal{L}(t)/\partial(\text{quality at frame }1)\neq
 0$ for all $t>1$, whereas frame~12 influences only three frames. Frame~1 has
@@ -1361,8 +1367,9 @@ the largest downstream influence of any frame in the clip, and it is also the
 frame at which the conditioning gap is incurred. Distillation is inactive
 until epoch~40; the reason is given below. The image encoder is shared, so
 each distilled frame costs one prompt-encoder and mask-decoder pass and no
-encoder pass, and the total is below what uniform sampling from epoch~0 would
-have cost.
+encoder pass. Five frames over the seventy epochs in which distillation is
+active is $350$ teacher decodes, fewer than the $440$ that four frames over
+all one hundred and ten epochs would have required.
 
 \paragraph{Why the distillation weight must be small.}
 The stop-gradient in Eq.~\ref{eq:distill} leaves one differentiable path, the
@@ -1426,9 +1433,10 @@ baseline run.
 Previously every clip supplied the ground-truth prompt on frame~0, so a
 fraction $1/T$ of the training signal was spent in a conditioning regime that
 never occurs at inference, where the prompt is given once and every later
-frame is reconstructed from memory. We withhold the frame-0 prompt with
-probability $0.4$, ramped over the first forty epochs, so that the model is
-trained on the distribution it is evaluated under. This is the correction for
+frame is reconstructed from memory. We withhold the frame-0 prompt with probability
+$p_e = p\,\min(1,\, e/E_w)$, taking $p = 0.4$ and a ramp of $E_w = 40$
+epochs, so that the model is trained on the distribution it is evaluated
+under. This is the correction for
 exposure bias of \cite{bengio2015scheduled}, applied to a spatial prompt
 rather than to a token sequence.
 \end{sloppypar}
