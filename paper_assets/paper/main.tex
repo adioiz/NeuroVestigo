@@ -1113,22 +1113,14 @@ does not.
 % pred_obj_scores, which the training wrapper does not emit, so the loss
 % actually optimized has FOUR terms. This is a property of the wrapper, not
 % of any one run. Do not reinstate the six-term form.
-We supervise the predicted mask with a weighted sum of four terms against the
-ground truth --- two that measure agreement in the conventional way, per pixel
-and per region, and two that measure topology --- together with two further
-terms against a privileged teacher, introduced below:
+We supervise the predicted mask with a weighted sum of four terms --- two
+that measure agreement in the conventional way, per pixel and per region,
+and two that measure topology:
 \begin{equation}
-\mathcal{L} = \underbrace{3\,\mathcal{L}_{\text{focal}}
- + 2\,\mathcal{L}_{\text{Dice}}
- + 0.3\,\mathcal{L}_{\text{cbDice}}
- + 0.3\,\mathcal{L}_{\text{sv}}}_{\text{against the ground truth}}
- + \underbrace{0.2\,\mathcal{L}^{\,T}_{\text{Dice}}
- + 0.1\,\mathcal{L}^{\,T}_{\text{cbDice}}}_{\text{against the teacher}} .
+\mathcal{L} = 3\,\mathcal{L}_{\text{focal}} + 2\,\mathcal{L}_{\text{Dice}}
+ + 0.3\,\mathcal{L}_{\text{cbDice}} + 0.3\,\mathcal{L}_{\text{sv}} .
 \label{eq:loss}
 \end{equation}
-The first four terms are described in this section; the superscript-$T$ terms
-are defined in the paragraph on distillation below, and are zero for the
-frames on which no teacher is decoded.
 The first two terms are the mask supervision under which SAM and SAM\,2 were
 trained \cite{kirillov2023sam,ravi2025sam2}; we keep it so that adaptation
 proceeds under the same supervision that produced the pretrained weights,
@@ -1286,47 +1278,6 @@ size of the recordings the resampling erases the one- to two-pixel processes
 these terms exist to protect, and a perfect prediction no longer scores
 perfectly.
 
-\paragraph{Distilling the prompt pathway.}
-Frame~0 is segmented with the ground-truth mask as a dense prompt and every
-later frame without one, and the two regimes are not equally good: on
-validation the model reaches IoU $0.947$ on the prompted frame against
-$0.830$ on the fifteen that follow, with the Betti-0 error rising from $0.08$
-to $0.70$. Across those fifteen frames the score falls by only $0.017$, so
-almost the whole deficit is incurred at the single step where the prompt is
-withdrawn rather than accumulated over the clip. The same weights already
-produce the better mask; what they cannot do is reach it without a spatial
-prior. We therefore use the prompted pathway as supervision for the
-unprompted one. Writing $\tilde{y}_t = f_\theta(x_t,\,\pi = m_t)$ for a second
-decode of frame~$t$ with its ground-truth mask as the dense prompt, and
-$\hat{y}_t = f_\theta(x_t,\,\pi = \varnothing,\, M_{<t})$ for the ordinary
-prediction, the teacher terms of Eq.~\ref{eq:loss} are
-\begin{equation}
-\mathcal{L}^{\,T}_{\bullet}
- = \frac{1}{|\mathcal{S}|}\sum_{t \in \mathcal{S}}
-   \mathcal{L}_{\bullet}\big(\hat{y}_t,\ \mathrm{sg}[\sigma(\tilde{y}_t)]\big),
-\qquad \bullet \in \{\text{Dice},\ \text{cbDice}\},
-\label{eq:distill}
-\end{equation}
-with $\mathrm{sg}[\cdot]$ the stop-gradient. Teacher and student are one
-network with one set of weights, differing only in access to information
-withheld at inference --- the privileged-information setting of
-\cite{lopezpaz2016unifying} --- and following \cite{hinton2015distilling} the
-Dice target is the teacher's probabilities rather than a binarised mask.
-$\mathcal{S}$ holds frame~1 always, four frames drawn from frames~2 onward,
-and frame~0 on the steps where its prompt was withheld, since only then is it
-in the unprompted regime. Frame~1 is anchored rather than sampled because the
-memory bank is causal: its prediction enters $M_{<t}$ for every later $t$, so
-it has the largest downstream influence in the clip. Separately, the frame-0
-prompt is itself withheld with probability $p_e = p\,\min(1,\,e/E_w)$,
-$p = 0.4$ and $E_w = 40$, so that training matches the conditioning regime of
-inference \cite{bengio2015scheduled}. We take $\lambda_1 = 0.2$ and
-$\lambda_2 = 0.1$, small enough that the teacher terms regularise the memory
-pathway without displacing the model from the supervised optimum, and begin
-distillation at epoch~40, once the teacher is effectively stationary; no new
-parameters are introduced.
-\todo{Results PENDING --- every number in this manuscript is the model
-without distillation or prompt dropout.}
-
 \paragraph{Optimization.}
 Training uses AdamW \cite{loshchilov2019adamw} with decoupled weight decay
 $0.05$ and gradient-norm clipping at $1.0$, for up to 110 epochs over clips
@@ -1372,17 +1323,6 @@ model that has simply overfitted the loss function. In contrast, clDice is
 not optimized during training and does not rely on the differentiable
 skeletonization used in the loss, thereby serving as an independent
 validation metric that corroborates the performance rankings.
-
-One further quantity is used as a diagnostic only and is not reported as a
-benchmark result. The Betti-0 error is the absolute difference between the
-number of connected components in the prediction and in the target, counted
-per frame with eight-connected foreground and four-connected background. It
-registers a severed branch directly --- one break, one component --- where
-cbDice registers it as a weighted fraction. That directness is also its
-limitation: it is an integer difference, blind to whether the break is one
-pixel or a hundred, which makes it useful for locating a failure and poor for
-ranking methods. We therefore use it only where the question is \emph{where}
-quality is lost, and never in the comparisons of Section~\ref{sec:results}.
 
 \begin{figure}[!htb]
 \centering
@@ -1848,16 +1788,6 @@ confirm our topological advantages reflect genuine structural preservation
 rather than loss-level overfitting. We therefore recommend that work on
 filamentous or branched cells report a connectivity metric alongside IoU
 rather than in place of it.
-
-Two additions to training are described in Section~\ref{sec:met:loss} and are
-not yet evaluated. One point from them generalises: a distillation term whose
-teacher holds privileged information cannot reach zero, since the student is
-denied the information the target was produced with, so its gradient never
-vanishes and the model settles displaced from the supervised optimum in
-proportion to that term's weight. The weight is therefore a trade-off between
-regularisation and bias rather than a quantity to be maximised, consistent
-with the general finding that imitating a teacher whose distribution differs
-from the ground truth can be harmful \cite{zhang2023blindly}.
 
 We acknowledge several limitations. First, our evaluation is constrained to
 a small held-out test set (four recordings); thus, our conclusions rely on
