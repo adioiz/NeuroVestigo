@@ -37,17 +37,54 @@ segment unprompted — that is part of why the NO-prompt column is so low.
 
 ## checkpoints-distill-v2 — trained WITH prompt dropout p=0.4
 
-Not yet run; the checkpoint lives on the cluster. Command:
+| video | frame | correct GT | WRONG mask | NO prompt |
+|---|---|---|---|---|
+| A91_C1_2 | 0 | 0.9081 | 0.1945 | 0.0000 |
+| A91_C1_2 | 20 | 0.8845 | 0.4170 | 0.0000 |
+| A91_C1_2 | 40 | 0.8751 | 0.1861 | 0.0003 |
+| A31_C1 | 0 | 0.9521 | 0.3129 | 0.7211 |
+| A31_C1 | 20 | 0.9537 | 0.6134 | 0.8613 |
+| A31_C1 | 40 | 0.9539 | 0.3098 | 0.8416 |
+| A52_C2 | 0 | 0.9740 | 0.5206 | 0.8666 |
+| A52_C2 | 20 | 0.9648 | 0.4163 | 0.7448 |
+| A52_C2 | 40 | 0.9686 | 0.5028 | 0.7270 |
+| **MEAN** | | **0.9372** | **0.3859** | **0.5292** |
 
-    python benchmark/probe_teacher.py --ckpt checkpoints-distill-v2/lora_weights.pt
+## The comparison
 
-**What it decides.** Prompt dropout is the one mechanism never tested in
-isolation, and the NO-prompt column measures exactly what it was meant to
-teach:
+| NO-prompt IoU | baseline | v2 | factor |
+|---|---|---|---|
+| A91_C1_2 | 0.0094 | 0.0001 | — |
+| A31_C1 | 0.0069 | **0.8080** | 118× |
+| A52_C2 | 0.0116 | **0.7795** | 67× |
+| **MEAN** | **0.0093** | **0.5292** | **57×** |
 
-- **~0.01, like the baseline** — dropout did not work either. Both mechanisms
-  failed; the honest write-up is a negative result for the pair.
-- **materially higher (0.2, 0.4, ...)** — dropout taught the decoder to
-  segment without a prompt, something the baseline never learned. That is a
-  real, separable finding that stands regardless of distillation, and it
-  changes what the paper can claim.
+The `correct GT` column is unchanged (0.9378 vs 0.9372) and `WRONG mask` is
+unchanged (0.3870 vs 0.3859), so the two models are equally good at refining a
+mask they are handed. The entire difference is in the ability to segment with
+**no prompt at all**, which standard training never acquires and which prompt
+dropout produces.
+
+**The result is bimodal, not uniform.** On A31_C1 and A52_C2 the model segments
+unprompted at 0.72-0.87, close to its prompted score. On A91_C1_2 it stays at
+zero. A91_C1_2 is the hardest recording in the validation split (per-video IoU
+~0.761 against ~0.874 and ~0.845), so the capability appears where the imaging
+is clean and not where it is not.
+
+## What this does and does not show
+
+**Does:** prompt dropout gives SAM 2's decoder a standalone segmentation
+ability it otherwise entirely lacks — a 57x change in the mean, from 0.0093 to
+0.5292, with the prompted pathway untouched.
+
+**Does not:** improve prompted propagation accuracy. Over matched epochs 98-110
+v2 scores val IoU 0.8304 against the baseline's 0.8373 (t = -19.6), with
+Betti-0 and Betti-1 both indistinguishable. The new capability did not
+translate into a better model on the metric the benchmark reports.
+
+**Attribution caveat.** v2 trained with prompt dropout AND distillation, so
+strictly this measures the pair. Distillation's target is the model's own
+PROMPTED output, which cannot teach prompt-free segmentation, while dropout
+explicitly forces it -- so the mechanism points at dropout. Establishing it
+cleanly needs a dropout-only run, which has never been done: v1 and v2 both
+had both mechanisms.
