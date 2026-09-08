@@ -14,11 +14,14 @@
 #      cancels the remaining pending tasks instead of wasting slots.
 #   3. A crash guard, so a genuine bug is not retried nine times.
 #
-# CKPT_DIR is checkpoints-distill-v2, NOT checkpoints/. The latter holds the
-# 22-recording model that both repos' weight lookup resolves to; writing there
-# would destroy it. It is also not checkpoints-distill, which holds the first
-# distillation run -- reusing that directory would resume it at epoch 110 and
-# the completion check would cancel the array immediately.
+# CKPT_DIR must be a FRESH directory. checkpoints/ holds the 22-recording
+# model that both repos' weight lookup resolves to; checkpoints-distill and
+# checkpoints-distill-v2 hold the two finished distillation runs. Reusing any
+# of those would resume it at epoch 110 and the completion check would cancel
+# the whole array on the first task.
+#
+# This run is DROPOUT ONLY -- distillation is off by default now, so it
+# isolates the one mechanism that has never been tested alone.
 # ---------------------------------------------------------------------------
 #SBATCH --job-name=sam2_lora_neurons
 #SBATCH --partition=B200-4h
@@ -46,7 +49,7 @@ cd ~/Fine-tune-SAM2-model-for-Neurons-segmentation || exit 1
 mkdir -p logs
 
 EPOCHS=110
-CKPT_DIR=checkpoints-distill-v2
+CKPT_DIR=checkpoints-dropout
 COMMON_ARGS="--epochs $EPOCHS --batch-size 2 --num-frames 16 --val-num-frames 16 --patience 90 --val-videos A91_C1_2,A31_C1,A52_C2,A22_C2,A42_C1 --checkpoint-dir $CKPT_DIR"
 
 STATE_FILE=$CKPT_DIR/train_state.pt

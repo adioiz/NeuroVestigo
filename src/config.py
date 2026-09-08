@@ -251,11 +251,32 @@ class LossConfig:
     # learning using privileged information:
     #   Soft targets:           Hinton et al.,    arXiv:1503.02531
     #   Privileged information: Lopez-Paz et al., ICLR 2016, arXiv:1511.03643
-    # ON by default: this is part of how the model trains, not an experiment.
-    # Consequence to be aware of -- checkpoints trained before this (including
-    # the run the paper's Results table reports) were trained WITHOUT it, so
-    # they cannot be reproduced by this code with the defaults as they stand.
-    use_prompt_distill: bool = True
+    # OFF. Two runs measured it and both landed below the no-distillation
+    # baseline; the code is kept so the negative result stays reproducible.
+    #
+    #     baseline (no distillation)   val IoU 0.8377
+    #     v1  alpha ~36% of core_loss          0.8340
+    #     v2  alpha ~10%, frame-1 anchored     0.8327
+    #
+    # Matched epochs 98-110: v2 0.8304 vs baseline 0.8373, t = -19.6, with
+    # Betti-0 and Betti-1 both indistinguishable. Lowering alpha did not help.
+    #
+    # WHY, measured by benchmark/probe_teacher.py on the shipped baseline:
+    #
+    #     correct GT prompt 0.9378 | WRONG mask 0.3870 | NO prompt 0.0093
+    #
+    # Unprompted the decoder scores 0.009 -- it cannot find the neuron at all,
+    # and handed a wrong mask it segments the wrong thing. So the teacher is a
+    # mask REFINER, not a segmenter: its 0.94 is the ground truth handed to it
+    # and cleaned up, and its entire advantage is the answer itself. There is
+    # no transferable skill, at any weight, which is why the t0-t1 gap stayed
+    # flat (0.0963 -> 0.0987) across both runs.
+    #
+    # A second reason it could only hurt: the distillation cbDice term is
+    # effectively ~30% more cbDice pull (0.1 x 0.155 against 0.3 x 0.170), and
+    # the sweep recorded above already established that raising cbDice makes
+    # Betti-0 monotonically WORSE.
+    use_prompt_distill: bool = False
     # Weights cut 1.0/0.5 -> 0.2/0.1 after the first run. At the old values the
     # two distillation terms were 32-37% of core_loss for the whole run -- a
     # third of the gradient budget aimed at a target the student cannot reach,
@@ -384,7 +405,21 @@ class TrainingConfig:
     # prompt is withheld and frame 0 must be segmented from features alone,
     # which is the frames-1+ condition. Ramped from 0 over the warmup so an
     # early bad frame-0 prediction cannot poison a whole clip's memory bank.
-    # Set to 0.0 to reproduce a pre-distillation checkpoint exactly.
+    # KEPT ON. This is a separate mechanism from distillation and the one that
+    # demonstrably did something: probing v2 against the baseline,
+    #
+    #     NO prompt   baseline 0.0093  ->  v2 0.5292      57x
+    #     correct GT  baseline 0.9378  ->  v2 0.9372      unchanged
+    #     WRONG mask  baseline 0.3870  ->  v2 0.3859      unchanged
+    #
+    # Both refine a handed mask identically; the whole difference is standalone
+    # segmentation, which normal training never acquires. Bimodal though --
+    # A31_C1 0.808 and A52_C2 0.780, but the hardest recording A91_C1_2 stays
+    # at 0.0001.
+    #
+    # Note it has NOT yet been shown to improve prompted accuracy, and v2 had
+    # dropout AND distillation, so a dropout-only run is what isolates it.
+    # Set to 0.0 to reproduce a pre-dropout checkpoint exactly.
     prompt_dropout: float = 0.4
     prompt_dropout_warmup_epochs: int = 40
 
