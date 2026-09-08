@@ -405,8 +405,41 @@ class TrainingConfig:
     # prompt is withheld and frame 0 must be segmented from features alone,
     # which is the frames-1+ condition. Ramped from 0 over the warmup so an
     # early bad frame-0 prediction cannot poison a whole clip's memory bank.
-    # KEPT ON. This is a separate mechanism from distillation and the one that
-    # demonstrably did something: probing v2 against the baseline,
+    # OFF. It trains for a condition that DOES NOT EXIST at inference.
+    #
+    # Frame 0 always carries the mask in real use: benchmark/run_ours.py passes
+    # `mask_inputs=(frame0 if t == 0 else None)` and the GUI has the user draw
+    # frame 0 before propagating. Dropping that prompt during training creates
+    # a third regime that occurs nowhere:
+    #
+    #     frame 0 normal    prompt, NO memory     happens at inference
+    #     frames 1+         no prompt, MEMORY     happens at inference
+    #     frame 0 dropped   no prompt, NO memory  happens NEVER
+    #
+    # The original justification was exposure bias -- that withholding the
+    # prompt reproduced the frames-1+ situation. It does not: frames 1+ have
+    # the memory bank and a de-prompted frame 0 has nothing. There was no
+    # train/test mismatch at frame 0 to correct.
+    #
+    # It DID teach the decoder a real capability, measured against the
+    # baseline, with the prompted pathway untouched:
+    #
+    #     NO prompt   0.0093 -> 0.5292   57x
+    #     correct GT  0.9378 -> 0.9372   unchanged
+    #     WRONG mask  0.3870 -> 0.3859   unchanged
+    #
+    # But that capability is never exercised, which is why v2 acquired it and
+    # still scored WORSE on val IoU (0.8304 vs 0.8373 over matched epochs).
+    #
+    # Kept in the code, defaulted to 0.0. Related measurement worth preserving:
+    # the same probe shows the memory bank does essentially all the work --
+    # 0.009 with neither prompt nor memory, ~0.830 with memory and no prompt.
+    prompt_dropout: float = 0.0
+    prompt_dropout_warmup_epochs: int = 40
+
+    # --- historical note on the values above -------------------------------
+    # Superseded settings from the two distillation runs: p=0.4 over 40 epochs.
+    # Probing v2 against the baseline gave,
     #
     #     NO prompt   baseline 0.0093  ->  v2 0.5292      57x
     #     correct GT  baseline 0.9378  ->  v2 0.9372      unchanged
@@ -417,11 +450,8 @@ class TrainingConfig:
     # A31_C1 0.808 and A52_C2 0.780, but the hardest recording A91_C1_2 stays
     # at 0.0001.
     #
-    # Note it has NOT yet been shown to improve prompted accuracy, and v2 had
-    # dropout AND distillation, so a dropout-only run is what isolates it.
-    # Set to 0.0 to reproduce a pre-dropout checkpoint exactly.
-    prompt_dropout: float = 0.4
-    prompt_dropout_warmup_epochs: int = 40
+    # which is recorded above. Set prompt_dropout back to 0.4 to reproduce
+    # checkpoints-distill-v2's dropout behaviour.
 
     use_memory_attention_path: bool = True
 
