@@ -161,12 +161,52 @@ def dump_source(fn, name, lines=40):
 
 
 # ------------------------------------------------------------------ routes
+def _shim_loader(base):
+    """init_state forwards use_torchcodec/use_cv2 to a load_video_frames that
+    does not accept them -- a version skew inside sam3, not our call:
+
+        TypeError: load_video_frames() got an unexpected keyword argument
+                   'use_torchcodec'
+
+    Filter them out, exactly as run_sam3.py:_filter_init_state_kwargs already
+    does for start_session. Dropping a kwarg that carries real information
+    (the path) is an error, not a silent no-op.
+    """
+    mod = sys.modules[base.__module__]
+    orig = getattr(mod, "load_video_frames", None)
+    if orig is None:
+        print("  (no load_video_frames in that module to shim)")
+        return
+    try:
+        params = inspect.signature(orig).parameters
+    except (TypeError, ValueError):
+        return
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return                                   # takes **kwargs already
+    valid = set(params)
+
+    def shim(*a, **k):
+        dropped = sorted(set(k) - valid)
+        for key in ("video_path", "img_paths", "video_dir"):
+            if key in dropped:
+                raise RuntimeError(f"load_video_frames would drop {key}; "
+                                   "no frames would be read")
+        if dropped:
+            print(f"  [shim] load_video_frames: dropped {dropped}")
+        return orig(*a, **{x: y for x, y in k.items() if x in valid})
+
+    mod.load_video_frames = shim
+    print(f"  [shim] wrapped {base.__module__}.load_video_frames "
+          f"(accepts: {sorted(valid)[:8]}...)")
+
+
 def route_demo(vp, inner, frames_dir, n):
     """A: the demo base class loads video itself."""
     from sam3.model.video_tracking_multiplex_demo import VideoTrackingMultiplexDemo
     jpg = jpeg_mirror(frames_dir, n)
     base = VideoTrackingMultiplexDemo
     print(f"  isinstance of {base.__name__}: {isinstance(inner, base)}")
+    _shim_loader(base)
     attempts = [
         ("kwargs", lambda: base.init_state(inner, video_path=jpg,
                                            offload_video_to_cpu=False,
@@ -190,11 +230,34 @@ def route_transplant(vp, inner, frames_dir, n):
     t = build_tracker(False, with_backbone=True)
     src = inner.state_dict()
     landed = False
+
+    def shape_filtered(target, sd):
+        """strict=False skips MISSING keys but still raises on a size mismatch:
+
+            size mismatch for maskmem_tpos_enc: copying a param with shape
+            torch.Size([7, 1, 1, 256]) from checkpoint
+
+        build_tracker configures a different memory length than the released
+        multiplex model, so drop every key whose shape disagrees and report how
+        many went, since a large count means the transplant is not meaningful.
+        """
+        tsd = target.state_dict()
+        keep, bad = {}, []
+        for k, v in sd.items():
+            if k in tsd and tsd[k].shape == v.shape:
+                keep[k] = v
+            elif k in tsd:
+                bad.append(k)
+        if bad:
+            print(f"  {len(bad)} keys dropped for shape mismatch "
+                  f"(e.g. {bad[:3]})")
+        return keep
     for label, target in (("tracker", t), ("tracker.model", getattr(t, "model", None))):
         if target is None:
             continue
         try:
-            missing, unexpected = target.load_state_dict(src, strict=False)
+            keep = shape_filtered(target, src)
+            missing, unexpected = target.load_state_dict(keep, strict=False)
             n_tot = len(target.state_dict())
             n_missing = len(missing)
             print(f"  load_state_dict into {label}: {n_tot - n_missing}/{n_tot} "
