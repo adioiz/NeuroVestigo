@@ -341,6 +341,12 @@ class TrainingConfig:
     # Model
     sam2_model_id: str = "facebook/sam2.1-hiera-tiny"
     freeze_image_encoder: bool = True
+    # "sam2" (default, and what every shipped checkpoint was trained with) or
+    # "sam3" to put the same dual-rank LoRA+ on SAM 3.1's tracker instead.
+    # Opt-in on purpose: SAM 3.1's tracker is a different size and its
+    # checkpoints are NOT interchangeable with the SAM 2 ones, so a run must
+    # say which backbone it used. Run benchmark/sam3_lora_preflight.py first.
+    backbone: str = "sam2"
 
     # LoRA
     lora: LoRAConfig = field(default_factory=LoRAConfig)

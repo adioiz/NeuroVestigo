@@ -817,74 +817,82 @@ def build_training_model(config: TrainingConfig, device: str):
         model: SAM2TrainingWrapper with LoRA applied
         loss_fn: MultiStepMultiMasksAndIous loss function
     """
-    # Download checkpoint
-    config_name, ckpt_path = _hf_download(config.sam2_model_id)
+    # Which backbone carries the LoRA. Everything after this point -- the
+    # embedding unfreeze, the wrapper, the loss, the device move, compile --
+    # is shared, so the SAM 2 path below is exactly what trained every shipped
+    # checkpoint and the SAM 3 branch only replaces model construction.
+    if getattr(config, "backbone", "sam2") == "sam3":
+        from src.sam3_backbone import build_sam3_lora
+        model, _sam3_info = build_sam3_lora(config)
+    else:
+        # Download checkpoint
+        config_name, ckpt_path = _hf_download(config.sam2_model_id)
 
-    # Build the standard SAM2 model
-    model = build_sam2(
-        config_file=config_name,
-        ckpt_path=ckpt_path,
-        device="cpu",  # Load on CPU first
-        apply_postprocessing=False,
-    )
+        # Build the standard SAM2 model
+        model = build_sam2(
+            config_file=config_name,
+            ckpt_path=ckpt_path,
+            device="cpu",  # Load on CPU first
+            apply_postprocessing=False,
+        )
 
-    # Freeze image encoder if configured
-    if config.freeze_image_encoder:
-        for p in model.image_encoder.parameters():
-            p.requires_grad = False
+        # Freeze image encoder if configured
+        if config.freeze_image_encoder:
+            for p in model.image_encoder.parameters():
+                p.requires_grad = False
 
-    # Apply LoRA to target modules
-    print("\nApplying LoRA adapters...")
-    wrapped = apply_lora(
-        model,
-        target_patterns=SAM2_LORA_TARGETS,
-        rank=config.lora.rank,
-        alpha=config.lora.alpha,
-        dropout=config.lora.dropout,
-    )
-    print(f"  Wrapped {len(wrapped)} Linear layers with LoRA (rank={config.lora.rank})")
-    for name in sorted(wrapped):
-        print(f"    - {name}")
-
-    # Optional second LoRA pass on the Hiera encoder's last stage. Image
-    # encoder params are still frozen (set above); LoRALinear's A/B matrices
-    # are NEW parameters that default to requires_grad=True, so the
-    # adapters train while the underlying Hiera weights stay frozen. The
-    # gradient flows correctly into A and B via the LoRA forward path.
-    if config.lora.hiera_last_stage:
-        # Derive the block indices from the trunk that was actually loaded
-        # rather than hardcoding them, so this survives a backbone swap.
-        trunk = model.image_encoder.trunk
-        n_blocks = len(trunk.blocks)
-        n_adapt = min(config.lora.hiera_blocks, n_blocks)
-        hiera_targets = hiera_trailing_block_targets(n_blocks, n_adapt)
-
-        wrapped_hiera = apply_lora(
+        # Apply LoRA to target modules
+        print("\nApplying LoRA adapters...")
+        wrapped = apply_lora(
             model,
-            target_patterns=hiera_targets,
-            rank=config.lora.hiera_rank,
-            alpha=config.lora.hiera_alpha,
+            target_patterns=SAM2_LORA_TARGETS,
+            rank=config.lora.rank,
+            alpha=config.lora.alpha,
             dropout=config.lora.dropout,
         )
-        first = n_blocks - n_adapt
-        print(
-            f"  Wrapped {len(wrapped_hiera)} Hiera Linear layers with LoRA "
-            f"(rank={config.lora.hiera_rank}, blocks {first}-{n_blocks - 1} "
-            f"of {n_blocks})"
-        )
-        # Hiera matches 4 Linears per block (attn.qkv, attn.proj, mlp.layers.0,
-        # mlp.layers.1). Anything else means the regex silently missed -- which
-        # would leave the encoder unadapted while the run looks completely
-        # normal, and cost 11 hours to discover. Fail loudly instead.
-        expected = 4 * n_adapt
-        if len(wrapped_hiera) != expected:
-            raise RuntimeError(
-                f"Hiera LoRA matched {len(wrapped_hiera)} Linear layers, "
-                f"expected {expected} (4 per block x {n_adapt} blocks). The "
-                f"target patterns do not fit this trunk: {hiera_targets}"
-            )
-        for name in sorted(wrapped_hiera):
+        print(f"  Wrapped {len(wrapped)} Linear layers with LoRA (rank={config.lora.rank})")
+        for name in sorted(wrapped):
             print(f"    - {name}")
+
+        # Optional second LoRA pass on the Hiera encoder's last stage. Image
+        # encoder params are still frozen (set above); LoRALinear's A/B matrices
+        # are NEW parameters that default to requires_grad=True, so the
+        # adapters train while the underlying Hiera weights stay frozen. The
+        # gradient flows correctly into A and B via the LoRA forward path.
+        if config.lora.hiera_last_stage:
+            # Derive the block indices from the trunk that was actually loaded
+            # rather than hardcoding them, so this survives a backbone swap.
+            trunk = model.image_encoder.trunk
+            n_blocks = len(trunk.blocks)
+            n_adapt = min(config.lora.hiera_blocks, n_blocks)
+            hiera_targets = hiera_trailing_block_targets(n_blocks, n_adapt)
+
+            wrapped_hiera = apply_lora(
+                model,
+                target_patterns=hiera_targets,
+                rank=config.lora.hiera_rank,
+                alpha=config.lora.hiera_alpha,
+                dropout=config.lora.dropout,
+            )
+            first = n_blocks - n_adapt
+            print(
+                f"  Wrapped {len(wrapped_hiera)} Hiera Linear layers with LoRA "
+                f"(rank={config.lora.hiera_rank}, blocks {first}-{n_blocks - 1} "
+                f"of {n_blocks})"
+            )
+            # Hiera matches 4 Linears per block (attn.qkv, attn.proj, mlp.layers.0,
+            # mlp.layers.1). Anything else means the regex silently missed -- which
+            # would leave the encoder unadapted while the run looks completely
+            # normal, and cost 11 hours to discover. Fail loudly instead.
+            expected = 4 * n_adapt
+            if len(wrapped_hiera) != expected:
+                raise RuntimeError(
+                    f"Hiera LoRA matched {len(wrapped_hiera)} Linear layers, "
+                    f"expected {expected} (4 per block x {n_adapt} blocks). The "
+                    f"target patterns do not fit this trunk: {hiera_targets}"
+                )
+            for name in sorted(wrapped_hiera):
+                print(f"    - {name}")
 
     # Unfreeze small learnable embeddings
     unfrozen_embeddings = []
