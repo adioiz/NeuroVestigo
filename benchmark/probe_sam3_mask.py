@@ -145,6 +145,11 @@ def find_tracker():
     return classes, factories
 
 
+# The predictor that produced the tracker. Stage C needs it: the tracker's own
+# init_state cannot load video, but the predictor's session interface can.
+BUILT = {}
+
+
 # ---------------------------------------------------------------- stage B
 def build(factories, classes, ckpt):
     """Try each plausible construction path; report every failure verbatim.
@@ -181,6 +186,7 @@ def build(factories, classes, ckpt):
         import inspect
         import torch
         vp = build_sam3_predictor()
+        BUILT["predictor"] = vp      # stage C needs it for start_session
         seen = set()
 
         def accepts_mask(v):
@@ -343,8 +349,97 @@ def prepare(tracker):
     return tracker, "cuda"
 
 
+def session_state(vp, frames_dir):
+    """Create an inference state that actually holds frames.
+
+    The nested tracker's init_state is the cached_features path -- it takes
+    video_height/width/num_frames and no video_path, so the state it builds has
+    no images and any mask offered to it dies on KeyError: 'images'. That is a
+    property of which object we reached, not of mask support.
+
+    Every working SAM 3.1 row in this repo loads video the other way, through
+    the session interface (run_sam3.py:283):
+
+        handle_request({"type": "start_session", "resource_path": <frames dir>})
+
+    So build the state that way and hand it to the tracker. PNG is fine here --
+    the session loader reads the same directory run_sam3.py passes it, so no
+    JPEG mirror is needed on this path.
+    """
+    import inspect as _i
+    # Same shim as run_sam3.py:_filter_init_state_kwargs. start_session always
+    # forwards offload_video_to_cpu/offload_state_to_cpu, which the 3.1
+    # multiplex init_state does not accept -> TypeError before a frame is read.
+    model = getattr(vp, "model", None)
+    if model is not None and hasattr(model, "init_state"):
+        orig = model.init_state
+        try:
+            params = _i.signature(orig).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if params and not any(p.kind is _i.Parameter.VAR_KEYWORD
+                              for p in params.values()):
+            valid = set(params)
+
+            def _init(*a, **k):
+                dropped = sorted(set(k) - valid)
+                if "resource_path" in dropped:
+                    raise RuntimeError("init_state does not accept "
+                                       "resource_path; session would load no video")
+                if dropped:
+                    print(f"    [shim] init_state: dropped {dropped}")
+                return orig(*a, **{x: y for x, y in k.items() if x in valid})
+            model.init_state = _init
+
+    resp = vp.handle_request({"type": "start_session",
+                              "resource_path": frames_dir})
+    sid = resp["session_id"] if isinstance(resp, dict) else getattr(resp, "session_id")
+    print(f"    start_session OK -- session_id={sid}")
+
+    # The state lives in whatever dict the predictor keys by session id.
+    hit = {}
+    seen = set()
+
+    def find(o, path, d=0):
+        if hit or d > 4 or id(o) in seen:
+            return
+        seen.add(id(o))
+        if isinstance(o, dict):
+            items = list(o.items())
+        else:
+            dd = getattr(o, "__dict__", None)
+            items = ([(n, v) for n, v in dd.items() if not n.startswith("__")]
+                     if isinstance(dd, dict) else [])
+        for n, v in items:
+            if isinstance(v, dict) and sid in v:
+                hit["state"] = v[sid]
+                hit["where"] = f"{path}{n}[{sid!r}]"
+                return
+            if isinstance(v, dict) or hasattr(v, "__dict__"):
+                find(v, f"{path}{n}.", d + 1)
+
+    find(vp, "")
+    st = hit.get("state")
+    if st is None:
+        print("    could not locate the session's inference state on the predictor")
+        return None, sid
+    print(f"    found session state at .{hit['where']} -> {type(st).__name__}")
+    # Some builds wrap the state; unwrap one level if the images live inside.
+    for attr in ("inference_state", "state"):
+        inner = getattr(st, attr, None)
+        if inner is not None and not isinstance(st, dict):
+            print(f"    unwrapping .{attr} -> {type(inner).__name__}")
+            st = inner
+            break
+    if isinstance(st, dict):
+        keys = sorted(st.keys())[:12]
+        print(f"    state keys: {keys}{' ...' if len(st) > 12 else ''}")
+        print(f"    holds images: {'images' in st}")
+    return st, sid
+
+
 # ---------------------------------------------------------------- stages C-E
-def drive(tracker, frames_dir, gt):
+def drive(tracker, frames_dir, gt, prebuilt=None):
     """Stages C-E, using the signatures stage A actually reported:
 
         init_state(video_height=None, video_width=None, num_frames=None,
@@ -369,7 +464,12 @@ def drive(tracker, frames_dir, gt):
         print(f"    could not mirror frames: {e}"); jpg_dir = None
 
     state, loaded_video = None, False
-    cands = []
+    if prebuilt is not None:
+        state = prebuilt
+        loaded_video = (not isinstance(state, dict)) or ("images" in state)
+        print(f"    using the session state built above "
+              f"(holds images: {loaded_video})")
+    cands = [] if state is not None else []
     for d in [x for x in (jpg_dir, frames_dir) if x]:
         cands.append({"video_path": d})
         # VideoTrackingMultiplexDemo.init_state(video_path, offload_video_to_cpu,
@@ -380,7 +480,7 @@ def drive(tracker, frames_dir, gt):
                       "offload_state_to_cpu": False})
         cands.append({"video_path": d, "video_height": H, "video_width": W,
                       "num_frames": T})
-    for kw in cands:
+    for kw in (cands if state is None else []):
         try:
             state = tracker.init_state(**kw)
             loaded_video = True
@@ -533,7 +633,32 @@ def main():
     frames_dir = os.path.join(DATA, "images", args.video)
     gt = load_gt(args.video, args.limit_frames)
     print(f"  video={args.video}  frames={len(gt)}  shape={gt.shape[1:]}")
-    ok = drive(tracker, frames_dir, gt)
+
+    # The paper's sentence is specifically about add_prompt, so record what it
+    # actually accepts on THIS build rather than describing it from memory.
+    vp = BUILT.get("predictor")
+    if vp is not None:
+        ap_fn = getattr(vp, "add_prompt", None) or getattr(
+            getattr(vp, "model", None), "add_prompt", None)
+        if ap_fn is not None:
+            print(f"  add_prompt{sig(ap_fn)}")
+            names = []
+            try:
+                names = list(inspect.signature(ap_fn).parameters)
+            except (ValueError, TypeError):
+                pass
+            maskish = [n for n in names if "mask" in n.lower()]
+            print(f"  add_prompt mask-like parameters: {maskish or 'NONE'}")
+
+    prebuilt = None
+    if vp is not None:
+        print("  building a state through the session interface ...")
+        try:
+            prebuilt, _sid = session_state(vp, frames_dir)
+        except BaseException as e:
+            print(f"    session route failed: {type(e).__name__}: {str(e)[:200]}")
+
+    ok = drive(tracker, frames_dir, gt, prebuilt=prebuilt)
 
     show("RESULT")
     if ok:

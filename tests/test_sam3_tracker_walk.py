@@ -103,3 +103,34 @@ _TREE["vp"] = vp4
 got4 = P.build({"sam3.model_builder.build_tracker": mb.build_tracker}, {}, None)
 assert isinstance(got4, MultiplexDemo), "should fall back, not return None"
 print("PASS: falls back to an unfeedable candidate rather than returning None")
+
+
+# ---------------------------------------------------------------------------
+# session_state: the tracker's own init_state cannot load video, so the state
+# must come from the predictor's session interface (run_sam3.py:283).
+# ---------------------------------------------------------------------------
+class SessionPredictor(_Module):
+    def __init__(self):
+        super().__init__()
+        self.model = _Module()
+        self.model.init_state = lambda **k: None
+        self._sessions = {}
+    def handle_request(self, req):
+        assert req["type"] == "start_session"
+        assert req["resource_path"] == "/frames", req
+        self._sessions["s1"] = {"images": ["frame"] * 12, "num_frames": 12}
+        return {"session_id": "s1"}
+
+st, sid = P.session_state(SessionPredictor(), "/frames")
+assert sid == "s1", sid
+assert isinstance(st, dict) and "images" in st, st
+print("PASS: session_state finds a state that holds images")
+
+# A predictor that hands back a session id but hides the state must not be
+# mistaken for success -- returning None keeps stage D marked INCONCLUSIVE.
+class Hidden(SessionPredictor):
+    def handle_request(self, req):
+        return {"session_id": "nowhere"}
+st2, _ = P.session_state(Hidden(), "/frames")
+assert st2 is None, st2
+print("PASS: unlocatable state returns None rather than a false positive")
