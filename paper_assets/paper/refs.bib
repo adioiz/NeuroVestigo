@@ -55,10 +55,12 @@
   journal={Biotechnology and Bioengineering}, volume={109}, pages={1791--1797}, year={2012}}
 
 @article{marcus2017interactions,
-  title={Interactions of neurons with physical environments},
-  author={Marcus, Michal and others},
-  journal={Advanced Healthcare Materials}, volume={6}, number={1}, pages={1600802}, year={2017},
-  note={VERIFY full author list}}
+  title   = {Interactions of neurons with physical environments},
+  author  = {Marcus, Michal and Baranes, Koby and Park, Matthew and
+             Choi, Insung S. and Kang, Kyungtae and Shefi, Orit},
+  journal = {Advanced Healthcare Materials},
+  volume  = {6}, number = {15}, pages = {1700267}, year = {2017},
+  doi     = {10.1002/adhm.201700267}}
 
 %--- what is measured: growth dynamics ---
 @article{wissnergross2011largescale,
@@ -127,9 +129,9 @@
 % [NEEDED] *** the model actually benchmarked (cpsam, Cellpose v4) ***
 @article{pachitariu2025cellposesam,
   title   = {Cellpose-{SAM}: superhuman generalization for cellular segmentation},
-  author  = {Pachitariu, Marius and Stringer, Carsen and others},
-  journal = {}, year = {2025},
-  note    = {CITATION INCOMPLETE - verify authors, venue, year}}
+  author  = {Pachitariu, Marius and Rariden, Michael and Stringer, Carsen},
+  journal = {bioRxiv}, year = {2025},
+  doi     = {10.1101/2025.04.28.651001}}
 
 % [NEEDED] cited as architecturally unable to represent branched filaments
 @inproceedings{schmidt2018stardist,
@@ -152,12 +154,14 @@
 
 %--- domain-specialised (phase-contrast neurons + neurites) ---
 % [NEEDED] strongest unprompted competitor. arXiv preprint: 2310.10978
-@article{chen2024neuroquantify,
+@article{dang2024neuroquantify,
   title   = {NeuroQuantify -- An image analysis software for detection and
              quantification of neuron cells and neurite lengths using deep learning},
-  author  = {Chen, Ka My and others},
-  journal = {Journal of Neuroscience Methods}, year = {2024},
-  note    = {VERIFY full author list, volume, article number}}
+  author  = {Dang, Ka My and Zhang, Yi Jia and Zhang, Tianchen and Wang, Chao
+             and Sinner, Anton and Coronica, Piero and Poon, Joyce K. S.},
+  journal = {Journal of Neuroscience Methods},
+  volume  = {411}, pages = {110273}, year = {2024},
+  doi     = {10.1016/j.jneumeth.2024.110273}}
 
 %--- foundation models ---
 % [VERIFIED]
@@ -180,15 +184,22 @@
              Ahmed, Sheraz and Pape, Constantin},
   journal = {Nature Methods}, year = {2025},
   doi     = {10.1038/s41592-024-02580-4},
-  note    = {VERIFY volume and article number}}
+  journal = {Nature Methods},
+  volume  = {22}, number = {3}, pages = {579--591}, year = {2025},
+  doi     = {10.1038/s41592-024-02580-4}}
 
 % [NEEDED] named as access-gated, not evaluated
-@article{israel2025cellsam,
-  title   = {A foundation model for cell segmentation},
-  author  = {Israel, Uriah and others},
-  journal = {Nature Methods}, year = {2025},
-  doi     = {10.1038/s41592-025-02879-w},
-  note    = {VERIFY author list and article number}}
+@article{marks2025cellsam,
+  title   = {{CellSAM}: a foundation model for cell segmentation},
+  author  = {Marks, Markus and Israel, Uriah and Dilip, Rohit and Li, Qilin
+             and Yu, Changhua and Laubscher, Emily and Iqbal, Ahamed and
+             Pradhan, Elora and Ates, Ada and Abt, Martin and Brown, Caitlin
+             and Pao, Edward and Li, Shenyi and Pearson-Goulart, Alexander
+             and Perona, Pietro and Gkioxari, Georgia and Barnowski, Ross
+             and Yue, Yisong and Van Valen, David},
+  journal = {Nature Methods},
+  volume  = {22}, number = {12}, pages = {2585--2593}, year = {2025},
+  doi     = {10.1038/s41592-025-02879-w}}
 
 %--- trackers (segment-then-link) ---
 % [NEEDED]
@@ -200,8 +211,9 @@
              Araghbidikashani, Kimiasadat and Hays, Robert and Kozuki, Sayaka
              and Rubio, Stefany and Hrabeta-Robinson, Eva and Brooks, Angela
              and Hinck, Lindsay and Shariati, S. Ali},
-  journal = {Cell Reports Methods}, year = {2023},
-  note    = {VERIFY volume, issue, article number}}
+  journal = {Cell Reports Methods},
+  volume  = {3}, number = {6}, pages = {100500}, year = {2023},
+  doi     = {10.1016/j.crmeth.2023.100500}}
 
 % [NEEDED]
 @inproceedings{gallusser2024trackastra,
@@ -286,13 +298,26 @@
 
 % [VERIFIED] supervoxel connectivity term, weight 0.3. Implementation adapted
 % from github.com/AllenNeuralDynamics/supervoxel-loss (src/loss_fns.py:500).
+@article{carion2025sam3,
+  title   = {{SAM} 3: Segment Anything with Concepts},
+  author  = {Carion, Nicolas and Gustafson, Laura and Hu, Yuan-Ting and
+             Debnath, Shoubhik and Hu, Ronghang and Suris, Didac and
+             Ryali, Chaitanya and Alwala, Kalyan Vasudev and Khedr, Haitham
+             and Huang, Andrew and Lei, Jie and Ma, Tengyu and Guo, Baishan
+             and Rädle, Roman and Dollár, Piotr and Ravi, Nikhila and
+             Zhang, Pengchuan and Feichtenhofer, Christoph},
+  journal = {arXiv preprint arXiv:2511.16719}, year = {2025},
+  doi     = {10.48550/arXiv.2511.16719}}
+
 @inproceedings{grim2025supervoxel,
   title     = {Efficient Connectivity-Preserving Instance Segmentation with
                Supervoxel-Based Loss Function},
   author    = {Grim, Anna and Chandrashekar, Jayaram and S{\"u}mb{\"u}l, Uygar},
   booktitle = {Proceedings of the Thirty-Ninth AAAI Conference on Artificial
                Intelligence (AAAI)},
-  pages     = {3167--3175}, year = {2025}}
+  volume    = {39}, number = {3},
+  pages     = {3167--3175}, year = {2025},
+  doi       = {10.1609/aaai.v39i3.32326}}
 
 % [NEEDED - verify page numbers against the NeurIPS 2019 proceedings]
 % CURRENTLY UNCITED. Kept on hand for Related Work, where the topology-loss
@@ -330,12 +355,6 @@
   year      = {2019}}
 
 % [NEEDED - optional] the warmup + cosine schedule we follow (deck slide 30)
-@inproceedings{brown2020gpt3,
-  title     = {Language Models are Few-Shot Learners},
-  author    = {Brown, Tom B. and Mann, Benjamin and Ryder, Nick and others},
-  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2020}}
-
 %========================= 4. OPTIONAL =================================
 
 % [NEEDED - only if the external validation runs] Adi: keep for now.

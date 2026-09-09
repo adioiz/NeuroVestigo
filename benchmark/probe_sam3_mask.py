@@ -158,15 +158,27 @@ def build(factories, classes, ckpt):
     expecting cached_features, so True is what we want for a standalone run.
     """
     attempts = []
+    fresh = []
     for k, f in factories.items():
         for atd in (False, True):
             for wb in (True, False):
-                attempts.append((f"{k}(apply_temporal_disambiguation={atd}, with_backbone={wb})",
-                                 lambda f=f, a=atd, w=wb: f(a, with_backbone=w)))
+                fresh.append((f"{k}(apply_temporal_disambiguation={atd}, with_backbone={wb})",
+                              lambda f=f, a=atd, w=wb: f(a, with_backbone=w)))
 
     def via_video():
-        from sam3.model_builder import build_sam3_video_predictor
-        vp = build_sam3_video_predictor()
+        # build_sam3_predictor, NOT build_sam3_video_predictor. The latter does
+        # not exist in this build -- run_sam3.py:494 records that the documented
+        # single-process entry is build_sam3_predictor, and it is the factory
+        # that produced every working SAM 3.1 benchmark row.
+        #
+        # This import error is why the earlier probe never reached here: it
+        # raised, the walk never ran, and the run fell through to build_tracker
+        # -- which takes no checkpoint argument and returns FRESH-INIT weights.
+        # Both recorded blockers (untrained weights, and a missing
+        # teacher_force_obj_scores_for_mem) are symptoms of that wrong route,
+        # not of SAM 3 refusing masks.
+        from sam3.model_builder import build_sam3_predictor
+        vp = build_sam3_predictor()
         seen = set()
         def walk(o, path, depth=0):
             if depth > 3 or id(o) in seen:
@@ -192,7 +204,14 @@ def build(factories, classes, ckpt):
             raise RuntimeError(f"no mask-accepting tracker reachable from "
                                f"{type(vp).__name__} within 3 levels")
         return t
-    attempts.append(("build_sam3_video_predictor() -> nested tracker", via_video))
+    # ORDER MATTERS. The nested-tracker route runs FIRST because it reaches the
+    # tracker inside a predictor whose released weights are already loaded. The
+    # build_tracker() variants come last: they construct a tracker with no
+    # checkpoint argument, so even a successful add_new_mask on one of those
+    # would be answering the API with an untrained model and could not produce
+    # a benchmarkable row.
+    attempts.append(("build_sam3_predictor() -> nested tracker (WEIGHTS LOADED)", via_video))
+    attempts.extend(fresh)
 
     for label, fn in attempts:
         print(f"  trying {label} ...")
@@ -292,6 +311,21 @@ def drive(tracker, frames_dir, gt):
     if state is None:
         print("  STOP at C: cannot initialise state at all. Paste this output back.")
         return False
+
+    # An earlier run stopped on
+    #   AttributeError: 'Sam3TrackerPredictor' object has no attribute
+    #                   'teacher_force_obj_scores_for_mem'
+    # That is a flag SAM 3's own tracking code reads but the object built by
+    # build_tracker() never set -- construction-path damage, not a refusal of
+    # masks. Supply the ones we have seen missing so a genuine mask refusal is
+    # not masked by an unset flag. Each is reported, so the log still records
+    # exactly how much propping up the path needed.
+    for attr, default in (("teacher_force_obj_scores_for_mem", False),
+                          ("apply_temporal_disambiguation", False),
+                          ("use_obj_ptrs_in_encoder", False)):
+        if not hasattr(tracker, attr):
+            setattr(tracker, attr, default)
+            print(f"    [patched] tracker.{attr} was missing; set to {default}")
 
     print("  add_new_mask(frame 0, add_mask_to_memory=True) ...")
     ok = False

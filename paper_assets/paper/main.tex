@@ -336,7 +336,7 @@ NeuroVestigo achieves state-of-the-art performance (cbDice $0.855$, clDice
 $0.946$, Dice $0.864$, IoU $0.763$), outperforming six competitive baselines
 across all metrics. Furthermore, it demonstrates markedly better temporal
 stability, exhibiting a minimal cbDice degradation of $0.070$ between the
-first and final quartiles, compared to $0.126$ for the strongest baseline.
+first and final quartiles, compared to $0.126$ for the most stable baseline.
 The inference model is publicly released within \texttt{neurons-labeling}, a
 napari plug-in designed for interactive curation, alongside our complete
 dataset of thirty-two annotated recordings.
@@ -546,7 +546,7 @@ violated by neural processes, which frequently branch or recurve. Omnipose
 fields relative to object boundaries rather than centroids, making it
 geometrically better suited to filamentous structures. However, it remains a
 strictly single-frame architecture incapable of longitudinal tracking.
-Within our specific modality, NeuroQuantify \cite{chen2024neuroquantify}
+Within our specific modality, NeuroQuantify \cite{dang2024neuroquantify}
 effectively segments neurites in phase-contrast microscopy, but it operates
 purely as a semantic segmenter lacking instance-level discrimination.
 % NeuriteTracker claims verified against the PMC full text (PMC4700477),
@@ -582,9 +582,10 @@ via a memory bank, allowing a single-frame prompt to condition all
 subsequent predictions---a foundational mechanism leveraged in this work.
 Domain-specific adaptations have built upon this architecture: $\mu$SAM
 \cite{archit2025microsam} fine-tunes SAM on microscopy corpora, CellSAM
-\cite{israel2025cellsam} integrates an automated detector to eliminate
-manual prompting, and SAM\,3 extends the prompting modality from geometric
-coordinates to semantic language. While these architectures bring powerful
+\cite{marks2025cellsam} integrates an automated detector to eliminate
+manual prompting, and SAM\,3 \cite{carion2025sam3} extends the prompting
+modality from geometric coordinates to semantic language. While these
+architectures bring powerful
 foundation priors learned at unprecedented scales, none are explicitly
 optimized to preserve the topological connectivity of pixel-scale
 filamentous structures. Furthermore, temporal identity is conventionally
@@ -665,7 +666,10 @@ different stages of outgrowth.
 
 \paragraph{Splits.}
 Twenty-three recordings were used for training and five for validation and
-model selection. Four further recordings --- \texttt{A71\_C1}, \texttt{A81\_C1},
+model selection; \texttt{B28\_C4\_200k} was annotated after the reported
+training run had finished, so the released model was fitted on twenty-two of
+the twenty-three (Section~\ref{sec:res:ablation}). Four further recordings
+--- \texttt{A71\_C1}, \texttt{A81\_C1},
 \texttt{A12\_C3\_100k} and \texttt{A12\_C1\_100k\_2} --- were annotated only
 after model development was complete and used exclusively as a held-out test
 set; the model's weights were never exposed to them. They were selected
@@ -725,16 +729,20 @@ $[0,1]$ and resampled to the fixed $1024\times1024$ resolution SAM\,2
 expects, with bilinear interpolation for frames and nearest-neighbor
 interpolation for masks, preserving hard label boundaries.
 
-As recordings span 192--615 pixels, this resampling is an upsampling by a
-factor of 2--5. The encoder emits features at a $16\times$ stride, so a
-structure must exceed roughly sixteen input pixels to be represented by more
-than a single feature vector; a neurite one to two pixels wide at
-acquisition spans four to ten after upsampling and is thereby resolved. The
-same consideration governs the input scale chosen for each competing method
-(Appendix~\ref{sec:supp:protocol}).
+As recordings span 148--615 pixels in width and 146--498 in height, this
+resampling is an upsampling by a factor of 1.7--7.0 per axis. The Hiera
+encoder emits its coarsest features at a $16\times$ stride, but the
+mask decoder also receives the stride-$4$ and stride-$8$ feature maps through
+skip connections, and it is these that carry thin structure: a neurite one to
+two pixels wide at acquisition spans four to ten pixels after upsampling, so
+it occupies more than one position on the stride-$4$ and stride-$8$ grids even
+though it falls below one on the stride-$16$ grid. Upsampling is what places it
+there; at native resolution the same neurite would fall below one position on
+every grid. The same consideration governs the input scale chosen for each
+competing method (Appendix~\ref{sec:supp:protocol}).
 
 Upsampling introduces no new information and carries two costs. Computation
-and memory scale with the resampled area, 3--28 times the native frame. And
+and memory scale with the resampled area, 5--36 times the native frame. And
 because non-square recordings are resampled to a square input rather than
 padded, their aspect ratio is altered; we accept this in preference to
 padding, which would consume encoder capacity on constant borders, and apply
@@ -1402,8 +1410,9 @@ Frame 0 contains the initial annotations used to prompt both NeuroVestigo and th
 \subsection{Comparison with existing methods}
 \label{sec:res:benchmark}
 
-Table~\ref{tab:main} compares NeuroVestigo against six methods,
-spanning four distinct algorithmic families, on the four held-out recordings.
+Table~\ref{tab:main} compares NeuroVestigo against six methods, spanning four
+distinct algorithmic families, on the four held-out recordings; SAM\,3.1
+appears twice, once per prompting mode, giving seven baseline rows.
 Notably, our proposed approach outperforms all methods across every metric.
 The evaluated methods differ significantly in both their per-frame input
 requirements and output representations. Both NeuroVestigo and the baseline
@@ -1412,9 +1421,9 @@ frame~0, which is then propagated across the sequence to maintain consistent
 object identity temporally. In contrast, $\mu$SAM requires a ground-truth
 bounding box prompt on every frame --- representing the highest degree of
 per-frame supervision among the compared methods --- yet still yields
-inferior performance across all metrics. Finally, the three fully automatic
-methods require no prompting but process each frame independently, segmenting
-all objects in the field of view without establishing temporal
+inferior performance across all metrics. Finally, the four fully automatic
+configurations require no prompting but process each frame independently,
+segmenting all objects in the field of view without establishing temporal
 correspondence. Consequently, isolating a single target and preserving its
 identity throughout the recording for these methods necessitates an external
 matching heuristic, as detailed below.
@@ -1429,9 +1438,11 @@ substantial margin. Furthermore, these results expose the limitations of
 area-based evaluation: $\mu$SAM and Cellpose-SAM sit within $0.012$ IoU of
 one another ($0.575$ vs. $0.563$) yet differ by $0.067$ in structural
 connectivity ($0.792$ vs. $0.725$ cbDice). SAM\,3.1 is reported in
-both of the modes its video interface accepts; it cannot be given a mask
-prompt, and its concept mode is not target-aware, so its predictions are
-reduced to the target exactly as for the other automatic methods.}
+the two modes we drove through its video-session interface, which takes text,
+points and boxes but no mask; its tracking component additionally exposes a
+mask entry point that we did not benchmark (Section~\ref{sec:res:benchmark}). Its
+concept mode is not target-aware, so its predictions are reduced to the target
+exactly as for the other automatic methods.}
 \label{tab:main}
 \small
 \begin{tabular}{lcccc l}
@@ -1468,9 +1479,15 @@ reaches just $0.279$. The latter severely fragments the target into a median
 of eighteen distinct instances per frame, necessitating extensive reassembly
 by the external matching heuristic.
 
-SAM\,3.1 lacks the direct mask-based initialization utilized by our
-architecture and SAM\,2; its temporal interface is strictly restricted
-to text, point, and bounding box prompts. Even when provided with dense
+SAM\,3.1 \cite{carion2025sam3} was not initialized the way our architecture
+and SAM\,2 are. We drove it through its video-session interface
+(\texttt{start\_session}/\texttt{add\_prompt}), which accepts text, points and
+bounding boxes but no mask, so the frame-0 mask could not be supplied on that
+path. Its tracking predictor does expose a mask entry point
+(\texttt{add\_new\_mask}), and a mask-prompted SAM\,3.1 would be the closest
+possible match to our supervision budget; we report the prompt modes we were
+able to run, and note the omission as a limitation rather than a property of
+the model. Even when provided with dense
 supervision of ten ground-truth points per frame, SAM\,3.1 achieves an
 IoU of just $0.471$, which further plummets to $0.200$ in its native
 text-based prompt mode. Consequently, an architecture an order of
@@ -1556,15 +1573,15 @@ baseline methods (Table~\ref{tab:drift}, Figure~\ref{fig:temporal}). This
 stability is critical for downstream biological analysis. Because phenomena
 such as neurite elongation and retraction are quantified by computing the
 differences between consecutive masks, algorithmic drift risks confounding
-true morphological evolution with segmentation artefacts.
+true morphological evolution with segmentation artifacts.
 
 \begin{table}[!htb]
 \centering
 \caption{\textbf{Temporal consistency across quartiles.} Mean cbDice is
 evaluated across temporal quartiles ($Q_1$--$Q_4$). All methods degrade
 (`Decay' $= Q_4 - Q_1$), but our single-prompt model is $1.8\times$ more
-stable than the best baseline. Strikingly, $\mu$SAM degrades $2.8\times$
-faster and SAM\,3.1 $6.1\times$ faster despite exhaustive per-frame
+stable than the most stable baseline. $\mu$SAM degrades $2.7\times$
+faster and SAM\,3.1 $6.0\times$ faster despite exhaustive per-frame
 supervision, demonstrating that frame-wise prompting does not confer
 inherent temporal consistency.}
 \label{tab:drift}
@@ -1574,12 +1591,12 @@ inherent temporal consistency.}
 Method & Q1 & Q2 & Q3 & Q4 & Decay \\
 \midrule
 \textbf{NeuroVestigo}            & \textbf{0.878} & \textbf{0.890} & \textbf{0.846} & \textbf{0.807} & $\mathbf{-0.070}$ \\
-Cellpose-SAM             & 0.764 & 0.785 & 0.712 & 0.637 & $-0.126$ \\
+Cellpose-SAM             & 0.763 & 0.785 & 0.712 & 0.637 & $-0.126$ \\
 Omnipose                 & 0.609 & 0.617 & 0.556 & 0.458 & $-0.150$ \\
 $\mu$SAM (box-prompt)    & 0.860 & 0.859 & 0.780 & 0.669 & $-0.191$ \\
-SAM\,2 (zero-shot)       & 0.846 & 0.806 & 0.730 & 0.649 & $-0.197$ \\
+SAM\,2 (zero-shot)       & 0.846 & 0.805 & 0.730 & 0.649 & $-0.197$ \\
 NeuroQuantify            & 0.694 & 0.710 & 0.568 & 0.436 & $-0.258$ \\
-SAM\,3.1 (point-prompt)  & 0.778 & 0.731 & 0.539 & 0.360 & $-0.418$ \\
+SAM\,3.1 (point-prompt)  & 0.777 & 0.730 & 0.539 & 0.360 & $-0.417$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1637,7 +1654,7 @@ earlier, simpler frames.
 \subsection{Ablations}
 \label{sec:res:ablation}
 
-We conducted an ablation study to isolate the impact of three key components.
+We conducted an ablation study to isolate the impact of four components.
 Each configuration was trained following the schedule detailed in
 Section~\ref{sec:met:model} and evaluated using the established protocol.
 
@@ -1699,14 +1716,16 @@ remaining virtually blind to the critical branch split ($0.0005$ and
 $0.0057$). Attempting to increase the supervoxel coefficient to $2.0$
 degraded validation IoU by $0.017$ while the supervoxel loss itself
 plateaued; because smaller increments fell within the margin of
-stochastic variance, we retain the $0.3$ weighting. Similarly, scaling
-the cbDice coefficient in Eq.~\ref{eq:loss} from $0.3$ to
-$1.0$---increasing its contribution from $11\,\%$ to $30\,\%$ of the
-total loss---produced no measurable impact. Across the nine combined
-validation and test recordings, all paired metric differences remained
-strictly bounded by $\pm0.005$, yielding no statistical significance.
-Because the loss landscape is insensitive to this hyperparameter within
-the operational range, we adopt the smaller weight.
+stochastic variance, we retain the $0.3$ weighting. Similarly, raising the
+cbDice coefficient in Eq.~\ref{eq:loss} from $0.3$ to
+$1.0$---a little over threefold in its share of the summed weights, from
+$5.4\,\%$ to $15.9\,\%$---produced no measurable effect. On the five
+validation recordings the paired mean difference is at most $0.0035$ across
+IoU, Dice, cbDice and clDice, and its direction is inconsistent: three
+recordings improve and two degrade on every metric. The test split was not
+consulted for this decision. Because the loss landscape is insensitive to
+this hyperparameter within the operational range, we retain the smaller
+weight.
 
 \begin{figure}[!htb]
   \centering
@@ -1782,7 +1801,7 @@ penalizes structural fractures (such as broken branches) that the focal and
 Dice losses barely register. Interestingly, varying the cbDice loss weight
 yielded negligible performance shifts. We hypothesize this inertness occurs
 because the differentiable skeletonization is computed on a downsampled
-grid, diluting the topological gradient with resampling artefacts.
+grid, diluting the topological gradient with resampling artifacts.
 Nonetheless, evaluations using the strictly unoptimized clDice metric
 confirm our topological advantages reflect genuine structural preservation
 rather than loss-level overfitting. We therefore recommend that work on
@@ -1978,9 +1997,10 @@ Cellpose-SAM       & automatic, instance          & none                & $\time
 \end{figure}
 
 %---------------------------------------------------------------------
-% Remove \nocite{*} once the text cites properly - with unsrtnat the
+% \nocite{*} removed: every entry in refs.bib is now cited in the text.
+% Do not reinstate it -- it printed uncited entries in the bibliography.
+% (kept for context) with unsrtnat the
 % reference numbers then follow the order of first citation automatically.
-\nocite{*}
 \bibliographystyle{unsrtnat}
 \bibliography{refs}
 
