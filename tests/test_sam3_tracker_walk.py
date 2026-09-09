@@ -70,3 +70,36 @@ def old_walk(o, depth=0, seen=None):
 vp2, trk2 = build_predictor_tree()
 assert old_walk(vp2) is None, "old walk should have failed here"
 print("PASS: old `not callable(v)` guard finds nothing on the same tree")
+
+
+# ---------------------------------------------------------------------------
+# The three Stage A classes disagree about init_state. Picking the first match
+# would often hand stage C an object that cannot be given frames at all.
+# ---------------------------------------------------------------------------
+class MultiplexDemo(_Module):                      # no video_path
+    def add_new_masks(self, **k): return "seeded"
+    def init_state(self, video_height, video_width, num_frames,
+                   cached_features=None): pass
+class RealTracker(_Module):                        # has video_path
+    def add_new_mask(self, **k): return "seeded"
+    def init_state(self, video_height=None, video_width=None, num_frames=None,
+                   video_path=None): pass
+
+vp3 = Predictor(); mid3 = Middle()
+vp3.add_module("model", mid3)
+mid3.add_module("a_multiplex", MultiplexDemo())    # found FIRST alphabetically
+mid3.add_module("z_tracker", RealTracker())
+_TREE["vp"] = vp3
+got3 = P.build({"sam3.model_builder.build_tracker": mb.build_tracker}, {}, None)
+assert isinstance(got3, RealTracker), (
+    f"picked {type(got3).__name__}; must prefer the one taking video_path")
+print("PASS: prefers the feedable tracker over an earlier unfeedable match")
+
+# Only an unfeedable candidate exists -> still returned, with a warning, so the
+# run is not aborted on a guess about what stage C can do.
+vp4 = Predictor(); mid4 = Middle()
+vp4.add_module("model", mid4); mid4.add_module("only", MultiplexDemo())
+_TREE["vp"] = vp4
+got4 = P.build({"sam3.model_builder.build_tracker": mb.build_tracker}, {}, None)
+assert isinstance(got4, MultiplexDemo), "should fall back, not return None"
+print("PASS: falls back to an unfeedable candidate rather than returning None")

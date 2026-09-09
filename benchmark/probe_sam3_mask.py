@@ -214,9 +214,37 @@ def build(factories, classes, ckpt):
         # over a 3.5GB checkpoint take minutes instead of milliseconds.
         SKIP = (str, bytes, bytearray, int, float, bool, complex, torch.Tensor)
 
+        def takes_video_path(v):
+            """Can this object be handed a directory of frames?
+
+            Stage A showed the three exact-name classes disagree, and two of
+            them cannot be fed frames at all:
+
+              Sam3TrackerPredictor        (..., video_path=None, ...)      OK
+              Sam3VideoTrackingMultiplexDemo
+                  (video_height, video_width, num_frames, cached_features=None)
+                                          -- no video_path; wants precomputed
+                                             backbone features
+              VideoTrackingMultiplexDemo
+                  (video_path, offload_video_to_cpu, offload_state_to_cpu)
+                                          -- video_path yes, but the two
+                                             offload flags have no defaults
+
+            Returning the first match found would often hand stage C an object
+            whose state can hold no images, and the run would stop INCONCLUSIVE
+            after already spending the GPU slot. So collect every match and
+            prefer one that can actually receive the video.
+            """
+            try:
+                return "video_path" in inspect.signature(v.init_state).parameters
+            except (AttributeError, ValueError, TypeError):
+                return False
+
+        found, matched = [], set()
+
         def walk(o, path, depth=0):
             if depth > 6 or id(o) in seen:
-                return None
+                return
             seen.add(id(o))
             for n, v in children(o):
                 if v is None or isinstance(v, SKIP):
@@ -225,18 +253,31 @@ def build(factories, classes, ckpt):
                     continue
                 here = f"{path}{n}"
                 if accepts_mask(v):
-                    print(f"    (found mask-accepting tracker at .{here} "
-                          f"-> {type(v).__name__})")
-                    return v
-                r = walk(v, here + ".", depth + 1)
-                if r is not None:
-                    return r
-            return None
+                    # One object is reachable by several names -- nn.Module
+                    # exposes submodules through named_children() AND through
+                    # __dict__["_modules"] -- so dedupe by identity or the log
+                    # lists every candidate two or three times.
+                    if id(v) not in matched:
+                        matched.add(id(v))
+                        found.append((here, v))
+                    continue          # do not descend into a match
+                walk(v, here + ".", depth + 1)
 
         if accepts_mask(vp):
             print(f"    (predictor itself accepts masks -> {type(vp).__name__})")
             return vp
-        t = walk(vp, "")
+        walk(vp, "")
+        for here, v in found:
+            print(f"    (candidate .{here} -> {type(v).__name__}  "
+                  f"init_state{sig(getattr(v, 'init_state', None))}  "
+                  f"video_path={'yes' if takes_video_path(v) else 'NO'})")
+        feedable = [v for _, v in found if takes_video_path(v)]
+        t = (feedable or [v for _, v in found] or [None])[0]
+        if feedable:
+            print(f"    -> using {type(t).__name__} (takes video_path)")
+        elif t is not None:
+            print(f"    -> using {type(t).__name__}; NOTE none of the "
+                  f"candidates take video_path, so stage C may load no images")
         if t is None:
             # Name what WAS reachable, so the next failure is diagnosable from
             # the log instead of needing another 20-minute GPU slot.
@@ -328,11 +369,17 @@ def drive(tracker, frames_dir, gt):
         print(f"    could not mirror frames: {e}"); jpg_dir = None
 
     state, loaded_video = None, False
-    cands = ([{"video_path": jpg_dir}] if jpg_dir else []) + [
-        {"video_path": frames_dir},
-        {"video_path": jpg_dir, "video_height": H, "video_width": W, "num_frames": T}
-        if jpg_dir else {"video_path": frames_dir},
-    ]
+    cands = []
+    for d in [x for x in (jpg_dir, frames_dir) if x]:
+        cands.append({"video_path": d})
+        # VideoTrackingMultiplexDemo.init_state(video_path, offload_video_to_cpu,
+        # offload_state_to_cpu, ...) -- the two offload flags have NO defaults,
+        # so the bare video_path call above is a TypeError on that class and it
+        # could never have been initialised as this loop previously called it.
+        cands.append({"video_path": d, "offload_video_to_cpu": False,
+                      "offload_state_to_cpu": False})
+        cands.append({"video_path": d, "video_height": H, "video_width": W,
+                      "num_frames": T})
     for kw in cands:
         try:
             state = tracker.init_state(**kw)
