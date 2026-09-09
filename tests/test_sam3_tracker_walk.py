@@ -118,13 +118,19 @@ class SessionPredictor(_Module):
     def handle_request(self, req):
         assert req["type"] == "start_session"
         assert req["resource_path"] == "/frames", req
-        self._sessions["s1"] = {"images": ["frame"] * 12, "num_frames": 12}
+        # The real shape, from the log: start_session stores a session
+        # WRAPPER whose ["state"] is the inference state holding the images.
+        self._sessions["s1"] = {
+            "session_id": "s1", "start_time": 0, "last_use_time": 0,
+            "state": {"images": ["frame"] * 12, "num_frames": 12},
+        }
         return {"session_id": "s1"}
 
 st, sid = P.session_state(SessionPredictor(), "/frames")
 assert sid == "s1", sid
 assert isinstance(st, dict) and "images" in st, st
-print("PASS: session_state finds a state that holds images")
+assert "session_id" not in st, "returned the session wrapper, not the state"
+print("PASS: session_state unwraps the wrapper to the state holding images")
 
 # A predictor that hands back a session id but hides the state must not be
 # mistaken for success -- returning None keeps stage D marked INCONCLUSIVE.

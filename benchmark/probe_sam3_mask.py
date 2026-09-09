@@ -424,11 +424,16 @@ def session_state(vp, frames_dir):
         print("    could not locate the session's inference state on the predictor")
         return None, sid
     print(f"    found session state at .{hit['where']} -> {type(st).__name__}")
-    # Some builds wrap the state; unwrap one level if the images live inside.
-    for attr in ("inference_state", "state"):
-        inner = getattr(st, attr, None)
-        if inner is not None and not isinstance(st, dict):
-            print(f"    unwrapping .{attr} -> {type(inner).__name__}")
+    # start_session returns a SESSION wrapper, not the inference state:
+    #     {'last_use_time', 'session_id', 'start_time', 'state'}
+    # sam3_base_predictor.py:166 reads `inference_state = session["state"]`, so
+    # the state is one dict access down. The previous guard only unwrapped
+    # non-dicts, so it skipped exactly this case and handed the wrapper to
+    # add_new_masks -- which is what KeyError: 'obj_id_to_idx' was.
+    for attr in ("state", "inference_state"):
+        inner = (st.get(attr) if isinstance(st, dict) else getattr(st, attr, None))
+        if inner is not None and inner is not st:
+            print(f"    unwrapping [{attr!r}] -> {type(inner).__name__}")
             st = inner
             break
     if isinstance(st, dict):
