@@ -178,31 +178,72 @@ def build(factories, classes, ckpt):
         # teacher_force_obj_scores_for_mem) are symptoms of that wrong route,
         # not of SAM 3 refusing masks.
         from sam3.model_builder import build_sam3_predictor
+        import inspect
+        import torch
         vp = build_sam3_predictor()
         seen = set()
+
+        def accepts_mask(v):
+            return any(callable(getattr(v, n, None))
+                       for n in ("add_new_mask", "add_new_masks"))
+
+        def children(o):
+            # nn.Module is the tree that matters, and every nn.Module is
+            # CALLABLE because it defines __call__. The previous walk guarded
+            # recursion with `not callable(v)`, so it skipped the predictor's
+            # model and every submodule under it -- the whole PyTorch tree was
+            # invisible from the first step. depth was never the real limit;
+            # that is why a predictor with its weights correctly loaded still
+            # reported "no mask-accepting tracker reachable".
+            if isinstance(o, torch.nn.Module):
+                for n, c in o.named_children():
+                    yield n, c
+            d = getattr(o, "__dict__", None)
+            if isinstance(d, dict):
+                for n, c in list(d.items()):
+                    if not n.startswith("__"):
+                        yield n, c
+            if isinstance(o, (list, tuple)):
+                for k, c in enumerate(o):
+                    yield f"[{k}]", c
+            elif isinstance(o, dict):
+                for k, c in list(o.items()):
+                    yield f"[{k!r}]", c
+
+        # Leaves: cheap to skip, and traversing tensors is what makes a walk
+        # over a 3.5GB checkpoint take minutes instead of milliseconds.
+        SKIP = (str, bytes, bytearray, int, float, bool, complex, torch.Tensor)
+
         def walk(o, path, depth=0):
-            if depth > 3 or id(o) in seen:
+            if depth > 6 or id(o) in seen:
                 return None
             seen.add(id(o))
-            for a in dir(o):
-                if a.startswith("__"):
+            for n, v in children(o):
+                if v is None or isinstance(v, SKIP):
                     continue
-                try:
-                    v = getattr(o, a)
-                except BaseException:
+                if inspect.isroutine(v) or inspect.isclass(v):
                     continue
-                if hasattr(v, "add_new_mask") or hasattr(v, "add_new_masks"):
-                    print(f"    (found mask-accepting tracker at .{path}{a})")
+                here = f"{path}{n}"
+                if accepts_mask(v):
+                    print(f"    (found mask-accepting tracker at .{here} "
+                          f"-> {type(v).__name__})")
                     return v
-                if hasattr(v, "__dict__") and not callable(v):
-                    r = walk(v, f"{path}{a}.", depth + 1)
-                    if r is not None:
-                        return r
+                r = walk(v, here + ".", depth + 1)
+                if r is not None:
+                    return r
             return None
+
+        if accepts_mask(vp):
+            print(f"    (predictor itself accepts masks -> {type(vp).__name__})")
+            return vp
         t = walk(vp, "")
         if t is None:
+            # Name what WAS reachable, so the next failure is diagnosable from
+            # the log instead of needing another 20-minute GPU slot.
+            tops = sorted({n for n, _ in children(vp)})[:40]
             raise RuntimeError(f"no mask-accepting tracker reachable from "
-                               f"{type(vp).__name__} within 3 levels")
+                               f"{type(vp).__name__} within 6 levels; "
+                               f"top-level attrs seen: {tops}")
         return t
     # ORDER MATTERS. The nested-tracker route runs FIRST because it reaches the
     # tracker inside a predictor whose released weights are already loaded. The
