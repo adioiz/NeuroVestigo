@@ -1,64 +1,51 @@
 #!/usr/bin/env python3
 """
-run_sam3_mask.py -- drive SAM 3.1 with a frame-0 MASK prompt.
+run_sam3_mask.py -- SAM 3.1 seeded with a frame-0 MASK prompt.
 
-WHY THIS EXISTS
----------------
-Every other SAM 3.1 row we report goes through the session interface, and
-`add_prompt` there takes text, points and boxes but no mask
-(sam3/model/sam3_base_predictor.py:149-163). So SAM 3.1 was benchmarked with a
-weaker seed than our model and zero-shot SAM 2, which both get the frame-0
-mask.
+Follows Meta's own recipe for SAM 2-style video tasks, from
+`sam3/examples/sam3_for_sam2_video_task_example.ipynb` (cell 11), which states:
 
-Masks ARE an accepted SAM 3 visual prompt -- `Sam3TrackerPredictor.add_new_mask`
-and `Sam3VideoTrackingMultiplexDemo.add_new_masks` are real entry points. They
-are simply not reachable from the session API, because `start_session` builds a
-multiplex state and those methods want a demo-path state; feeding one to the
-other fails with KeyError: 'obj_id_to_idx'.
+    "SAM 3 also supports directly using a mask prompt as input via the
+     `add_new_mask` method in the `Sam3TrackerPredictor` class."
 
-This script closes that gap: it builds the demo-path state, which is what the
-mask entry points expect, on a tracker carrying the RELEASED weights.
+    sam3_model = build_sam3_video_model()
+    predictor  = sam3_model.tracker
+    predictor.backbone = sam3_model.detector.backbone
+    inference_state = predictor.init_state(video_path=video_path)
 
-THREE ROUTES, tried in order, first success wins. Each reports why it failed,
-so one job settles which is viable rather than one job per guess.
+Three points that cost earlier attempts, all settled by that notebook:
 
-  A  demo init_state -- the inner tracker from build_sam3_predictor() is a
-     Sam3VideoTrackingMultiplexDemo, and its base VideoTrackingMultiplexDemo
-     has init_state(video_path, ...) which loads frames itself. Call that base
-     init_state on the weights-loaded instance.
+  * `build_sam3_video_model`, not `build_sam3_predictor`. The multiplex
+    predictor's tracker is a Sam3VideoTrackingMultiplexDemo whose init_state
+    takes cached_features and no video_path.
+  * The tracker is built with `backbone=None` (model_builder.py:459) because
+    the vision encoder is SHARED with the detector; the caller attaches it.
+    That is the AttributeError: 'NoneType' has no attribute 'forward_image'.
+  * `propagate_in_video` yields FIVE values --
+    (frame_idx, obj_ids, low_res_masks, video_res_masks, obj_scores) --
+    and takes propagate_preflight=True rather than a separate preflight call.
 
-  B  build_tracker + transplanted weights -- build_tracker(..., with_backbone=
-     True) returns a Sam3TrackerPredictor, which has both add_new_mask AND an
-     init_state taking video_path, but no checkpoint argument (its weights are
-     a fresh init, std 0.0179-0.0238). Copy the released weights into it from
-     the predictor and verify the copy actually landed.
-
-  C  session state -- kept last and expected to fail; recorded so the log shows
-     it was tried on the same run.
-
-WEIGHTS ARE CHECKED, NOT ASSUMED. A fresh init would still answer "does the API
-accept a mask" but any IoU from it is meaningless, so the weight signature is
-printed for whichever route wins and the run refuses to save predictions from
-an untrained tracker.
+WHY IT MATTERS: every other SAM 3.1 row we report is seeded through the session
+API, whose add_prompt takes text, points and boxes but no mask
+(sam3_base_predictor.py:149-163). Our model and zero-shot SAM 2 both get the
+frame-0 mask, so SAM 3.1 has been scored on a weaker seed and 0.4712 is an
+underestimate.
 
     python benchmark/run_sam3_mask.py --videos A81_C1
-    python benchmark/run_sam3_mask.py --videos <test videos> --out-dir \
-        benchmark/predictions/sam3_maskfirst
+    python benchmark/run_sam3_mask.py --videos <test set> \
+        --out-dir benchmark/predictions/sam3_maskfirst
 """
 from __future__ import annotations
 
 import argparse
-import inspect
 import os
 import sys
-import textwrap
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from run_sam3 import (DATA, _binarize, _resize_stack, load_frames,  # noqa: E402
-                      load_gt)
-from probe_sam3_mask import disable_cudnn, jpeg_mirror  # noqa: E402
+from run_sam3 import DATA, load_frames, load_gt          # noqa: E402
+from probe_sam3_mask import disable_cudnn, jpeg_mirror   # noqa: E402
 
 
 def iou(a, b):
@@ -70,408 +57,34 @@ def banner(t):
     print("\n" + "=" * 70 + f"\n{t}\n" + "=" * 70, flush=True)
 
 
-# --------------------------------------------------------------------------
-def find_inner(vp):
-    """The object that actually owns add_new_mask(s), and its owning wrapper.
-
-    build_sam3_predictor() returns Sam3MultiplexVideoPredictor; .model.tracker
-    is a Sam3MultiplexPredictorWrapper that proxies attributes to an inner
-    Sam3VideoTrackingMultiplexDemo. We want the inner one: the wrapper's
-    __getattr__ hides which class we are really calling, and the base-class
-    init_state trick in route A needs the real instance.
-    """
+def build_predictor():
+    """Cell 11 of the SAM 2-task notebook, verbatim."""
     import torch
+    from sam3.model_builder import build_sam3_video_model
 
-    def accepts(v):
-        return any(callable(getattr(v, n, None))
-                   for n in ("add_new_mask", "add_new_masks"))
+    sam3_model = build_sam3_video_model()
+    predictor = sam3_model.tracker
+    # build_tracker(with_backbone=False) leaves backbone=None on purpose: the
+    # vision encoder is shared with the detector and attached by the caller.
+    predictor.backbone = sam3_model.detector.backbone
+    print(f"  predictor: {type(predictor).__name__}")
+    print(f"  backbone : {type(predictor.backbone).__name__}")
 
-    seen, out = set(), []
-
-    def walk(o, path, d=0):
-        if d > 6 or id(o) in seen:
-            return
-        seen.add(id(o))
-        kids = []
-        if isinstance(o, torch.nn.Module):
-            kids += list(o.named_children())
-        dd = getattr(o, "__dict__", None)
-        if isinstance(dd, dict):
-            kids += [(n, v) for n, v in dd.items() if not n.startswith("__")]
-        for n, v in kids:
-            if v is None or isinstance(v, (str, bytes, int, float, bool,
-                                           torch.Tensor)):
-                continue
-            if inspect.isroutine(v) or inspect.isclass(v):
-                continue
-            if accepts(v):
-                out.append((f"{path}{n}", v))
-                # keep descending: the wrapper proxies to the real instance,
-                # and the real instance is the one we want.
-            walk(v, f"{path}{n}.", d + 1)
-
-    walk(vp, "")
-    for p, v in out:
-        print(f"  mask-capable: .{p} -> {type(v).__name__}")
-    if not out:
-        return None
-    # Prefer a concrete demo/tracker class over a proxy wrapper.
-    for p, v in out:
-        if "Wrapper" not in type(v).__name__:
-            print(f"  -> using .{p} ({type(v).__name__})")
-            return v
-    p, v = out[0]
-    inner = getattr(v, "tracker", None) or getattr(v, "model", None)
-    if inner is not None and accepts(inner):
-        print(f"  -> unwrapping the proxy to {type(inner).__name__}")
-        return inner
-    print(f"  -> using .{p} ({type(v).__name__})")
-    return v
-
-
-def weight_signature(m, label):
-    """Trained or fresh? A fresh init is tightly clustered around its gain."""
-    import torch
-    try:
-        ps = [p for p in m.parameters() if p.dim() > 1][:40]
-        if not ps:
-            return None
-        stds = [float(p.detach().float().std()) for p in ps]
-        lo, hi, med = min(stds), max(stds), float(np.median(stds))
-        trained = hi > 0.05          # fresh init measured 0.0179-0.0238
-        print(f"  {label}: std median {med:.4f}, range {lo:.4f}-{hi:.4f}"
-              f"  -> {'TRAINED' if trained else 'looks FRESH-INIT'}")
-        return trained
-    except BaseException as e:
-        print(f"  {label}: could not inspect ({type(e).__name__})")
-        return None
-
-
-def dump_source(fn, name, lines=40):
-    """Print the entry point's own code. If a route fails, the reason is here
-    rather than one GPU job away."""
-    try:
-        src = inspect.getsource(fn)
-    except BaseException:
-        return
-    head = "".join(src.splitlines(True)[:lines])
-    print(f"\n--- {name} (first {lines} lines) ---")
-    print(textwrap.indent(head.rstrip(), "  "))
-    print("--- end ---\n")
-
-
-def repair_backbone(vp, inner):
-    """Give the demo path the image encoder the multiplex build left unset.
-
-        AttributeError: 'NoneType' object has no attribute 'forward_image'
-
-    In the multiplex model the vision backbone is shared and owned above the
-    tracker -- which is why Sam3VideoTrackingMultiplexDemo.init_state takes
-    cached_features rather than raw frames. The demo path instead expects the
-    tracker to own an encoder and call forward_image itself, so that slot is
-    None on this instance.
-
-    Rather than guess the attribute name, read it out of the class's own source
-    (`self.<name>.forward_image`), confirm it really is None, then attach the
-    module on the predictor that actually provides forward_image. Both the name
-    and where the replacement came from are printed: this is a structural
-    change to the object, and it must be visible in the log next to any number
-    it produces.
-    """
-    import re
-    import torch
-
-    names = []
-    for klass in type(inner).__mro__:
-        try:
-            src = inspect.getsource(klass)
-        except BaseException:
-            continue
-        names += re.findall(r"self\.([A-Za-z_][A-Za-z_0-9]*)\.forward_image", src)
-    names = list(dict.fromkeys(names))
-    print(f"  attributes the class calls forward_image on: {names or 'none found'}")
-
-    empty = [n for n in names if getattr(inner, n, "absent") is None]
-    if not empty:
-        empty = [n for n, v in getattr(inner, "_modules", {}).items() if v is None]
-        if empty:
-            print(f"  unset submodule slots: {empty}")
-    if not empty:
-        print("  nothing obvious is None; not repairing")
-        return False
-
-    # Find something that really can encode an image. Search wider than
-    # named_children and deeper than before: the previous pass reported "no
-    # module provides forward_image" while detector.backbone plainly exists,
-    # so the multiplex backbone exposes a different method name.
-    seen, listed, providers, backbones = set(), set(), [], []
-
-    def walk(o, path, d=0):
-        if d > 8 or id(o) in seen:
-            return
-        seen.add(id(o))
-        kids = []
-        if isinstance(o, torch.nn.Module):
-            kids += list(o.named_children())
-        dd = getattr(o, "__dict__", None)
-        if isinstance(dd, dict):
-            kids += [(n, v) for n, v in dd.items() if not n.startswith("__")]
-        for n, v in kids:
-            if v is None or isinstance(v, (str, bytes, int, float, bool,
-                                           torch.Tensor)):
-                continue
-            if inspect.isroutine(v) or inspect.isclass(v):
-                continue
-            here = f"{path}{n}"
-            if id(v) not in listed:          # named_children and __dict__ both
-                listed.add(id(v))            # yield it; list it once
-                if callable(getattr(v, "forward_image", None)):
-                    providers.append((here, v))
-                elif isinstance(v, torch.nn.Module) and (
-                        n.endswith("backbone")
-                        or "backbone" in type(v).__name__.lower()
-                        or "imageencoder" in type(v).__name__.lower()):
-                    backbones.append((here, v))
-            walk(v, here + ".", d + 1)
-
-    walk(vp, "")
-    for w, v in providers:
-        print(f"  forward_image provider: .{w} -> {type(v).__name__}")
-    for w, v in backbones[:8]:
-        meths = [m for m in dir(v) if m.startswith("forward")]
-        print(f"  backbone-like: .{w} -> {type(v).__name__}  {meths}")
-
-    if providers:
-        where, mod = providers[0]
-    elif backbones:
-        # Nothing exposes forward_image. SAM 3's multiplex backbone is the same
-        # family as SAM 2's image encoder but does not carry that method name,
-        # so adapt it -- and say so loudly, because an adapter that returns the
-        # wrong structure would produce numbers rather than an error.
-        where, base = backbones[0]
-
-        class _ForwardImageAdapter(torch.nn.Module):
-            def __init__(self, m):
-                super().__init__()
-                self.m = m
-
-            def forward_image(self, img_batch):
-                fn = (getattr(self.m, "forward_image", None)
-                      or getattr(self.m, "forward_features", None)
-                      or self.m.__call__)
-                return fn(img_batch)
-
-            def forward(self, *a, **k):
-                return self.m(*a, **k)
-
-        mod = _ForwardImageAdapter(base)
-        where += "  [WRAPPED in a forward_image adapter]"
-        print(f"  NO module exposes forward_image; adapting .{backbones[0][0]} "
-              f"({type(base).__name__}). If its output structure differs from "
-              f"what the tracker expects, the next error will say so.")
-        # Show how the result is consumed, so a structure mismatch is
-        # diagnosable from this same log.
-        for klass in type(inner).__mro__:
-            try:
-                src = inspect.getsource(klass)
-            except BaseException:
-                continue
-            if ".forward_image" in src:
-                for i, line in enumerate(src.splitlines()):
-                    if ".forward_image" in line:
-                        lo = max(0, i - 4)
-                        print("  --- how the tracker uses it ---")
-                        print(textwrap.indent(
-                            "\n".join(src.splitlines()[lo:i + 12]), "    "))
-                        print("  --- end ---")
-                        break
-                break
-    else:
-        print("  nothing backbone-like found on the predictor either")
-        return False
-    for n in empty:
-        try:
-            setattr(inner, n, mod)
-            print(f"  attached .{where} ({type(mod).__name__}) as inner.{n}")
-        except BaseException as e:
-            print(f"  could not attach to {n}: {type(e).__name__}: {e}")
-            return False
-    return True
-
-
-# ------------------------------------------------------------------ routes
-def _shim_loader(base):
-    """init_state forwards use_torchcodec/use_cv2 to a load_video_frames that
-    does not accept them -- a version skew inside sam3, not our call:
-
-        TypeError: load_video_frames() got an unexpected keyword argument
-                   'use_torchcodec'
-
-    Filter them out, exactly as run_sam3.py:_filter_init_state_kwargs already
-    does for start_session. Dropping a kwarg that carries real information
-    (the path) is an error, not a silent no-op.
-    """
-    mod = sys.modules[base.__module__]
-    orig = getattr(mod, "load_video_frames", None)
-    if orig is None:
-        print("  (no load_video_frames in that module to shim)")
-        return
-    try:
-        params = inspect.signature(orig).parameters
-    except (TypeError, ValueError):
-        return
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
-        return                                   # takes **kwargs already
-    valid = set(params)
-
-    def shim(*a, **k):
-        dropped = sorted(set(k) - valid)
-        for key in ("video_path", "img_paths", "video_dir"):
-            if key in dropped:
-                raise RuntimeError(f"load_video_frames would drop {key}; "
-                                   "no frames would be read")
-        if dropped:
-            print(f"  [shim] load_video_frames: dropped {dropped}")
-        return orig(*a, **{x: y for x, y in k.items() if x in valid})
-
-    mod.load_video_frames = shim
-    print(f"  [shim] wrapped {base.__module__}.load_video_frames "
-          f"(accepts: {sorted(valid)[:8]}...)")
-
-
-def route_demo(vp, inner, frames_dir, n):
-    """A: the demo base class loads video itself."""
-    from sam3.model.video_tracking_multiplex_demo import VideoTrackingMultiplexDemo
-    jpg = jpeg_mirror(frames_dir, n)
-    base = VideoTrackingMultiplexDemo
-    print(f"  isinstance of {base.__name__}: {isinstance(inner, base)}")
-    _shim_loader(base)
-    attempts = [
-        ("kwargs", lambda: base.init_state(inner, video_path=jpg,
-                                           offload_video_to_cpu=False,
-                                           offload_state_to_cpu=False)),
-        ("positional", lambda: base.init_state(inner, jpg, False, False)),
-        ("png dir", lambda: base.init_state(inner, frames_dir, False, False)),
-    ]
-    for lbl, fn in attempts:
-        try:
-            st = fn()
-            print(f"  init_state via base class OK ({lbl})")
-            return inner, st
-        except BaseException as e:
-            print(f"  [{lbl}] {type(e).__name__}: {str(e)[:200]}")
-    return None, None
-
-
-def route_transplant(vp, inner, frames_dir, n):
-    """B: Sam3TrackerPredictor has video_path init_state; give it real weights."""
-    from sam3.model_builder import build_tracker
-    t = build_tracker(False, with_backbone=True)
-    src = inner.state_dict()
-    landed = False
-
-    def shape_filtered(target, sd):
-        """strict=False skips MISSING keys but still raises on a size mismatch:
-
-            size mismatch for maskmem_tpos_enc: copying a param with shape
-            torch.Size([7, 1, 1, 256]) from checkpoint
-
-        build_tracker configures a different memory length than the released
-        multiplex model, so drop every key whose shape disagrees and report how
-        many went, since a large count means the transplant is not meaningful.
-        """
-        tsd = target.state_dict()
-        keep, bad = {}, []
-        for k, v in sd.items():
-            if k in tsd and tsd[k].shape == v.shape:
-                keep[k] = v
-            elif k in tsd:
-                bad.append(k)
-        if bad:
-            print(f"  {len(bad)} keys dropped for shape mismatch "
-                  f"(e.g. {bad[:3]})")
-        return keep
-    for label, target in (("tracker", t), ("tracker.model", getattr(t, "model", None))):
-        if target is None:
-            continue
-        try:
-            keep = shape_filtered(target, src)
-            missing, unexpected = target.load_state_dict(keep, strict=False)
-            n_tot = len(target.state_dict())
-            n_missing = len(missing)
-            print(f"  load_state_dict into {label}: {n_tot - n_missing}/{n_tot} "
-                  f"keys matched ({n_missing} missing, {len(unexpected)} unexpected)")
-            if n_tot and (n_tot - n_missing) > 0.5 * n_tot:
-                landed = True
-                break
-        except BaseException as e:
-            print(f"  load into {label}: {type(e).__name__}: {str(e)[:160]}")
-    if not landed:
-        print("  weights did NOT transplant -- refusing this route: any IoU "
-              "from a fresh init would be meaningless")
-        return None, None
-    import torch
+    # Trained or fresh? A fresh init measured std 0.0179-0.0238; released
+    # weights 0.0135-0.1458. Any IoU from an untrained tracker is meaningless.
+    ps = [p for p in predictor.parameters() if p.dim() > 1][:40]
+    stds = [float(p.detach().float().std()) for p in ps]
+    trained = max(stds) > 0.05
+    print(f"  weights  : std median {float(np.median(stds)):.4f}, "
+          f"range {min(stds):.4f}-{max(stds):.4f} -> "
+          f"{'TRAINED' if trained else 'FRESH-INIT'}")
     if torch.cuda.is_available():
-        t = t.to("cuda")
-    weight_signature(t, "after transplant")
-    jpg = jpeg_mirror(frames_dir, n)
-    for lbl, kw in (("jpg", {"video_path": jpg}), ("png", {"video_path": frames_dir})):
-        try:
-            st = t.init_state(**kw)
-            print(f"  init_state OK ({lbl})")
-            return t, st
-        except BaseException as e:
-            print(f"  [{lbl}] {type(e).__name__}: {str(e)[:200]}")
-    return None, None
+        predictor = predictor.to("cuda")
+    return predictor, trained
 
 
-def route_session(vp, inner, frames_dir, n):
-    """C: the session state. Known to mismatch; tried so the log is complete."""
-    from probe_sam3_mask import session_state
-    st, _sid = session_state(vp, frames_dir)
-    return (inner, st) if st is not None else (None, None)
-
-
-# ------------------------------------------------------------------- drive
-def seed_mask(tracker, state, m0):
-    """Offer the frame-0 mask in every shape the two entry points document."""
-    import torch
-    from contextlib import nullcontext
-
-    def amp():
-        return (torch.autocast("cuda", dtype=torch.bfloat16)
-                if torch.cuda.is_available() else nullcontext())
-
-    dev = "cuda" if torch.cuda.is_available() else "cpu"
-    two_d = [("cpu bool", torch.from_numpy(m0.astype("bool"))),
-             ("dev bool", torch.from_numpy(m0.astype("bool")).to(dev)),
-             ("dev float", torch.from_numpy(m0.astype("float32")).to(dev))]
-    if hasattr(tracker, "add_new_mask"):
-        for lbl, mt in two_d:
-            try:
-                with amp():
-                    tracker.add_new_mask(inference_state=state, frame_idx=0,
-                                         obj_id=1, mask=mt,
-                                         add_mask_to_memory=True)
-                print(f"  add_new_mask OK ({lbl})")
-                return True
-            except BaseException as e:
-                print(f"  add_new_mask [{lbl}] {type(e).__name__}: {str(e)[:200]}")
-    if hasattr(tracker, "add_new_masks"):
-        for lbl, mt in two_d:
-            try:
-                with amp():
-                    tracker.add_new_masks(inference_state=state, frame_idx=0,
-                                          obj_ids=[1], masks=mt[None],
-                                          add_mask_to_memory=True)
-                print(f"  add_new_masks OK ({lbl}, 1xHxW)")
-                return True
-            except BaseException as e:
-                print(f"  add_new_masks [{lbl}] {type(e).__name__}: {str(e)[:200]}")
-    return False
-
-
-def propagate(tracker, state, gts):
+def run_video(predictor, video, limit, frames_dir, gts):
+    """Seed frame 0 with the GT mask, then track. Returns [T,H,W] uint8."""
     import torch
     from contextlib import nullcontext
 
@@ -480,24 +93,39 @@ def propagate(tracker, state, gts):
                 if torch.cuda.is_available() else nullcontext())
 
     T, H, W = len(gts), gts[0].shape[0], gts[0].shape[1]
-    out = np.zeros((T, H, W), np.uint8)
-    try:
-        with amp():
-            tracker.propagate_in_video_preflight(state)
-        print("  preflight OK")
-    except BaseException as e:
-        print(f"  preflight skipped ({type(e).__name__}: {str(e)[:90]})")
+    # SAM 2-style loaders glob for .jpg; our frames are .png.
+    jpg = jpeg_mirror(frames_dir, T)
 
+    if hasattr(predictor, "reset_state"):
+        try:
+            predictor.reset_state(getattr(predictor, "_last_state", None))
+        except BaseException:
+            pass
+    state = predictor.init_state(video_path=jpg)
+    print(f"  init_state OK ({T} frames)")
+
+    m0 = torch.from_numpy(gts[0].astype(bool))
+    with amp():
+        predictor.add_new_mask(inference_state=state, frame_idx=0,
+                               obj_id=1, mask=m0)
+    print("  add_new_mask OK -- frame-0 GT mask accepted")
+
+    out = np.zeros((T, H, W), np.uint8)
     seen = 0
     with amp():
-        for frame_idx, _obj_ids, raw in tracker.propagate_in_video(
-                state, start_frame_idx=0, max_frame_num_to_track=None,
-                reverse=False):
+        # FIVE values, and preflight is a kwarg here, not a separate call.
+        for (frame_idx, obj_ids, _low_res, video_res_masks,
+             _scores) in predictor.propagate_in_video(
+                state, start_frame_idx=0, max_frame_num_to_track=T,
+                reverse=False, propagate_preflight=True):
             if frame_idx >= T:
                 continue
-            m = _binarize(raw)
-            m = _resize_stack(m.reshape(-1, *m.shape[-2:]), H, W)
-            out[frame_idx] = np.any(m, axis=0).astype(np.uint8)
+            m = (video_res_masks > 0.0).squeeze(1).cpu().numpy()
+            m = np.any(m.reshape(-1, *m.shape[-2:]), axis=0)
+            if m.shape != (H, W):
+                from run_sam3 import _resize_stack
+                m = _resize_stack(m[None].astype(np.uint8), H, W)[0] > 0
+            out[frame_idx] = m.astype(np.uint8)
             seen += 1
     print(f"  propagated {seen} frames")
     return out, seen
@@ -514,85 +142,49 @@ def main():
     if not args.cudnn:
         disable_cudnn()
 
-    banner("BUILD -- predictor with released weights")
-    from sam3.model_builder import build_sam3_predictor
-    vp = build_sam3_predictor()
-    inner = find_inner(vp)
-    if inner is None:
-        print("no mask-capable object found"); return 1
-    trained = weight_signature(inner, "inner tracker")
-    dump_source(getattr(inner, "add_new_masks", None) or inner.add_new_mask,
-                f"{type(inner).__name__}.add_new_mask(s)")
-
-    v0 = args.videos[0]
-    frames_dir = os.path.join(DATA, "images", v0)
-    n0 = len(load_frames(v0, args.limit_frames))
-    gts0 = load_gt(v0, n0)
-
-    banner("ROUTES -- first one that seeds a mask wins")
-    chosen = None
-    for name, fn in (("A demo init_state", route_demo),
-                     ("B build_tracker + transplanted weights", route_transplant),
-                     ("C session state", route_session)):
-        print(f"\n--- route {name} ---")
-        try:
-            tk, st = fn(vp, inner, frames_dir, n0)
-        except BaseException as e:
-            print(f"  route failed: {type(e).__name__}: {str(e)[:220]}")
-            continue
-        if tk is None or st is None:
-            continue
-        if seed_mask(tk, st, gts0[0]):
-            chosen = (name, tk, st)
-            break
-        # The state is good and the frames are loaded; if the only thing in the
-        # way is an unset encoder, fix that and offer the mask again rather
-        # than abandoning a route that got this far.
-        if repair_backbone(vp, tk):
-            print("  retrying the mask after attaching the encoder ...")
-            if seed_mask(tk, st, gts0[0]):
-                chosen = (name + " + attached encoder", tk, st)
-                break
-        print("  state built but the mask was not accepted on this route")
-
-    if chosen is None:
-        banner("RESULT: no route seeded a mask")
-        print("Read the per-route errors above. Only a refusal naming masks or")
-        print("prompts is evidence about SAM 3; plumbing errors are ours.")
-        return 2
-
-    name, tk, st = chosen
-    banner(f"PROPAGATE -- route {name}")
-    out, seen = propagate(tk, st, gts0)
-    if seen == 0:
-        print("mask accepted but propagation returned nothing"); return 3
-    ious = [iou(out[t].astype(bool), gts0[t]) for t in range(len(gts0))]
-    print(f"\n  frame 0 IoU {ious[0]:.4f}   frame 1 IoU {ious[1]:.4f}"
-          if len(ious) > 1 else "")
-    print(f"  mean IoU over {len(ious)} frames: {np.nanmean(ious):.4f}")
+    banner("BUILD -- build_sam3_video_model().tracker + shared backbone")
+    predictor, trained = build_predictor()
+    if not trained:
+        print("\nRefusing to continue: the tracker's weights look fresh-init.")
+        return 4
 
     if args.out_dir:
-        if trained is False:
-            print("\nREFUSING to save: the tracker's weights look fresh-init, so "
-                  "these masks are not a benchmarkable row.")
-            return 4
-        import tifffile
         os.makedirs(args.out_dir, exist_ok=True)
-        for v in args.videos:
-            fd = os.path.join(DATA, "images", v)
-            n = len(load_frames(v, args.limit_frames))
-            g = load_gt(v, n)
-            if v != v0:
-                tk2, st2 = dict(A=route_demo, B=route_transplant,
-                                C=route_session)[name[0]](vp, inner, fd, n)
-                if tk2 is None or not seed_mask(tk2, st2, g[0]):
-                    print(f"  {v}: could not seed; skipped"); continue
-                stack, _ = propagate(tk2, st2, g)
-            else:
-                stack = out
+    all_iou = []
+    for v in args.videos:
+        banner(f"{v} -- frame-0 mask prompt")
+        frames_dir = os.path.join(DATA, "images", v)
+        n = len(load_frames(v, args.limit_frames))
+        gts = load_gt(v, n)
+        try:
+            stack, seen = run_video(predictor, v, args.limit_frames,
+                                    frames_dir, gts)
+        except BaseException as e:
+            import traceback
+            print(f"  FAILED: {type(e).__name__}: {e}")
+            traceback.print_exc(limit=6)
+            continue
+        if seen == 0:
+            print("  no frames returned"); continue
+        ious = [iou(stack[t].astype(bool), gts[t]) for t in range(len(gts))]
+        mean = float(np.nanmean(ious))
+        all_iou.append(mean)
+        print(f"  frame 0 IoU {ious[0]:.4f}"
+              + (f"   frame 1 IoU {ious[1]:.4f}" if len(ious) > 1 else ""))
+        print(f"  mean IoU over {len(ious)} frames: {mean:.4f}")
+        if args.out_dir:
+            import tifffile
             p = os.path.join(args.out_dir, f"{v}.tif")
             tifffile.imwrite(p, stack)
-            print(f"  -> {p}  fg={float((stack>0).mean()):.4f}")
+            print(f"  -> {p}  fg={float((stack > 0).mean()):.4f}")
+
+    if all_iou:
+        banner("SUMMARY")
+        print(f"mask-prompted SAM 3.1: mean IoU {float(np.mean(all_iou)):.4f} "
+              f"over {len(all_iou)} recording(s)")
+        print("Compare with the point-prompted row (0.4712) -- if this is "
+              "higher, that row understates SAM 3.1 and the paper's protocol "
+              "note needs revising.")
     return 0
 
 
