@@ -374,6 +374,49 @@ only when the refusal is about masks rather than plumbing.
 prompts and no working path was found for a mask -- a statement about what we
 could drive, not about the architecture, which does contain the machinery.
 
+### CORRECTED 2026-09-09: two claims above were wrong; the conclusion survives
+
+The 2026-08-29 section reached the right answer for wrong reasons. Corrections,
+from four GPU runs of `benchmark/probe_sam3_mask.py`:
+
+**Wrong: "the weights are a fresh init (std 0.0197-0.0238)."** That was
+`build_tracker`, which takes no checkpoint. Reached properly -- through
+`build_sam3_predictor()`, the factory behind every SAM 3.1 row we report -- the
+nested tracker carries the released weights: std 0.0135-0.1458, median 0.0319.
+The only missing keys are 64 `freqs_cis_real/imag` RoPE buffers, recomputed at
+runtime.
+
+**Wrong: "`teacher_force_obj_scores_for_mem` missing means the entry point is
+not wired."** That attribute is unset on objects from `build_tracker` only. It
+is construction damage from the wrong factory, not a property of the mask path.
+
+**Right, and now verified against source rather than inference:** `add_prompt`
+(`sam3/model/sam3_base_predictor.py:149-163`) takes `text`,
+`points`/`point_labels`, `bounding_boxes`/`bounding_box_labels` -- and no mask.
+Its own docstring: "Add text, box and/or point prompt on a specific video
+frame." The paper's sentence is correct as written and 0.4712 stands.
+
+**What actually blocks a mask prompt.** `start_session` builds a multiplex
+state (`action_history`, `backbone_out`, `feature_cache`, `input_batch`, ...);
+`Sam3VideoTrackingMultiplexDemo.add_new_masks` wants a state from its own
+`init_state` and fails on it with `KeyError: 'obj_id_to_idx'`. Two state
+schemas in one release. The mask machinery is real and the frames load; they
+are simply not reachable from each other through the public API.
+
+So: masks ARE an accepted SAM 3 visual prompt, as Meta documents. In this build
+they are not reachable from the session interface. That is an API-surface gap,
+which is what the paper says.
+
+**Do not re-run this probe** without a new reason. Four runs; the remaining
+avenue is constructing `VideoTrackingMultiplexDemo` directly (its `init_state`
+does take `video_path`) and loading released weights into it by hand -- an
+undocumented internal path no user would take, which would make a weaker
+benchmark than the one we already report, not a stronger one.
+
+One probe artefact to ignore: the log prints "holds images: False" and
+"init_state never loaded the video". Both are wrong -- the check looks for an
+`images` key that the multiplex state does not use. 73 frames had loaded.
+
 ## Note for the paper
 
 Whatever the number turns out to be, state the protocol asymmetry plainly:
