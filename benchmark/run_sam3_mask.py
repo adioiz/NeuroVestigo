@@ -200,28 +200,95 @@ def repair_backbone(vp, inner):
         print("  nothing obvious is None; not repairing")
         return False
 
-    # Find something that really can encode an image.
-    seen, provider = set(), None
+    # Find something that really can encode an image. Search wider than
+    # named_children and deeper than before: the previous pass reported "no
+    # module provides forward_image" while detector.backbone plainly exists,
+    # so the multiplex backbone exposes a different method name.
+    seen, listed, providers, backbones = set(), set(), [], []
 
     def walk(o, path, d=0):
-        nonlocal provider
-        if provider is not None or d > 5 or id(o) in seen:
+        if d > 8 or id(o) in seen:
             return
         seen.add(id(o))
         kids = []
         if isinstance(o, torch.nn.Module):
             kids += list(o.named_children())
+        dd = getattr(o, "__dict__", None)
+        if isinstance(dd, dict):
+            kids += [(n, v) for n, v in dd.items() if not n.startswith("__")]
         for n, v in kids:
-            if callable(getattr(v, "forward_image", None)):
-                provider = (f"{path}{n}", v)
-                return
-            walk(v, f"{path}{n}.", d + 1)
+            if v is None or isinstance(v, (str, bytes, int, float, bool,
+                                           torch.Tensor)):
+                continue
+            if inspect.isroutine(v) or inspect.isclass(v):
+                continue
+            here = f"{path}{n}"
+            if id(v) not in listed:          # named_children and __dict__ both
+                listed.add(id(v))            # yield it; list it once
+                if callable(getattr(v, "forward_image", None)):
+                    providers.append((here, v))
+                elif isinstance(v, torch.nn.Module) and (
+                        n.endswith("backbone")
+                        or "backbone" in type(v).__name__.lower()
+                        or "imageencoder" in type(v).__name__.lower()):
+                    backbones.append((here, v))
+            walk(v, here + ".", d + 1)
 
     walk(vp, "")
-    if provider is None:
-        print("  no module on the predictor provides forward_image")
+    for w, v in providers:
+        print(f"  forward_image provider: .{w} -> {type(v).__name__}")
+    for w, v in backbones[:8]:
+        meths = [m for m in dir(v) if m.startswith("forward")]
+        print(f"  backbone-like: .{w} -> {type(v).__name__}  {meths}")
+
+    if providers:
+        where, mod = providers[0]
+    elif backbones:
+        # Nothing exposes forward_image. SAM 3's multiplex backbone is the same
+        # family as SAM 2's image encoder but does not carry that method name,
+        # so adapt it -- and say so loudly, because an adapter that returns the
+        # wrong structure would produce numbers rather than an error.
+        where, base = backbones[0]
+
+        class _ForwardImageAdapter(torch.nn.Module):
+            def __init__(self, m):
+                super().__init__()
+                self.m = m
+
+            def forward_image(self, img_batch):
+                fn = (getattr(self.m, "forward_image", None)
+                      or getattr(self.m, "forward_features", None)
+                      or self.m.__call__)
+                return fn(img_batch)
+
+            def forward(self, *a, **k):
+                return self.m(*a, **k)
+
+        mod = _ForwardImageAdapter(base)
+        where += "  [WRAPPED in a forward_image adapter]"
+        print(f"  NO module exposes forward_image; adapting .{backbones[0][0]} "
+              f"({type(base).__name__}). If its output structure differs from "
+              f"what the tracker expects, the next error will say so.")
+        # Show how the result is consumed, so a structure mismatch is
+        # diagnosable from this same log.
+        for klass in type(inner).__mro__:
+            try:
+                src = inspect.getsource(klass)
+            except BaseException:
+                continue
+            if ".forward_image" in src:
+                for i, line in enumerate(src.splitlines()):
+                    if ".forward_image" in line:
+                        lo = max(0, i - 4)
+                        print("  --- how the tracker uses it ---")
+                        print(textwrap.indent(
+                            "\n".join(src.splitlines()[lo:i + 12]), "    "))
+                        print("  --- end ---")
+                        break
+                break
+    else:
+        print("  nothing backbone-like found on the predictor either")
         return False
-    where, mod = provider
     for n in empty:
         try:
             setattr(inner, n, mod)
