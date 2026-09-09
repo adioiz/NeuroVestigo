@@ -160,6 +160,78 @@ def dump_source(fn, name, lines=40):
     print("--- end ---\n")
 
 
+def repair_backbone(vp, inner):
+    """Give the demo path the image encoder the multiplex build left unset.
+
+        AttributeError: 'NoneType' object has no attribute 'forward_image'
+
+    In the multiplex model the vision backbone is shared and owned above the
+    tracker -- which is why Sam3VideoTrackingMultiplexDemo.init_state takes
+    cached_features rather than raw frames. The demo path instead expects the
+    tracker to own an encoder and call forward_image itself, so that slot is
+    None on this instance.
+
+    Rather than guess the attribute name, read it out of the class's own source
+    (`self.<name>.forward_image`), confirm it really is None, then attach the
+    module on the predictor that actually provides forward_image. Both the name
+    and where the replacement came from are printed: this is a structural
+    change to the object, and it must be visible in the log next to any number
+    it produces.
+    """
+    import re
+    import torch
+
+    names = []
+    for klass in type(inner).__mro__:
+        try:
+            src = inspect.getsource(klass)
+        except BaseException:
+            continue
+        names += re.findall(r"self\.([A-Za-z_][A-Za-z_0-9]*)\.forward_image", src)
+    names = list(dict.fromkeys(names))
+    print(f"  attributes the class calls forward_image on: {names or 'none found'}")
+
+    empty = [n for n in names if getattr(inner, n, "absent") is None]
+    if not empty:
+        empty = [n for n, v in getattr(inner, "_modules", {}).items() if v is None]
+        if empty:
+            print(f"  unset submodule slots: {empty}")
+    if not empty:
+        print("  nothing obvious is None; not repairing")
+        return False
+
+    # Find something that really can encode an image.
+    seen, provider = set(), None
+
+    def walk(o, path, d=0):
+        nonlocal provider
+        if provider is not None or d > 5 or id(o) in seen:
+            return
+        seen.add(id(o))
+        kids = []
+        if isinstance(o, torch.nn.Module):
+            kids += list(o.named_children())
+        for n, v in kids:
+            if callable(getattr(v, "forward_image", None)):
+                provider = (f"{path}{n}", v)
+                return
+            walk(v, f"{path}{n}.", d + 1)
+
+    walk(vp, "")
+    if provider is None:
+        print("  no module on the predictor provides forward_image")
+        return False
+    where, mod = provider
+    for n in empty:
+        try:
+            setattr(inner, n, mod)
+            print(f"  attached .{where} ({type(mod).__name__}) as inner.{n}")
+        except BaseException as e:
+            print(f"  could not attach to {n}: {type(e).__name__}: {e}")
+            return False
+    return True
+
+
 # ------------------------------------------------------------------ routes
 def _shim_loader(base):
     """init_state forwards use_torchcodec/use_cv2 to a load_video_frames that
@@ -406,6 +478,14 @@ def main():
         if seed_mask(tk, st, gts0[0]):
             chosen = (name, tk, st)
             break
+        # The state is good and the frames are loaded; if the only thing in the
+        # way is an unset encoder, fix that and offer the mask again rather
+        # than abandoning a route that got this far.
+        if repair_backbone(vp, tk):
+            print("  retrying the mask after attaching the encoder ...")
+            if seed_mask(tk, st, gts0[0]):
+                chosen = (name + " + attached encoder", tk, st)
+                break
         print("  state built but the mask was not accepted on this route")
 
     if chosen is None:
