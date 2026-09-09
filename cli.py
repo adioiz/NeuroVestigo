@@ -59,6 +59,12 @@ def cmd_train(args):
     config = TrainingConfig()  # Start from config.py defaults
 
     # ----- Top-level overrides -----
+    if getattr(args, "backbone", None) is not None:
+        # Which pretrained tracker carries the LoRA. Default stays "sam2";
+        # "sam3" is the experiment and its checkpoints are NOT interchangeable,
+        # so always pair it with a fresh --checkpoint-dir.
+        config.backbone = args.backbone
+
     if args.epochs is not None:
         config.num_epochs = args.epochs
     if args.batch_size is not None:
@@ -213,6 +219,10 @@ def main():
     # --- train command ---
     p_train = subparsers.add_parser("train", help="Train the model")
     # All numeric/string defaults are None: when omitted, config.py wins.
+    p_train.add_argument("--backbone", choices=["sam2", "sam3"], default=None,
+                         help="pretrained tracker to adapt (default: sam2). "
+                              "sam3 requires sam3-env; run "
+                              "benchmark/sam3_lora_preflight.py first")
     p_train.add_argument("--epochs", type=int, default=None)
     p_train.add_argument("--batch-size", type=int, default=None)
     p_train.add_argument("--lora-rank", type=int, default=None)
