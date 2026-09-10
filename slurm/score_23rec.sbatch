@@ -20,7 +20,7 @@ for tag in "" "_topo"; do
   ck="checkpoints/lora_weights${tag}.pt"
   name="ours_23rec${tag}"
   echo; echo "##### $name  ($ck)"
-  python benchmark/run_ours.py --ckpt "$ck" --out-dir "benchmark/predictions/$name" || { echo "run_ours failed for $name"; continue; }
+  python benchmark/run_ours.py --ckpt "$ck" --videos A71_C1 A81_C1 A12_C3_100k A12_C1_100k_2 --out-dir "benchmark/predictions/$name" || { echo "run_ours failed for $name"; continue; }
   python benchmark/score.py --pred-dir "benchmark/predictions/$name" --model "$name" --split test --cbdice --skip-first-frame
 done
 
