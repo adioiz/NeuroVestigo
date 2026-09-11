@@ -40,6 +40,68 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 
+def _shadowing_entries(path_entries):
+    """sys.path entries that would make `import sam3` a NAMESPACE package.
+
+    The SAM 3 clone lives at <repo>/sam3/, and the real package is one level
+    down at <repo>/sam3/sam3/. Any sys.path entry whose `sam3/` child has no
+    __init__.py -- the repo root, or '' / '.' when the cwd is the repo root --
+    is scanned by PathFinder before the editable-install meta-path finder
+    gets a turn, so Python builds a namespace package from it. Submodules
+    still resolve through the editable finder, which is why
+    `from sam3.model_builder import ...` works, but `sam3.__file__` is None
+    and the builder's pkg_resources.resource_filename("sam3", <bpe file>)
+    dies with
+
+        TypeError: expected str, bytes or os.PathLike object, not NoneType
+
+    That stopped the preflight (it inserted REPO into sys.path), and it is
+    what `python cli.py train --backbone sam3` hits too, since running a
+    script puts its directory at sys.path[0].
+    """
+    import os
+    bad = []
+    for p in path_entries:
+        base = p if p not in ("", ".") else os.getcwd()
+        cand = os.path.join(base, "sam3")
+        if os.path.isdir(cand) and not os.path.exists(
+                os.path.join(cand, "__init__.py")):
+            bad.append(p)
+    return bad
+
+
+def import_sam3():
+    """Import the real sam3 package even when the repo root is on sys.path."""
+    import importlib
+    import sys
+
+    mod = sys.modules.get("sam3")
+    if mod is not None and getattr(mod, "__file__", None):
+        return mod                                   # already the real one
+    if mod is not None:
+        # A namespace shadow is cached; drop it and every submodule imported
+        # under it so the re-import starts clean.
+        for k in [k for k in sys.modules if k == "sam3" or k.startswith("sam3.")]:
+            del sys.modules[k]
+    shadow = _shadowing_entries(sys.path)
+    saved = list(sys.path)
+    try:
+        sys.path[:] = [p for p in sys.path if p not in shadow]
+        mod = importlib.import_module("sam3")
+    finally:
+        sys.path[:] = saved
+    if not getattr(mod, "__file__", None):
+        raise ImportError(
+            "sam3 still imports as a namespace package (no __file__). "
+            f"Hid shadowing sys.path entries {shadow}; is sam3 installed in "
+            "this environment (pip install -e sam3)?")
+    if shadow:
+        print(f"  [sam3] real package at {mod.__file__} "
+              f"(hid {len(shadow)} shadowing sys.path entr"
+              f"{'y' if len(shadow) == 1 else 'ies'}: {shadow})")
+    return mod
+
+
 # What SAM2TrainingWrapper actually touches on the model.
 REQUIRED_API = [
     "forward_image", "_prepare_backbone_features", "sam_prompt_encoder",
@@ -172,6 +234,7 @@ class Sam3TrainingAdapter(nn.Module):
 
 def build_sam3_lora(config, verbose: bool = True):
     """Meta's cell-11 construction, then our LoRA. Returns (model, info)."""
+    import_sam3()        # BEFORE the submodule import -- see _shadowing_entries
     from sam3.model_builder import build_sam3_video_model
     from src.lora import apply_lora
 
