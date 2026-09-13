@@ -195,12 +195,17 @@ class Sam3TrainingAdapter(nn.Module):
         # trainer.py freezes model.image_encoder.parameters()
         return self.tracker.backbone
 
-    @image_encoder.setter
-    def image_encoder(self, value):
-        # config.compile_encoder assigns torch.compile(...) back onto this
-        # name (trainer.py). Without a setter that raises AttributeError and
-        # the run dies after the model is already on the GPU.
-        self.tracker.backbone = value
+    def __setattr__(self, name, value):
+        # config.compile_encoder assigns torch.compile(...) back onto
+        # model.image_encoder (trainer.py). A property setter does NOT catch
+        # that: nn.Module.__setattr__ registers any Module-typed value straight
+        # into _modules without consulting descriptors, which would leave the
+        # real backbone untouched and add a dangling second copy of it to the
+        # parameter count. Route the name explicitly.
+        if name == "image_encoder":
+            self.tracker.backbone = value
+            return
+        super().__setattr__(name, value)
 
     def forward_image(self, img_batch):
         fn = getattr(self.tracker, "forward_image", None)
@@ -210,11 +215,20 @@ class Sam3TrainingAdapter(nn.Module):
 
     # -- everything else is the tracker's own -----------------------------
     def __getattr__(self, name):
-        # nn.Module.__getattr__ runs first for registered submodules; this is
-        # only reached for genuine misses.
+        # Overriding __getattr__ REPLACES nn.Module's, which is what resolves
+        # registered submodules, parameters and buffers out of _modules /
+        # _parameters / _buffers. The first version skipped that step, so
+        # `self.tracker` itself fell through to delegation and asked the
+        # tracker for an attribute named 'tracker':
+        #     AttributeError: 'Sam3TrackerPredictor' object has no attribute
+        #                     'tracker'
+        # Defer to the base class first; delegate only on a genuine miss.
         try:
-            tracker = object.__getattribute__(self, "_modules")["tracker"]
-        except KeyError:
+            return super().__getattr__(name)
+        except AttributeError:
+            pass
+        tracker = self.__dict__.get("_modules", {}).get("tracker")
+        if tracker is None:
             raise AttributeError(name)
         return getattr(tracker, name)
 
