@@ -107,6 +107,8 @@ def cmd_train(args):
         config.data.cache_in_memory = False
     if args.no_precompute:
         config.data.precompute_features = False
+    if getattr(args, "precompute", False):
+        config.data.precompute_features = True
     if args.val_videos:
         # Comma-separated list, e.g. --val-videos A51_C1,A52_C2,A31_C2
         config.data.val_videos = [v.strip() for v in args.val_videos.split(",") if v.strip()]
@@ -221,6 +223,12 @@ def main():
     # --- train command ---
     p_train = subparsers.add_parser("train", help="Train the model")
     # All numeric/string defaults are None: when omitted, config.py wins.
+    p_train.add_argument("--precompute", action="store_true",
+                         help="run the frozen image encoder once over every "
+                              "frame and train against cached features (pair "
+                              "with --no-hiera-last-stage; augmentation drops "
+                              "to flips). The fallback if --backbone sam3 is "
+                              "too slow per step.")
     p_train.add_argument("--backbone", choices=["sam2", "sam3"], default=None,
                          help="pretrained tracker to adapt (default: sam2). sam3 "
                               "loads facebook/sam3/sam3.pt (SAM 3, not 3.1 -- "
