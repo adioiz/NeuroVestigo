@@ -148,6 +148,34 @@ def make_vision_backbone_trainable():
           "(fused inference path kept)")
 
 
+def disable_cudnn_for_sam3_env():
+    """sam3-env's cuDNN sublibraries come from different installs, and the
+    first conv through the SAM 3 backbone dies with
+
+        CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH
+
+    run_sam3.py and the probe have carried the same workaround since the first
+    sweep (--no-cudnn). It has to live HERE, at model construction, because
+    train() enables the cuDNN SDPA backend before building the model
+    (trainer.py:1112) and that must be undone for this env. PyTorch's own
+    kernels are used instead -- slower, same arithmetic. neurotrack-env, where
+    every SAM 2 run lives, is untouched: this only runs on the sam3 branch.
+    """
+    if not torch.cuda.is_available():
+        return
+    torch.backends.cudnn.enabled = False
+    off = ["conv"]
+    if hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        torch.backends.cuda.enable_cudnn_sdp(False)
+        off.append("attention")
+    for name in ("enable_flash_sdp", "enable_mem_efficient_sdp"):
+        fn = getattr(torch.backends.cuda, name, None)
+        if fn:
+            fn(True)                       # keep the non-cuDNN fast paths on
+    print(f"  [sam3] cuDNN disabled for {' and '.join(off)} -- "
+          "sam3-env sublibrary mismatch; PyTorch kernels, same math")
+
+
 # What SAM2TrainingWrapper actually touches on the model.
 REQUIRED_API = [
     "forward_image", "_prepare_backbone_features", "sam_prompt_encoder",
@@ -437,6 +465,7 @@ def build_sam3_lora(config, verbose: bool = True):
     """
     import_sam3()        # BEFORE the submodule import -- see _shadowing_entries
     make_vision_backbone_trainable()
+    disable_cudnn_for_sam3_env()
     from sam3.model_builder import build_sam3_video_model
     from src.lora import apply_lora
 

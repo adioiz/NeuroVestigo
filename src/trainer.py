@@ -31,7 +31,9 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader
 
-from sam2.build_sam import build_sam2, _hf_download
+# sam2 is imported inside the SAM 2 branch of build_training_model rather than
+# here: with backbone="sam3" the run lives in sam3-env, which has no sam2, and
+# a module-level import would fail before the backbone switch is even read.
 
 from src.config import TrainingConfig
 from src.lora import (
@@ -825,6 +827,8 @@ def build_training_model(config: TrainingConfig, device: str):
         from src.sam3_backbone import build_sam3_lora
         model, _sam3_info = build_sam3_lora(config)
     else:
+        from sam2.build_sam import build_sam2, _hf_download
+
         # Download checkpoint
         config_name, ckpt_path = _hf_download(config.sam2_model_id)
 

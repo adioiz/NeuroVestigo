@@ -40,6 +40,21 @@ def banner(t):
 
 
 def main():
+    banner("0. ENVIRONMENT -- can the training path even import in this env?")
+    # sam3-env is SAM 3's dependency set, not ours. src.trainer pulls in the
+    # whole training path (scipy for augmentations/loss, PIL, torchvision);
+    # sam2 itself is imported lazily only on the SAM 2 branch. Find out here,
+    # in one line, rather than in section 5 after a 3.5GB checkpoint load.
+    try:
+        import src.trainer  # noqa: F401
+        import src.augmentations, src.loss_fns, src.neuron_dataset  # noqa: F401,E401
+        print("  OK: src.trainer and the training path import")
+    except ModuleNotFoundError as e:
+        print(f"  MISSING: {e.name}")
+        print(f"  fix:  conda run -n sam3-env pip install {e.name}")
+        print("  (scipy is the one sam3-env usually lacks; sam2 is NOT needed)")
+        return 5
+
     cfg = TrainingConfig()
     cfg.backbone = "sam3"
     from src.config import apply_backbone_defaults

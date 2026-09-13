@@ -15,5 +15,7 @@ source ~/.bashrc
 conda activate sam3-env
 cd ~/Fine-tune-SAM2-model-for-Neurons-segmentation || exit 1
 mkdir -p logs
+# The training path needs scipy (augmentations, loss); sam3-env ships without it.
+python -c "import scipy" 2>/dev/null || pip install -q scipy
 python -u benchmark/sam3_lora_preflight.py
 echo "=== exit $? at $(date) ==="
