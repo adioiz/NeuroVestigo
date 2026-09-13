@@ -22,7 +22,8 @@ class Backbone(nn.Module):
         super().__init__()
         self.w = nn.Linear(3, 3)
     def forward_image(self, x):
-        return {"vision_features": x}
+        # the shared SAM3VLBackbone returns the SAM 2 contract under this key
+        return {"sam2_backbone_out": {"vision_features": x}}
 
 
 class Tracker(nn.Module):
@@ -32,8 +33,19 @@ class Tracker(nn.Module):
         self.sam_mask_decoder = nn.Linear(2, 2)
         self.hidden_dim = 256
         self.no_mem_embed = nn.Parameter(torch.zeros(1))
-    def track_step(self):
+        self.seen = []
+    def track_step(self, image=None, **kw):
+        # SAM 3's signature has a required `image`; the shim must supply it
+        assert "image" in {"image": image}, "shim must pass image"
         return "tracked"
+    def _forward_sam_heads(self, backbone_features, point_inputs=None,
+                           mask_inputs=None, high_res_features=None,
+                           multimask_output=False, gt_masks=None):
+        # record what SAM 3's line 333 would see
+        self.seen.append((self.training,
+                          getattr(self, "teacher_force_obj_scores_for_mem", None),
+                          None if gt_masks is None else tuple(gt_masks.shape)))
+        return ("heads",)
 
 
 bb = Backbone()
@@ -59,3 +71,19 @@ assert a.tracker.backbone is bb2, "setter must replace the tracker's backbone"
 assert "image_encoder" not in a._modules, "must not register a second copy"
 assert sum(p.numel() for p in a.parameters()) == n_before, "param count must not change"
 print("PASS: image_encoder assignment replaces the backbone, no dangling module")
+
+# --- _prepare_tracker_for_training: the obj-score rule is disabled through
+# SAM 3's own teacher-forcing branch, in eval mode too, and the flag it flips
+# is restored afterwards.
+tk = a.tracker
+assert tk.prob_to_dropout_spatial_mem == 0.0
+assert tk.teacher_force_obj_scores_for_mem is True
+a.eval()
+feats = torch.zeros(3, 8, 4, 4)
+assert tk._forward_sam_heads(feats) == ("heads",)
+training_seen, tf_seen, gt_shape = tk.seen[-1]
+assert training_seen is True and tf_seen is True and gt_shape == (3, 1), tk.seen[-1]
+assert tk.training is False, "training flag must be restored after the call"
+tk._forward_sam_heads(feats, gt_masks=torch.ones(3, 1, 4, 4))
+assert tk.seen[-1][2] == (3, 1, 4, 4), "a caller-supplied gt_masks must pass through"
+print("PASS: obj-score rule disabled via teacher forcing; training flag restored")

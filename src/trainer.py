@@ -1106,6 +1106,9 @@ def train(config: TrainingConfig = None):
     """Main training function."""
     if config is None:
         config = TrainingConfig()
+    # Resolution and normalization follow the backbone (no-op for sam2).
+    from src.config import apply_backbone_defaults
+    apply_backbone_defaults(config)
 
     device = detect_device()
     print(f"Using device: {device}")
@@ -1564,10 +1567,11 @@ def train(config: TrainingConfig = None):
 
             # --- topology TIE-BREAK checkpoint (separate file) --------------
             # Among epochs IoU cannot tell apart (within topo_iou_margin of
-            # the best seen), keep the one with the lowest SMOOTHED Betti-0.
-            # Single-epoch Betti-0 has ~47% CV, so the running mean is what
-            # makes this a signal rather than a lottery. Never touches
-            # lora_weights.pt, and does not affect early stopping.
+            # the best seen), keep the one with the lowest validation Betti-0.
+            # NOTE: this is the RAW single-epoch value -- no smoothing is
+            # applied (an earlier comment claimed a running mean; it never
+            # existed). The paper describes the rule as implemented here.
+            # Never touches lora_weights.pt, and does not affect early stopping.
             b0 = val_metrics.get("val_betti0")
             if config.loss.save_topo_checkpoint and b0 is not None and not np.isnan(b0):
                 iou_ok = val_metrics["val_iou"] >= best_val_iou - config.loss.topo_iou_margin

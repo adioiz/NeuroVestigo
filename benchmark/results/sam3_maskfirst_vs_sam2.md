@@ -1,4 +1,13 @@
-# Mask-prompted SAM 3.1 vs the table — for verification
+# Mask-prompted SAM 3 vs the table — for verification
+
+> **Version correction (2026-09-13).** This row is **SAM 3, not SAM 3.1.**
+> `build_sam3_video_model()` loads `facebook/sam3/sam3.pt`
+> (`model_builder.py:797`, `download_ckpt_from_hf(version="sam3")`). The 3.1
+> release ships only `sam3.1_multiplex.pt`, whose tracker is the multiplex
+> architecture and does not fit `Sam3TrackerPredictor` (26 keys change shape).
+> The point-prompt and text rows used `build_sam3_predictor(version="sam3.1")`
+> and ARE 3.1. In the paper this row must read "SAM 3 (mask-prompt)" and the
+> text should say the 3.1 tracker is not released standalone.
 
 Run: `run_sam3_mask.py`, log `logs/sam3_mask_*.out`, 2026-09-09.
 Route: Meta's own SAM 2-task recipe (`examples/sam3_for_sam2_video_task_example.ipynb`, cell 11).
@@ -25,7 +34,7 @@ Recording-level scores weighted equally (main.tex:1367): **0.6284**
 |---|---|---|
 | **NeuroVestigo** | **0.763** | 1 annotation (frame 0) |
 | SAM 2 (zero-shot) | 0.639 | 1 annotation (frame 0) |
-| **SAM 3.1 (mask-prompt)** | **0.628** | **1 annotation (frame 0)** |
+| **SAM 3 (mask-prompt)** | **0.628** | **1 annotation (frame 0)** |
 | mu-SAM (box-prompt) | 0.575 | GT box, every frame |
 | SAM 3.1 (point-prompt) | 0.471 | 10 GT points, every frame |
 | SAM 3.1 (text-prompt) | 0.200 | none (automatic) |
@@ -42,7 +51,7 @@ Recording-level scores weighted equally (main.tex:1367): **0.6284**
 
 ## What this changes in the paper
 
-1. **The fairness gap closes.** SAM 3.1 can now be given the same
+1. **The fairness gap closes.** SAM 3 (the released SAM 2-task tracker) can now be given the same
    frame-0 mask our model and SAM 2 receive, so the protocol asymmetry
    a reviewer could attack disappears.
 2. **One sentence becomes false.** main.tex:1456-1458 says SAM 3.1

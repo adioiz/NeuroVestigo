@@ -374,6 +374,30 @@ only when the refusal is about masks rather than plumbing.
 prompts and no working path was found for a mask -- a statement about what we
 could drive, not about the architecture, which does contain the machinery.
 
+### SUPERSEDED 2026-09-13: the mask path WORKS -- and it is SAM 3, not 3.1
+
+Meta's own `examples/sam3_for_sam2_video_task_example.ipynb` (cell 11) is the
+route: `build_sam3_video_model()`, take `.tracker`, attach
+`.detector.backbone`, `init_state(video_path=...)`, `add_new_mask`, then
+`propagate_in_video` (which yields FIVE values). `benchmark/run_sam3_mask.py`
+does exactly that. Test set, frame 0 excluded, scored by `score.py`:
+
+    sam3_maskfirst   IoU 0.6284  Dice 0.7467  clDice 0.8086  cbDice 0.7535
+
+against the point-prompted 3.1 row's 0.4712 / 0.5953 / 0.5921 / 0.6018 and
+SAM 2 zero-shot's 0.6392 / 0.7705 / 0.8301 / 0.7578. Per recording the mask
+row beats SAM 2 zero-shot on 3 of 4 and collapses on A12_C3_100k (0.347).
+
+**Version.** `build_sam3_video_model` loads `facebook/sam3/sam3.pt`
+(`model_builder.py:797`). The 3.1 release has no standalone tracker
+checkpoint -- `sam3.1_multiplex.pt` is the multiplex architecture and 26 of
+its tracker keys change shape. So the mask row is **SAM 3**; the point/text
+rows (`build_sam3_predictor(version="sam3.1")`) are 3.1. Label accordingly.
+
+Everything below this line is the history of how that was established; the
+'add_prompt has no mask parameter' finding still stands and is the reason the
+session API could not carry the prompt.
+
 ### CORRECTED 2026-09-09: two claims above were wrong; the conclusion survives
 
 The 2026-08-29 section reached the right answer for wrong reasons. Corrections,
