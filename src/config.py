@@ -341,6 +341,12 @@ class TrainingConfig:
     # Model
     sam2_model_id: str = "facebook/sam2.1-hiera-tiny"
     freeze_image_encoder: bool = True
+    # "sam2" (default, and what every shipped checkpoint was trained with) or
+    # "sam3" to put the same dual-rank LoRA+ on SAM 3.1's tracker instead.
+    # Opt-in on purpose: SAM 3.1's tracker is a different size and its
+    # checkpoints are NOT interchangeable with the SAM 2 ones, so a run must
+    # say which backbone it used. Run benchmark/sam3_lora_preflight.py first.
+    backbone: str = "sam2"
 
     # LoRA
     lora: LoRAConfig = field(default_factory=LoRAConfig)
@@ -478,3 +484,35 @@ class TrainingConfig:
             "loss_iou": self.loss.loss_iou_weight,
             "loss_class": self.loss.loss_class_weight,
         }
+
+
+def apply_backbone_defaults(config: "TrainingConfig") -> "TrainingConfig":
+    """Make data/augmentation settings consistent with config.backbone.
+
+    Idempotent; called by cli.py after its overrides AND at the top of
+    trainer.train(), so a TrainingConfig built in Python gets the same
+    treatment as one built from the command line. Both changes are required
+    for the SAM 3 tracker and neither is a tunable:
+
+      data.image_size 1024 -> 1008
+          The tracker is built at image_size=1008, backbone_stride=14
+          (model_builder.py:465) and its RoPE attention precomputes
+          feat_sizes=[72, 72] = 1008/14; _forward_sam_heads asserts the
+          feature map is 72x72. 1024 is not divisible by 14.
+
+      augmentation.normalize_mean/std -> (0.5, 0.5, 0.5)
+          What SAM 3 was pretrained with and what its own loader applies
+          (sam3/model/utils/sam2_utils.py:102), and therefore what the
+          zero-shot mask-prompt baseline was scored with. The SAM 2 path keeps
+          the dataset stats it was trained with.
+    """
+    if getattr(config, "backbone", "sam2") != "sam3":
+        return config
+    if config.data.image_size != 1008:
+        print(f"[backbone=sam3] data.image_size {config.data.image_size} -> 1008")
+        config.data.image_size = 1008
+    if tuple(config.augmentation.normalize_mean or ()) != (0.5, 0.5, 0.5):
+        print("[backbone=sam3] normalize_mean/std -> (0.5, 0.5, 0.5), SAM 3's own")
+        config.augmentation.normalize_mean = (0.5, 0.5, 0.5)
+        config.augmentation.normalize_std = (0.5, 0.5, 0.5)
+    return config

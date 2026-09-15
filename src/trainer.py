@@ -31,7 +31,9 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader
 
-from sam2.build_sam import build_sam2, _hf_download
+# sam2 is imported inside the SAM 2 branch of build_training_model rather than
+# here: with backbone="sam3" the run lives in sam3-env, which has no sam2, and
+# a module-level import would fail before the backbone switch is even read.
 
 from src.config import TrainingConfig
 from src.lora import (
@@ -817,74 +819,84 @@ def build_training_model(config: TrainingConfig, device: str):
         model: SAM2TrainingWrapper with LoRA applied
         loss_fn: MultiStepMultiMasksAndIous loss function
     """
-    # Download checkpoint
-    config_name, ckpt_path = _hf_download(config.sam2_model_id)
+    # Which backbone carries the LoRA. Everything after this point -- the
+    # embedding unfreeze, the wrapper, the loss, the device move, compile --
+    # is shared, so the SAM 2 path below is exactly what trained every shipped
+    # checkpoint and the SAM 3 branch only replaces model construction.
+    if getattr(config, "backbone", "sam2") == "sam3":
+        from src.sam3_backbone import build_sam3_lora
+        model, _sam3_info = build_sam3_lora(config)
+    else:
+        from sam2.build_sam import build_sam2, _hf_download
 
-    # Build the standard SAM2 model
-    model = build_sam2(
-        config_file=config_name,
-        ckpt_path=ckpt_path,
-        device="cpu",  # Load on CPU first
-        apply_postprocessing=False,
-    )
+        # Download checkpoint
+        config_name, ckpt_path = _hf_download(config.sam2_model_id)
 
-    # Freeze image encoder if configured
-    if config.freeze_image_encoder:
-        for p in model.image_encoder.parameters():
-            p.requires_grad = False
+        # Build the standard SAM2 model
+        model = build_sam2(
+            config_file=config_name,
+            ckpt_path=ckpt_path,
+            device="cpu",  # Load on CPU first
+            apply_postprocessing=False,
+        )
 
-    # Apply LoRA to target modules
-    print("\nApplying LoRA adapters...")
-    wrapped = apply_lora(
-        model,
-        target_patterns=SAM2_LORA_TARGETS,
-        rank=config.lora.rank,
-        alpha=config.lora.alpha,
-        dropout=config.lora.dropout,
-    )
-    print(f"  Wrapped {len(wrapped)} Linear layers with LoRA (rank={config.lora.rank})")
-    for name in sorted(wrapped):
-        print(f"    - {name}")
+        # Freeze image encoder if configured
+        if config.freeze_image_encoder:
+            for p in model.image_encoder.parameters():
+                p.requires_grad = False
 
-    # Optional second LoRA pass on the Hiera encoder's last stage. Image
-    # encoder params are still frozen (set above); LoRALinear's A/B matrices
-    # are NEW parameters that default to requires_grad=True, so the
-    # adapters train while the underlying Hiera weights stay frozen. The
-    # gradient flows correctly into A and B via the LoRA forward path.
-    if config.lora.hiera_last_stage:
-        # Derive the block indices from the trunk that was actually loaded
-        # rather than hardcoding them, so this survives a backbone swap.
-        trunk = model.image_encoder.trunk
-        n_blocks = len(trunk.blocks)
-        n_adapt = min(config.lora.hiera_blocks, n_blocks)
-        hiera_targets = hiera_trailing_block_targets(n_blocks, n_adapt)
-
-        wrapped_hiera = apply_lora(
+        # Apply LoRA to target modules
+        print("\nApplying LoRA adapters...")
+        wrapped = apply_lora(
             model,
-            target_patterns=hiera_targets,
-            rank=config.lora.hiera_rank,
-            alpha=config.lora.hiera_alpha,
+            target_patterns=SAM2_LORA_TARGETS,
+            rank=config.lora.rank,
+            alpha=config.lora.alpha,
             dropout=config.lora.dropout,
         )
-        first = n_blocks - n_adapt
-        print(
-            f"  Wrapped {len(wrapped_hiera)} Hiera Linear layers with LoRA "
-            f"(rank={config.lora.hiera_rank}, blocks {first}-{n_blocks - 1} "
-            f"of {n_blocks})"
-        )
-        # Hiera matches 4 Linears per block (attn.qkv, attn.proj, mlp.layers.0,
-        # mlp.layers.1). Anything else means the regex silently missed -- which
-        # would leave the encoder unadapted while the run looks completely
-        # normal, and cost 11 hours to discover. Fail loudly instead.
-        expected = 4 * n_adapt
-        if len(wrapped_hiera) != expected:
-            raise RuntimeError(
-                f"Hiera LoRA matched {len(wrapped_hiera)} Linear layers, "
-                f"expected {expected} (4 per block x {n_adapt} blocks). The "
-                f"target patterns do not fit this trunk: {hiera_targets}"
-            )
-        for name in sorted(wrapped_hiera):
+        print(f"  Wrapped {len(wrapped)} Linear layers with LoRA (rank={config.lora.rank})")
+        for name in sorted(wrapped):
             print(f"    - {name}")
+
+        # Optional second LoRA pass on the Hiera encoder's last stage. Image
+        # encoder params are still frozen (set above); LoRALinear's A/B matrices
+        # are NEW parameters that default to requires_grad=True, so the
+        # adapters train while the underlying Hiera weights stay frozen. The
+        # gradient flows correctly into A and B via the LoRA forward path.
+        if config.lora.hiera_last_stage:
+            # Derive the block indices from the trunk that was actually loaded
+            # rather than hardcoding them, so this survives a backbone swap.
+            trunk = model.image_encoder.trunk
+            n_blocks = len(trunk.blocks)
+            n_adapt = min(config.lora.hiera_blocks, n_blocks)
+            hiera_targets = hiera_trailing_block_targets(n_blocks, n_adapt)
+
+            wrapped_hiera = apply_lora(
+                model,
+                target_patterns=hiera_targets,
+                rank=config.lora.hiera_rank,
+                alpha=config.lora.hiera_alpha,
+                dropout=config.lora.dropout,
+            )
+            first = n_blocks - n_adapt
+            print(
+                f"  Wrapped {len(wrapped_hiera)} Hiera Linear layers with LoRA "
+                f"(rank={config.lora.hiera_rank}, blocks {first}-{n_blocks - 1} "
+                f"of {n_blocks})"
+            )
+            # Hiera matches 4 Linears per block (attn.qkv, attn.proj, mlp.layers.0,
+            # mlp.layers.1). Anything else means the regex silently missed -- which
+            # would leave the encoder unadapted while the run looks completely
+            # normal, and cost 11 hours to discover. Fail loudly instead.
+            expected = 4 * n_adapt
+            if len(wrapped_hiera) != expected:
+                raise RuntimeError(
+                    f"Hiera LoRA matched {len(wrapped_hiera)} Linear layers, "
+                    f"expected {expected} (4 per block x {n_adapt} blocks). The "
+                    f"target patterns do not fit this trunk: {hiera_targets}"
+                )
+            for name in sorted(wrapped_hiera):
+                print(f"    - {name}")
 
     # Unfreeze small learnable embeddings
     unfrozen_embeddings = []
@@ -1098,6 +1110,9 @@ def train(config: TrainingConfig = None):
     """Main training function."""
     if config is None:
         config = TrainingConfig()
+    # Resolution and normalization follow the backbone (no-op for sam2).
+    from src.config import apply_backbone_defaults
+    apply_backbone_defaults(config)
 
     device = detect_device()
     print(f"Using device: {device}")
@@ -1312,6 +1327,14 @@ def train(config: TrainingConfig = None):
 
     checkpoint_dir = Path(config.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    # Record the config NOW, not only at 'Training complete!': a run that is
+    # cancelled or killed at the 4-hour wall keeps lora_weights.pt but would
+    # otherwise have no record of the backbone / resolution / normalization
+    # it was trained with, and run_ours.py reads exactly that file to rebuild
+    # the right model. Rewritten unchanged at the end.
+    import dataclasses as _dc
+    with open(checkpoint_dir / "training_config.json", "w") as _f:
+        json.dump(_dc.asdict(config), _f, indent=2)
 
     best_val_iou = 0.0
     best_topo_b0 = float("inf")   # lowest Betti-0 among IoU-equivalent epochs
@@ -1556,10 +1579,11 @@ def train(config: TrainingConfig = None):
 
             # --- topology TIE-BREAK checkpoint (separate file) --------------
             # Among epochs IoU cannot tell apart (within topo_iou_margin of
-            # the best seen), keep the one with the lowest SMOOTHED Betti-0.
-            # Single-epoch Betti-0 has ~47% CV, so the running mean is what
-            # makes this a signal rather than a lottery. Never touches
-            # lora_weights.pt, and does not affect early stopping.
+            # the best seen), keep the one with the lowest validation Betti-0.
+            # NOTE: this is the RAW single-epoch value -- no smoothing is
+            # applied (an earlier comment claimed a running mean; it never
+            # existed). The paper describes the rule as implemented here.
+            # Never touches lora_weights.pt, and does not affect early stopping.
             b0 = val_metrics.get("val_betti0")
             if config.loss.save_topo_checkpoint and b0 is not None and not np.isnan(b0):
                 iou_ok = val_metrics["val_iou"] >= best_val_iou - config.loss.topo_iou_margin

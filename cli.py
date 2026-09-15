@@ -59,6 +59,14 @@ def cmd_train(args):
     config = TrainingConfig()  # Start from config.py defaults
 
     # ----- Top-level overrides -----
+    if getattr(args, "backbone", None) is not None:
+        # Which pretrained tracker carries the LoRA. Default stays "sam2";
+        # "sam3" is the experiment and its checkpoints are NOT interchangeable,
+        # so always pair it with a fresh --checkpoint-dir.
+        config.backbone = args.backbone
+        from src.config import apply_backbone_defaults
+        apply_backbone_defaults(config)     # resolution + normalization for sam3
+
     if args.epochs is not None:
         config.num_epochs = args.epochs
     if args.batch_size is not None:
@@ -99,6 +107,8 @@ def cmd_train(args):
         config.data.cache_in_memory = False
     if args.no_precompute:
         config.data.precompute_features = False
+    if getattr(args, "precompute", False):
+        config.data.precompute_features = True
     if args.val_videos:
         # Comma-separated list, e.g. --val-videos A51_C1,A52_C2,A31_C2
         config.data.val_videos = [v.strip() for v in args.val_videos.split(",") if v.strip()]
@@ -213,6 +223,19 @@ def main():
     # --- train command ---
     p_train = subparsers.add_parser("train", help="Train the model")
     # All numeric/string defaults are None: when omitted, config.py wins.
+    p_train.add_argument("--precompute", action="store_true",
+                         help="run the frozen image encoder once over every "
+                              "frame and train against cached features (pair "
+                              "with --no-hiera-last-stage; augmentation drops "
+                              "to flips). The fallback if --backbone sam3 is "
+                              "too slow per step.")
+    p_train.add_argument("--backbone", choices=["sam2", "sam3"], default=None,
+                         help="pretrained tracker to adapt (default: sam2). sam3 "
+                              "loads facebook/sam3/sam3.pt (SAM 3, not 3.1 -- "
+                              "the 3.1 tracker is multiplex-only), requires "
+                              "sam3-env, and sets image_size=1008 and "
+                              "mean/std=0.5. Run benchmark/sam3_lora_preflight.py "
+                              "first")
     p_train.add_argument("--epochs", type=int, default=None)
     p_train.add_argument("--batch-size", type=int, default=None)
     p_train.add_argument("--lora-rank", type=int, default=None)
