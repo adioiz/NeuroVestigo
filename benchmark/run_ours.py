@@ -54,6 +54,20 @@ def build_model(ckpt: str, device: str, load_lora: bool = True):
     config = TrainingConfig()
     config.use_memory_attention_path = True
     config.data.precompute_features = False
+    # Which backbone the checkpoint was trained on. The trainer writes
+    # training_config.json beside every checkpoint; pre-branch runs have no
+    # 'backbone' key and are SAM 2. A SAM 3 checkpoint loaded into a SAM 2
+    # model would fail on the LoRA key names -- and the reverse would too --
+    # so this is read, not guessed. Resolution (1008) and normalization (0.5)
+    # follow from it via apply_backbone_defaults.
+    import json
+    from src.config import apply_backbone_defaults
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(ckpt)), "training_config.json")
+    if os.path.exists(cfg_path):
+        with open(cfg_path) as f:
+            config.backbone = json.load(f).get("backbone") or "sam2"
+    apply_backbone_defaults(config)
+    print(f"  [ours] backbone={config.backbone} image_size={config.data.image_size}")
     model, _ = build_training_model(config, device)
     # FAIR PROTOCOL (identical across models): frame 0 is the GIVEN prompt, so
     # seed it by passing the GT mask straight through to output + memory. This
