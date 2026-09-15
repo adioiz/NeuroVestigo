@@ -23,7 +23,7 @@ conda activate sam3-env
 for tag in "" "_topo"; do
   name="ours_sam3${tag}"
   echo; echo "##### inference $name"
-  python -u benchmark/run_ours.py --ckpt "checkpoints-sam3/lora_weights${tag}.pt" \
+  python -u benchmark/run_ours.py --ckpt "checkpoints-sam3/lora_weights${tag}.pt" --backbone sam3 \
       --videos $VIDEOS --out-dir "benchmark/predictions/$name" || echo "run_ours failed for $name"
 done
 

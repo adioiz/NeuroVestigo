@@ -46,7 +46,8 @@ def _seq_len(name: str) -> int:
     return len(glob.glob(os.path.join(DATA_DIR, "images", name, "*.png")))
 
 
-def build_model(ckpt: str, device: str, load_lora: bool = True):
+def build_model(ckpt: str, device: str, load_lora: bool = True,
+                backbone: str = None):
     """Build SAM 2 + dual-rank LoRA. When `load_lora` is False the adapters stay
     at their zero-init (LoRA-B=0 -> exact identity), giving stock SAM 2 through
     the same harness -- a controlled zero-shot baseline that isolates exactly
@@ -63,9 +64,17 @@ def build_model(ckpt: str, device: str, load_lora: bool = True):
     import json
     from src.config import apply_backbone_defaults
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(ckpt)), "training_config.json")
-    if os.path.exists(cfg_path):
+    if backbone:                                  # explicit --backbone wins
+        config.backbone = backbone
+    elif os.path.exists(cfg_path):
         with open(cfg_path) as f:
             config.backbone = json.load(f).get("backbone") or "sam2"
+    else:
+        # The trainer used to write training_config.json only at the END of a
+        # run, so a cancelled run had none and silently fell back to sam2 --
+        # then died loading SAM 3 LoRA keys into a SAM 2 model. Say so.
+        print(f"  [ours] no training_config.json beside {ckpt}; assuming sam2 "
+              f"(pass --backbone sam3 for a SAM 3 checkpoint)")
     apply_backbone_defaults(config)
     print(f"  [ours] backbone={config.backbone} image_size={config.data.image_size}")
     model, _ = build_training_model(config, device)
@@ -157,6 +166,9 @@ def main():
     ap.add_argument("--videos", nargs="*", default=None,
                     help="video names (default: the config val split)")
     ap.add_argument("--ckpt", default=DEFAULT_CKPT)
+    ap.add_argument("--backbone", choices=["sam2", "sam3"], default=None,
+                    help="backbone the checkpoint was trained on; default: read "
+                         "training_config.json beside the checkpoint, else sam2")
     ap.add_argument("--no-lora", action="store_true",
                     help="stock SAM 2 zero-shot baseline (do not load fine-tuned adapters)")
     ap.add_argument("--limit-frames", type=int, default=None,
@@ -182,7 +194,8 @@ def main():
 
     tag = "stock SAM 2 (zero-shot)" if args.no_lora else "fine-tuned SAM 2 + LoRA"
     print(f"building model: {tag} ...")
-    model, config, nm, ns = build_model(args.ckpt, device, load_lora=not args.no_lora)
+    model, config, nm, ns = build_model(args.ckpt, device, load_lora=not args.no_lora,
+                                        backbone=args.backbone)
 
     for v in videos:
         print(f"  propagating {v} ...", flush=True)

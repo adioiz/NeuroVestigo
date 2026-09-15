@@ -1327,6 +1327,14 @@ def train(config: TrainingConfig = None):
 
     checkpoint_dir = Path(config.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    # Record the config NOW, not only at 'Training complete!': a run that is
+    # cancelled or killed at the 4-hour wall keeps lora_weights.pt but would
+    # otherwise have no record of the backbone / resolution / normalization
+    # it was trained with, and run_ours.py reads exactly that file to rebuild
+    # the right model. Rewritten unchanged at the end.
+    import dataclasses as _dc
+    with open(checkpoint_dir / "training_config.json", "w") as _f:
+        json.dump(_dc.asdict(config), _f, indent=2)
 
     best_val_iou = 0.0
     best_topo_b0 = float("inf")   # lowest Betti-0 among IoU-equivalent epochs
