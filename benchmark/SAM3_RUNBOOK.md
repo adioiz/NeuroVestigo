@@ -106,7 +106,7 @@ python benchmark/run_sam3.py --probe
 ```
 
 This prints the request types and prompt keys your installed build actually
-accepts. **Send that output to Claude before going further.**
+accepts. **Check that output before going further.**
 
 - If it matches what `run_video()` calls → proceed to Stage 2.
 - If it differs → one edit to the three `handle_request` calls and possibly
