@@ -112,6 +112,15 @@ def cmd_train(args):
     if args.val_videos:
         # Comma-separated list, e.g. --val-videos A51_C1,A52_C2,A31_C2
         config.data.val_videos = [v.strip() for v in args.val_videos.split(",") if v.strip()]
+    if args.fold is not None:
+        # A cross-validation fold from src/folds.py: its own held-out test set
+        # around the shared validation set. Nothing else moves, which is what
+        # makes the folds comparable to each other and to the paper's run.
+        if args.val_videos:
+            raise SystemExit("--fold sets the validation set as well; drop --val-videos")
+        from src.folds import VAL, test_videos
+        config.data.test_videos = test_videos(args.fold)
+        config.data.val_videos = list(VAL)
 
     # ----- torch.compile -----
     if args.compile_encoder:
@@ -172,6 +181,8 @@ def cmd_train(args):
           f"{' (pinned)' if config.data.val_num_frames else ''}")
     if config.data.val_videos:
         print(f"  data.val_videos={config.data.val_videos} (overrides val_fraction)")
+    print(f"  data.test_videos={config.data.test_videos}"
+          f"{f' (fold {args.fold})' if args.fold is not None else ''}")
     print(f"  loss.use_cbdice={config.loss.use_cbdice}, "
           f"use_supervoxel={config.loss.use_supervoxel}, "
           f"cbdice_weight={config.loss.loss_cbdice_weight}, "
@@ -356,6 +367,17 @@ def main():
             "Comma-separated video names to use as the val split, overriding "
             "val_fraction and the seed-based shuffle. Example: "
             "--val-videos A51_C1,A52_C2,A31_C2"
+        ),
+    )
+    p_train.add_argument(
+        "--fold",
+        type=int,
+        choices=[1, 2, 3],
+        default=None,
+        help=(
+            "Train one cross-validation fold (src/folds.py): sets the held-out "
+            "test set and the shared validation set. Fold 1 is the paper's "
+            "split. Pair it with a fresh --checkpoint-dir."
         ),
     )
     p_train.add_argument(

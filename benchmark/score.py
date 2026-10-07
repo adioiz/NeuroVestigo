@@ -30,10 +30,13 @@ METRICS = ["iou", "dice", "cldice"]
 
 
 def score_model(pred_dir: str, model: str, split: str = "test", videos=None,
-                with_cbdice=False, skip_first_frame=False):
-    ds = Dataset()
+                with_cbdice=False, skip_first_frame=False, fold=None):
+    ds = Dataset(fold=fold)
     videos = videos or ds.split(split)
-    RESULTS_DIR = os.path.join(REPO, "benchmark", "results", split)
+    # A fold gets its own results directory: summary.csv rows are keyed by
+    # model alone, so two folds sharing one file would overwrite each other.
+    RESULTS_DIR = os.path.join(REPO, "benchmark", "results",
+                               split if fold is None else f"{split}_fold{fold}")
     metrics = METRICS + (["cbdice"] if with_cbdice else [])
     results, missing = [], []
     for v in videos:
@@ -99,11 +102,15 @@ def main():
     ap.add_argument("--split", default="test", choices=["test", "val", "train"],
                     help="which held-out split these predictions cover (default: test)")
     ap.add_argument("--videos", nargs="*", default=None)
+    ap.add_argument("--fold", type=int, choices=[1, 2, 3], default=None,
+                    help="cross-validation fold (src/folds.py): take the split "
+                         "from it and write to benchmark/results/<split>_fold<N>/")
     ap.add_argument("--cbdice", action="store_true")
     ap.add_argument("--skip-first-frame", action="store_true")
     args = ap.parse_args()
     score_model(args.pred_dir, args.model, split=args.split, videos=args.videos,
-                with_cbdice=args.cbdice, skip_first_frame=args.skip_first_frame)
+                with_cbdice=args.cbdice, skip_first_frame=args.skip_first_frame,
+                fold=args.fold)
 
 
 if __name__ == "__main__":

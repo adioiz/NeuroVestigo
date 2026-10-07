@@ -17,10 +17,14 @@ from __future__ import annotations
 import glob
 import json
 import os
+import sys
 
 import numpy as np
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO not in sys.path:
+    sys.path.insert(0, REPO)
+from src.folds import FOLDS, VAL as FOLD_VAL, test_videos as fold_test_videos
 MANIFEST = os.path.join(REPO, "data_manifest.json")
 # The split is read from the SHIPPED model's own config, so the benchmark can
 # never disagree with training about what val is. This named gpu-checkpoints/
@@ -37,7 +41,8 @@ CONFIG = os.path.join(REPO, "checkpoints", "training_config.json")
 # new fields from the same 100k batch (mild same-sample caveat).
 # NOTE: these must be `prepare`d into training_data/{images,masks}/<name>/ before use.
 # (The earlier `_100k` test set was WRONG: the shipped model DID train on those.)
-TEST_VIDEOS = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2"]
+# Fold 1 of src/folds.py, which also defines folds 2 and 3: Dataset(fold=N).
+TEST_VIDEOS = list(FOLDS[1])
 
 
 def config_hint() -> str:
@@ -48,12 +53,19 @@ def config_hint() -> str:
 
 
 class Dataset:
-    def __init__(self, manifest: str = MANIFEST, config: str = CONFIG):
+    def __init__(self, manifest: str = MANIFEST, config: str = CONFIG,
+                 fold: int | None = None):
+        """fold=None is the paper's split, exactly as before; fold=N takes test
+        and val from src/folds.py, the lists the fold-N model was trained with."""
         with open(manifest) as f:
             entries = json.load(f)
         self.entries = {e["name"]: e for e in entries}
+        self.fold = fold
+        self.test_videos = TEST_VIDEOS if fold is None else fold_test_videos(fold)
         self.val_videos: list[str] = []
-        if os.path.exists(config):
+        if fold is not None:
+            self.val_videos = list(FOLD_VAL)
+        elif os.path.exists(config):
             with open(config) as f:
                 # `or []`, not a .get default: the key is PRESENT-but-null in a
                 # config written by a run that used val_fraction instead of an
@@ -72,7 +84,7 @@ class Dataset:
         'all' -> everything."""
         if which == "all":
             return self.all()
-        test = [n for n in TEST_VIDEOS if n in self.entries]
+        test = [n for n in self.test_videos if n in self.entries]
         val = [n for n in self.val_videos if n in self.entries]
         if which == "test":
             return test
