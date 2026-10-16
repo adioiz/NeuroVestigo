@@ -357,9 +357,10 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints,
             # frame it has already dropped; its own propagate_in_video then
             # raises "No points are provided" (video_tracking_multiplex_demo.py,
             # reached from sam3_multiplex_base.run_tracker_propagation). It did
-            # so on fold 3's A11_C1 at frame 52 of 73. The frames before that
-            # are the model's real output and it has none for the rest, so they
-            # stay empty -- and stats records where it stopped, for the paper.
+            # so on fold 3's A11_C1, at frame 52 of 73 in one run and 32 in the
+            # next -- where varies. The frames before that are the model's real
+            # output and it has none for the rest, so they stay empty -- and
+            # stats records where it stopped, for the paper.
             if "No points are provided" not in str(e) or seen == 0:
                 raise
             stats["stopped_at"] = last + 1
