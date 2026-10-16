@@ -1,9 +1,9 @@
 % Method overview for the ISBI 2027 version -- copied verbatim from
 % paper/main.tex (Fig. 2 there, lines 772-797 and 801-945); edits are marked
 % ISBI-EDIT. Panel (a) is paper/fig2_filmstrip.png, drawn by
-% paper/make_filmstrip.py --video B12_C1_100k, from
-% benchmark/predictions/ours_fold2_topo (the released model, which held that
-% recording out).
+% paper/make_filmstrip.py (A71_C1, its default), from
+% benchmark/predictions/ours_23rec_topo (the released first-split model, which
+% held that recording out).
 
 % ----------------------------------------------------------
 % Traced from real ground-truth masks -- training_data/masks/
@@ -61,21 +61,21 @@
      {One annotation at $t=0$ propagates through the whole recording};
 
 % Real phase contrast: the frame-0 ground-truth prompt (navy) and the model's
-% own propagated masks (teal).  Eight 1.08 x 1.23 cm cells on a 1.995 cm pitch,
-% 50 um scale bar burnt into the last cell.  Built by make_filmstrip.py, which
+% own propagated masks (teal).  Seven 1.24 cm cells on a 2.30 cm pitch, 50 um
+% scale bar burnt into the last cell.  Built by make_filmstrip.py, which
 % refuses to draw a recording the model trained on, and refuses to draw at all
-% unless the stack re-scores to the IoU in results/folds/per_recording.csv.
+% unless the stack re-scores to the IoU in results/test/ours_23rec_topo.csv.
 \node[anchor=south west, inner sep=0] at (0.53,5.80)
      {\includegraphics[width=15.04cm]{fig2_filmstrip}};
 
 \draw[rule] (0.90,5.70) -- (15.35,5.70);
-\foreach \x in {1.07,3.06,5.06,7.05,9.05,11.04,13.04,15.03}
+\foreach \x in {1.15,3.45,5.75,8.05,10.35,12.65,14.95}
   \draw[rule] (\x,5.70) -- (\x,5.60);
-\foreach \x/\lb in {1.07/0, 3.06/12, 5.06/24, 7.05/36, 9.05/48, 11.04/60,
-                    13.04/72, 15.03/84}
+\foreach \x/\lb in {1.15/0, 3.45/12, 5.75/24, 8.05/36, 10.35/48, 12.65/60,
+                    14.95/72}
   \node[sm, anchor=north] at (\x,5.56) {\lb};
 \node[sm, anchor=west] at (15.45,5.64) {h};
-\node[sm, text=navy, anchor=north] at (1.07,5.26) {given};
+\node[sm, text=navy, anchor=north] at (1.15,5.26) {given};
 \node[sm, anchor=north east] at (16.20,5.26) {scale bar $50\,\mu$m};
 \node[sm, anchor=north] at (9.20,5.26)
      {propagated with no further prompt, correction or re-initialization};
