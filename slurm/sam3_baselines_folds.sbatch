@@ -11,7 +11,9 @@
 #   sbatch slurm/sam3_baselines_folds.sbatch
 #
 # It first reruns both on fold 1's A71_C1 and compares with the paper's stacks,
-# so a changed setting shows up before eight recordings are spent on it.
+# so a changed setting shows up before eight recordings are spent on it. Then
+# it runs each method only on the recordings that have no stack yet, so a
+# rerun picks up where a failed one stopped.
 # ---------------------------------------------------------------------------
 #SBATCH --job-name=nv_sam3_folds
 #SBATCH --partition=B200-4h
@@ -34,6 +36,11 @@ VIDEOS=$(python -c "from src.folds import FOLDS; print(' '.join(v for f in (2, 3
 echo "new test recordings: ${VIDEOS}"
 TEXT_ARGS="--mode text --text cells --max-num-objects 64 --no-cudnn"
 CHECK=$(mktemp -d)
+missing() {     # the new recordings with no stack in benchmark/predictions/$1
+    local out=""
+    for v in $VIDEOS; do [ -f "benchmark/predictions/$1/$v.tif" ] || out="$out $v"; done
+    echo $out
+}
 
 echo; echo "##### reproduction check on A71_C1"
 python -u benchmark/run_sam3_mask.py --videos A71_C1 --out-dir "$CHECK/sam3_maskfirst" || exit 1
@@ -56,10 +63,12 @@ for d in ("sam3_maskfirst", "sam3_text_final"):
         sys.exit(f"{d} does not reproduce the paper's run -- settings changed; stopping")
 PY
 
-echo; echo "##### SAM 3 (mask) on the new recordings"
-python -u benchmark/run_sam3_mask.py --videos $VIDEOS --out-dir benchmark/predictions/sam3_maskfirst
-echo; echo "##### SAM 3.1 (text) on the new recordings"
-python -u benchmark/run_sam3.py $TEXT_ARGS --videos $VIDEOS --out-dir benchmark/predictions/sam3_text_final
+TODO=$(missing sam3_maskfirst)
+echo; echo "##### SAM 3 (mask) on the new recordings: ${TODO:-all done already}"
+[ -n "$TODO" ] && python -u benchmark/run_sam3_mask.py --videos $TODO --out-dir benchmark/predictions/sam3_maskfirst
+TODO=$(missing sam3_text_final)
+echo; echo "##### SAM 3.1 (text) on the new recordings: ${TODO:-all done already}"
+[ -n "$TODO" ] && python -u benchmark/run_sam3.py $TEXT_ARGS --videos $TODO --out-dir benchmark/predictions/sam3_text_final
 
 rm -rf "$CHECK"
 echo; ls benchmark/predictions/sam3_maskfirst benchmark/predictions/sam3_text_final

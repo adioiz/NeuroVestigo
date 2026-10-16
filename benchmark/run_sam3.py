@@ -331,25 +331,40 @@ def run_video(predictor, frames_dir, gts, mode, text, npoints,
             # Frames past T are discarded below; a full clip costs ~2s.
         })
 
-        seen = 0
-        for frame_idx, _obj_ids, raw in _iter_results(stream):
-            if frame_idx >= T:
-                continue
-            masks = _binarize(raw)
-            masks = masks.reshape(-1, *masks.shape[-2:])
-            masks = _resize_stack(masks, H, W)
-            seen += 1
-            if frame_idx < T:
-                stats["raw_fg"] += float(np.any(masks, axis=0).mean())
-                stats["n_inst"] += int(masks.shape[0])
-                stats["frames"] += 1
-            if mode == "text":                   # not target-aware -> union match
-                inst = np.zeros((H, W), np.int32)
-                for i, m in enumerate(masks, 1):
-                    inst[m] = i
-                out[frame_idx] = match_to_target(inst, gts[frame_idx]).astype(np.uint8)
-            else:
-                out[frame_idx] = np.any(masks, axis=0).astype(np.uint8)
+        seen, last = 0, -1
+        try:
+            for frame_idx, _obj_ids, raw in _iter_results(stream):
+                if frame_idx >= T:
+                    continue
+                last = frame_idx
+                masks = _binarize(raw)
+                masks = masks.reshape(-1, *masks.shape[-2:])
+                masks = _resize_stack(masks, H, W)
+                seen += 1
+                if frame_idx < T:
+                    stats["raw_fg"] += float(np.any(masks, axis=0).mean())
+                    stats["n_inst"] += int(masks.shape[0])
+                    stats["frames"] += 1
+                if mode == "text":                   # not target-aware -> union match
+                    inst = np.zeros((H, W), np.int32)
+                    for i, m in enumerate(masks, 1):
+                        inst[m] = i
+                    out[frame_idx] = match_to_target(inst, gts[frame_idx]).astype(np.uint8)
+                else:
+                    out[frame_idx] = np.any(masks, axis=0).astype(np.uint8)
+        except RuntimeError as e:
+            # SAM 3.1's multiplex tracker can keep an object whose conditioning
+            # frame it has already dropped; its own propagate_in_video then
+            # raises "No points are provided" (video_tracking_multiplex_demo.py,
+            # reached from sam3_multiplex_base.run_tracker_propagation). It did
+            # so on fold 3's A11_C1 at frame 52 of 73. The frames before that
+            # are the model's real output and it has none for the rest, so they
+            # stay empty -- and stats records where it stopped, for the paper.
+            if "No points are provided" not in str(e) or seen == 0:
+                raise
+            stats["stopped_at"] = last + 1
+            print(f"    SAM 3.1's tracker failed after frame {last} of {T - 1}: "
+                  f"{e}. Frames {last + 1}-{T - 1} left empty.", flush=True)
 
         if seen == 0:
             raise RuntimeError(
@@ -529,7 +544,9 @@ def main():
             tifffile.imwrite(p, stack)
             print(f"    -> {p}  (fg={float((stack>0).mean()):.4f}  "
                   f"raw_fg={st['raw_fg']:.4f}  "
-                  f"inst/frame={st['inst_per_frame']:.1f})")
+                  f"inst/frame={st['inst_per_frame']:.1f})"
+                  + (f"  STOPPED at frame {st['stopped_at']} of {n}"
+                     if "stopped_at" in st else ""))
 
 
 if __name__ == "__main__":
