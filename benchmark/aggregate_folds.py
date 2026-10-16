@@ -11,7 +11,16 @@ the mean of the fold scores +- their SD (n = 3 models, ddof = 1); with four
 recordings per fold, the mean over folds is also the mean over all twelve.
 
 Table 2 (temporal drift) splits each recording's per-frame cbDice into four
-contiguous quartiles, as drift_quartiles.py does; decay is Q4 - Q1 per fold.
+contiguous quartiles, as drift_quartiles.py does. Drift is |Q4 - Q1| per
+recording, averaged: growth is read from mask differences, so a method whose
+quality RISES over a recording biases it as much as one whose quality falls.
+The signed mean (decay) is kept beside it -- it is how the two directions
+cancel: Cellpose-SAM improves on three density-series recordings, where the
+growing neuron gets easier to detect, and its signed mean hides its declines.
+
+Paired comparisons: NeuroVestigo against each baseline recording by recording
+(higher metric wins; lower drift wins), with the exact two-sided sign test and
+the Wilcoxon signed-rank test.
 
     venv/bin/python benchmark/aggregate_folds.py            # folds 1-3
     venv/bin/python benchmark/aggregate_folds.py --folds 1  # the paper's tables
@@ -19,13 +28,14 @@ contiguous quartiles, as drift_quartiles.py does; decay is Q4 - Q1 per fold.
 A method is tabulated only when it has a prediction for every test recording of
 every requested fold; anything missing is listed, by recording, at the end.
 
-Writes benchmark/results/folds/{table1,table2,per_recording}.csv.
+Writes benchmark/results/folds/{table1,table2,paired,per_recording}.csv.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import os
 import sys
 
@@ -91,7 +101,7 @@ def main() -> int:
     per_rec = []                # (label, fold, recording, {metric: mean}, quartiles)
     table1, table2, missing = [], [], []
     for label, spec in METHODS:
-        fold_scores, fold_quarts, absent = {}, {}, []
+        fold_scores, fold_quarts, fold_drift, absent = {}, {}, {}, []
         for fold in folds:
             d = pred_dir(spec, fold)
             bad = provenance_problem(d, fold)
@@ -117,6 +127,7 @@ def main() -> int:
                 per_rec.append((label, fold, v, m, q))
             fold_scores[fold] = {k: float(np.mean([m[k] for m in rec_means])) for k in METRICS}
             fold_quarts[fold] = np.mean(rec_quarts, axis=0)
+            fold_drift[fold] = float(np.mean([abs(q[3] - q[0]) for q in rec_quarts]))
         if absent:
             missing.append((label, absent))
             continue
@@ -132,10 +143,14 @@ def main() -> int:
         if label not in TABLE2_SKIP:
             qs = np.array([fold_quarts[f] for f in folds])         # folds x 4
             decays = qs[:, 3] - qs[:, 0]
+            drifts = [fold_drift[f] for f in folds]
+            all_drift = [abs(q[3] - q[0]) for lab, _, _, _, q in per_rec if lab == label]
             table2.append({"method": label, "n_folds": n,
                            **{f"q{i + 1}": float(qs[:, i].mean()) for i in range(4)},
+                           "drift_mean": float(np.mean(drifts)), "drift_sd": sd(drifts),
+                           "drift_median": float(np.median(all_drift)),
                            "decay_mean": float(decays.mean()), "decay_sd": sd(decays),
-                           **{f"decay_fold{f}": float(dv) for f, dv in zip(folds, decays)}})
+                           **{f"drift_fold{f}": dv for f, dv in zip(folds, drifts)}})
 
     os.makedirs(OUT, exist_ok=True)
     pm = (lambda r, k: f"{r[f'{k}_mean']:.3f}" + (f" +- {r[f'{k}_sd']:.3f}" if len(folds) > 1 else ""))
@@ -149,14 +164,44 @@ def main() -> int:
             print(f"  {r['method']:<30}" + "  ".join(
                 f"f{f} {r[f'iou_fold{f}']:.3f}/{r[f'cbdice_fold{f}']:.3f}" for f in folds))
 
-    print(f"\nTable 2 -- mean cbDice by recording quartile, decay = Q4 - Q1")
-    print(f"{'method':<30}{'Q1':>8}{'Q2':>8}{'Q3':>8}{'Q4':>8}{'decay':>20}")
-    for r in sorted(table2, key=lambda r: -r["decay_mean"]):
-        dec = f"{r['decay_mean']:+.3f}" + (f" +- {r['decay_sd']:.3f}" if len(folds) > 1 else "")
+    print(f"\nTable 2 -- mean cbDice by recording quartile; drift = |Q4 - Q1| per recording")
+    print(f"{'method':<30}{'Q1':>8}{'Q2':>8}{'Q3':>8}{'Q4':>8}{'drift':>18}{'median':>8}{'signed':>9}")
+    table2.sort(key=lambda r: r["drift_mean"])
+    for r in table2:
+        dr = f"{r['drift_mean']:.3f}" + (f" +- {r['drift_sd']:.3f}" if len(folds) > 1 else "")
         print(f"{r['method']:<30}" + "".join(f"{r[f'q{i}']:>8.3f}" for i in range(1, 5))
-              + f"{dec:>20}")
+              + f"{dr:>18}{r['drift_median']:>8.3f}{r['decay_mean']:>+9.3f}")
 
-    for name, rows in (("table1", table1), ("table2", table2)):
+    # Paired, recording by recording: NeuroVestigo against each baseline.
+    from scipy.stats import wilcoxon
+    def sign_p(wins, n):
+        k = max(wins, n - wins)
+        return min(1.0, 2 * sum(math.comb(n, j) for j in range(k, n + 1)) / 2 ** n)
+    rec = {}
+    for lab, _, v, m, q in per_rec:
+        rec.setdefault(lab, {})[v] = {**m, "drift": abs(q[3] - q[0])}
+    ours, paired = rec.get("NeuroVestigo", {}), []
+    for r in table1:
+        lab = r["method"]
+        if lab.startswith("NeuroVestigo"):
+            continue
+        for k in METRICS + (["drift"] if lab not in TABLE2_SKIP else []):
+            vs = sorted(ours)
+            a, b = [ours[v][k] for v in vs], [rec[lab][v][k] for v in vs]
+            wins = sum((x < y) if k == "drift" else (x > y) for x, y in zip(a, b))
+            diffs = [x - y for x, y in zip(a, b)]
+            wp = float(wilcoxon(a, b).pvalue) if any(diffs) else 1.0
+            paired.append({"baseline": lab, "metric": k, "neurovestigo_wins": wins,
+                           "n": len(vs), "sign_p": sign_p(wins, len(vs)), "wilcoxon_p": wp})
+    if paired:
+        print(f"\nPaired, per recording: NeuroVestigo wins / n  (sign-test p; Wilcoxon p)")
+        print(f"{'baseline':<20}" + "".join(f"{k:>24}" for k in METRICS + ["drift"]))
+        for lab in dict.fromkeys(p["baseline"] for p in paired):
+            cells = {p["metric"]: f"{p['neurovestigo_wins']}/{p['n']} ({p['sign_p']:.3f}; {p['wilcoxon_p']:.3f})"
+                     for p in paired if p["baseline"] == lab}
+            print(f"{lab:<20}" + "".join(f"{cells.get(k, '-'):>24}" for k in METRICS + ["drift"]))
+
+    for name, rows in (("table1", table1), ("table2", table2), ("paired", paired)):
         if rows:
             with open(os.path.join(OUT, f"{name}.csv"), "w", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -168,7 +213,7 @@ def main() -> int:
         for label, fold, v, m, q in per_rec:
             w.writerow([label, fold, v] + [f"{m[k]:.4f}" for k in METRICS]
                        + [f"{x:.4f}" for x in q])
-    print(f"\nwrote {os.path.relpath(OUT, REPO)}/table1.csv, table2.csv, per_recording.csv")
+    print(f"\nwrote {os.path.relpath(OUT, REPO)}/table1.csv, table2.csv, paired.csv, per_recording.csv")
 
     if missing:
         print("\nNOT TABULATED -- predictions missing:")
