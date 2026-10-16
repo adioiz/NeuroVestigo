@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,6 +27,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "training_data")
 PRED = os.path.join(REPO, "benchmark", "predictions")
 FIGDIR = os.path.join(REPO, "paper_assets", "figures")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import held_out  # noqa: E402
 
 # six models (ours first). SAM 2 = zero-shot propagation; µSAM = box-prompt;
 # Cellpose-SAM / Omnipose / NeuroQuantify = automatic (shown as raw all-cell output).
@@ -35,12 +38,12 @@ MODELS = [("ours", "NeuroVestigo"),
           ("cellpose_sam", "Cellpose-SAM\n(auto)"),
           ("omnipose", "Omnipose\n(auto)"),
           ("neuroquantify", "NeuroQuantify\n(phase-contrast)"),
-          ("sam3.1", "SAM 3.1\n(point-prompt)")]
+          ("sam3_maskfirst", "SAM 3\n(mask-prompt)")]
 # Model key -> predictions subdirectory, where they differ. The SAM 3 sweep
 # wrote one directory per configuration, so the winning run does not carry the
 # name it is scored under.
-PRED_DIR = {"sam3.1": "sam3_final", "usam": "usam_single",
-            "ours": "ours_22rec"}
+PRED_DIR = {"sam3_maskfirst": "sam3_maskfirst", "usam": "usam_single",
+            "ours": "ours_fold2_topo"}
 POOL = ["A71_C1", "A81_C1", "A12_C3_100k", "A12_C1_100k_2", "A31_C1", "A52_C2", "A22_C2"]
 
 
@@ -72,8 +75,14 @@ PRESETS = {
     "v3": [("A52_C2", 2), ("A12_C1_100k_2", 41), ("A42_C1", 37), ("A81_C1", 11)],
     "v4": [("A31_C1", 45), ("A22_C2", 28), ("A12_C3_100k", 3), ("A52_C2", 5)],
     # TEST-ONLY: every frame from a genuinely held-out video (never trained or selected on)
-    "test": [("A71_C1", 64), ("A81_C1", 13), ("A12_C1_100k_2", 52), ("A71_C1", 41)],
+    "test": [("A71_C1", 64), ("A81_C1", 13), ("A12_C1_100k_2", 52), ("A71_C1", 49)],
+    # The released model's own held-out set (fold 2), one frame per recording at
+    # 65 % of the sequence -- late enough for drift to show, chosen by position
+    # rather than by eye.
+    "fold2": [("A51_C1", 47), ("A61_C1", 47), ("B11_C1_100k", 60),
+              ("B12_C1_100k", 60)],
 }
+
 
 
 def main():
@@ -84,9 +93,22 @@ def main():
                     help="target = TP/FN/FP overlay + IoU for EVERY method; "
                          "raw = automatic tools shown as native multi-instance output")
     ap.add_argument("--suffix", default="", help="appended to the output filename")
+    ap.add_argument("--ours-dir", default=None,
+                    help=f"predictions subdirectory for NeuroVestigo "
+                         f"(default {PRED_DIR['ours']})")
     args = ap.parse_args()
+    if args.ours_dir:
+        PRED_DIR["ours"] = args.ours_dir
     samples = PRESETS[args.preset]
+    held_out.require({v for v, _ in samples}, PRED_DIR["ours"])
     AUTO = {"cellpose_sam", "omnipose", "neuroquantify"}   # automatic: shown as RAW all-cell output
+    # A model whose stacks are not on this machine is dropped loudly, not fatally
+    # (sam3_maskfirst lives on the cluster until synced).
+    global MODELS
+    missing = [m for m, _ in MODELS if not os.path.isdir(os.path.join(PRED, PRED_DIR.get(m, m)))]
+    for m in missing:
+        print(f"  !! {m}: no stacks in {PRED_DIR.get(m, m)}/ -- omitted")
+    MODELS = [(m, l) for m, l in MODELS if m not in missing]
     preds, raw = {m: {} for m, _ in MODELS}, {m: {} for m in AUTO}
     for m, _ in MODELS:
         for v, _t in samples:

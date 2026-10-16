@@ -1,0 +1,380 @@
+% =====================================================================
+%  NeuroVestigo -- ISBI 2027 four-page submission
+%
+%  Compressed from ../paper/main.tex (the full-length Cell Reports Methods
+%  draft). Every number is copied from that file or from
+%  ../ISBI2027_HANDOFF.md, and the table rows were checked against
+%  benchmark/results/test/summary.csv. Nothing is re-derived.
+%
+%  Layout follows a 2026 ISBI four-pager (Goel et al., TrackletGPT,
+%  arXiv:2601.13935): the data sit inside Methodology, followed by
+%  Experiments and Results, Conclusion, Compliance with Ethical Standards,
+%  Acknowledgments and References.
+%
+%  BUILD   tectonic main.tex   (or pdfLaTeX + BibTeX in Overleaf)
+%          spconf.sty and IEEEbib.bst are the official ISBI template files
+%          (biomedicalimaging.org, ISBI_template-master.zip).
+%  LIMITS  ISBI 2027: single-blind. All technical content, including
+%          figures and tables, within 4 pages. Page 5 ($200 fee) may hold
+%          ONLY the ethics statement, acknowledgments and references.
+%  OPEN    funding agencies and grant numbers (O.S.); author order (Prof.
+%          Shefi).
+% =====================================================================
+\documentclass{article}
+% T1 makes spconf's Times (ptm) resolve under XeTeX/tectonic too; without it
+% XeTeX falls back to Latin Modern with no bold. Harmless under pdfLaTeX.
+\usepackage[T1]{fontenc}
+\usepackage{spconf,amsmath,amssymb,graphicx}
+\usepackage{cite}
+\usepackage{booktabs}
+\usepackage{url}
+\urlstyle{same}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,backgrounds,decorations.pathreplacing}
+\usepackage{enumitem}
+\setlist{nosep, leftmargin=12pt}
+\graphicspath{{figures/}}
+
+% figure palette (matches the PNG figures and ../paper/main.tex)
+\definecolor{navy}{HTML}{16324F}
+\definecolor{ourblue}{HTML}{1F6FB2}
+\definecolor{teal}{HTML}{2CA6A4}
+\definecolor{softgrey}{HTML}{E4E8ED}
+\definecolor{midgrey}{HTML}{8B96A3}
+\definecolor{amber}{HTML}{E1A93B}
+\definecolor{crimson}{HTML}{C0392B}
+
+% No extra gap between reference entries (spconf leaves LaTeX's default,
+% stretched by \flushbottom); entries stay at 9 pt.
+\makeatletter
+\let\spconf@thebibliography\thebibliography
+\def\thebibliography#1{\spconf@thebibliography{#1}%
+  \setlength{\itemsep}{0pt}\setlength{\parsep}{0pt}}
+\makeatother
+
+% spconf's \@makecaption opens every caption with a 10 pt skip, meant to part
+% a figure from the caption below it. A table's caption sits on top, where the
+% skip only widens the gap above the table, so it is cancelled for tables.
+\makeatletter
+\def\nv@tabletype{table}
+\let\nv@makecaption\@makecaption
+\long\def\@makecaption#1#2{%
+  \ifx\@captype\nv@tabletype\vskip-10pt\relax\fi
+  \nv@makecaption{#1}{#2}}
+\makeatother
+
+% spconf sets \flushbottom, which spreads a column's spare space over its
+% headings and float gaps (it opened a hole above Sec. 3.3); with ragged
+% bottoms the spare space stays at the foot of the column instead.
+\raggedbottom
+
+% Gap between a two-column figure and the text below it (Fig. 1 opens page 2,
+% Fig. 2 opens page 4): 14 pt instead of LaTeX's 20 pt.
+\setlength{\dbltextfloatsep}{14pt plus 2pt minus 2pt}
+
+\newcommand{\todo}[1]{\textcolor{red!80!black}{\textbf{[TODO: #1]}}}
+
+\title{NeuroVestigo: topology-preserving segmentation and tracking of single
+neurons in time-lapse microscopy}
+
+% Author order to be confirmed with Prof. Shefi.
+\name{Adi Oizerovich, Efrat Naomi Berkovich, Sharon Cohen, Ofek Ophir, Orit Shefi}
+\address{Faculty of Engineering, Bar-Ilan University, Ramat Gan, Israel}
+
+\begin{document}
+\maketitle
+
+% ---------------------------------------------------------------------
+\begin{abstract}
+Understanding neuronal growth and regeneration requires accurately quantifying single-cell morphology across multi-day, label-free recordings---a task still bottlenecked by labor-intensive manual tracing. Existing automated segmenters reliably resolve the soma but struggle with neurites and fail to preserve longitudinal instance identity. To address these limitations, we introduce NeuroVestigo, a parameter-efficient adaptation of the promptable video foundation model
+SAM\,2 for time-lapse microscopy. Conditioned on a single annotated mask at frame~0, the model segments entire multi-day sequences. Utilizing dual-rank LoRA+, we train merely $13.9\,\%$ of the weights. The architecture is optimized via a connectivity-preserving objective that penalizes topological fractures. By backpropagating through an undetached temporal memory bank, we minimize longitudinal drift rather than merely measuring it. Evaluated on four strictly held-out recordings, NeuroVestigo achieves state-of-the-art performance (cbDice $0.860$, IoU $0.768$), outperforming seven baselines across all metrics. Furthermore, it demonstrates markedly better temporal stability, exhibiting a minimal cbDice degradation of $0.059$ between the
+first and final quartiles of the sequence, compared to $0.126$ for the most stable baseline. Code, weights, and a napari plug-in are available at \url{github.com/adioiz/NeuroVestigo} and \url{github.com/adioiz/neurons-labeling}.
+\end{abstract}
+
+\begin{keywords}
+Neuron segmentation, cell tracking, phase-contrast microscopy,
+topology-preserving loss, foundation models, live-cell imaging
+\end{keywords}
+
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+
+During development and regeneration, neurons dynamically extend, branch, and retract neurites to establish synaptic networks \cite{dotti1988polarity,lowery2009growthcone}. Neurite outgrowth is acutely modulated by chemical cues, such as axon guidance molecules \cite{lowery2009growthcone}, and by the physical microenvironment, including substrate topography, mechanical stiffness, and intercellular interactions \cite{shefi2005twophase,baranes2012topographic,marcus2017interactions}. Elucidating these processes necessitates precise, longitudinal quantification of single-neuron structural evolution---specifically neurite length, thickness, and branching topology \cite{odde1996stochastic}. Because neuronal growth is phasic \cite{shefi2005twophase,berkovich2025neurite}, capturing these kinematics requires dense frame-by-frame resolution, while high inter-cellular variance demands high-throughput analysis across large populations. We therefore employ label-free microscopy, enabling continuous multi-day imaging without the phototoxicity of fluorescent reporters. Yet, extracting morphometrics from this modality remains bottlenecked by labor-intensive manual tracing \cite{longair2011snt,berkovich2025neurite}, as automatically tracking a single neuron over time is still an unresolved challenge \cite{maska2023ctc}.
+
+% Fig. 1 -- an ordinary [t] figure*: it appears at the top of the page after
+% the one it is declared on. Declared here, after the first paragraph of the
+% introduction (always on page 1), it opens page 2.
+\begin{figure*}[t]
+\centering
+\input{fig_method}
+\caption{\textbf{Method.} \textbf{(a)}~A single ground-truth mask at frame~0 (navy) is propagated through recording \texttt{B12\_C1\_100k} without subsequent prompting (teal, model predictions). \textbf{(b)}~Adaptation sites. \textbf{(c)}~The memory bank remains undetached from the computation graph across 16-frame sequences; two topology-preserving terms augment the Focal and Dice objectives (Eq.~\ref{eq:loss}).}
+\label{fig:method}
+\end{figure*}
+
+Three intrinsic properties render this task uniquely challenging. First, neurites are only a few pixels wide; consequently, minimal pixel misclassifications can induce catastrophic topological fractures that incur negligible penalties under standard area-based metrics. Second, label-free imaging suffers from inherently low signal-to-noise ratios. Finally, the target undergoes continuous morphological expansion amid identical distractors, mandating strict disambiguation and the longitudinal preservation of identity.
+
+Current computational frameworks address this challenge only partially. Standard cell segmenters (e.g., Cellpose-SAM \cite{pachitariu2025cellposesam} and Omnipose \cite{cutler2022omnipose}) and domain-specific models such as NeuroQuantify \cite{dang2024neuroquantify} process frames independently, failing to preserve longitudinal instance identity. Post hoc temporal linking \cite{maska2023ctc,gallusser2024trackastra} cannot repair topological fractures introduced during segmentation, while tracking pipelines such as NeuriteTracker \cite{fusco2016neuritetracker} require fluorescent labels. Promptable models, by contrast, let the user select a single target: SAM\,2 \cite{ravi2025sam2} and SAM\,3 \cite{carion2025sam3} propagate a spatial prompt through a memory bank, and $\mu$SAM \cite{archit2025microsam} adapts SAM \cite{kirillov2023sam} specifically for microscopy. Crucially, none of these architectures are optimized to maintain the structural connectivity of ultra-fine, pixel-scale branches. Although topology-aware loss formulations \cite{shit2021cldice,shi2024cbdice,grim2025supervoxel} are explicitly designed to penalize such disconnections, they remain, to our knowledge, unintegrated within the optimization of promptable video models.
+
+To address this, we introduce \textbf{NeuroVestigo}, a SAM\,2.1 adaptation employing dual-rank LoRA+, optimized via backpropagation through an undetached memory bank to prioritize longitudinal propagation over per-frame segmentation. Furthermore, we propose a topology-preserving objective that integrates cbDice and supervoxel loss with conventional Focal and Dice terms, and rigorously select checkpoints via Betti-0 error minimization. Finally, we provide comprehensive benchmarking, including temporal degradation analysis---and publicly release our code, weights, and annotation plug-in.
+
+% =====================================================================
+\section{Methodology}
+\label{sec:method}
+
+\subsection{Data and annotation}
+\label{sec:data}
+
+Primary cortical neurons from P0--P1 BALB/c mice
+\cite{berkovich2025neurite} were imaged label-free on an IncuCyte SX5
+(Sartorius) with a $10\times$ objective, one frame per hour. Each of the 32 recordings is a crop
+centered on one target neuron, 148--615 by 146--498\,px, with 57--97 frames (most often 73); 2{,}490 masks were
+annotated in total. The target covers $2.485\,\%$ of a frame on
+average and as little as $0.217\,\%$. Recordings are split 23/5/4 into
+training, validation and test. Masks were drawn in \texttt{neurons-labeling}, a napari
+plug-in built for this work: a neuron is painted on frame~0 and propagated,
+any frame can be corrected, and propagation is re-run from there. Every mask was hand-edited.
+
+\subsection{Promptable propagation}
+\label{sec:prop}
+
+We adapt SAM\,2.1 with the Hiera-tiny image encoder
+\cite{ravi2025sam2,ryali2023hiera}. SAM\,2 is prompted geometrically on one
+frame, and a memory bank carries the prompt forward. With $I_t$ the frame at
+time $t$, $E$ the encoder and $M_t$ the bank after frame $t$ (frame~0 plus the six most recent frames),
+\begin{equation}
+\begin{split}
+F_t &= \mathrm{MemAttn}\big(E(I_t),\, M_{t-1}\big),\qquad
+\hat{m}_t = \mathrm{Dec}(F_t),\\
+M_t &= \big[M_{t-1};\; \mathrm{MemEnc}(I_t, \hat{m}_t)\big],
+\end{split}
+\label{eq:recurrence}
+\end{equation}
+with $M_0$ formed from the ground-truth mask of frame~0. During step $t$, the memory bank integrates the mask predicted at $t-1$,
+ensuring each prediction is recursively conditioned on all preceding outputs.
+Consequently, the frame-level loss propagates gradients to the adapters
+through every prior memory write back to the clip's origin---strictly
+requiring that the memory bank remains undetached from the computation graph
+(Fig.~\ref{fig:method}c). The memory-attention adapters and memory encoder,
+which dictate cross-frame dynamics, receive optimization signals exclusively
+along these temporal trajectories. Detaching the graph would degenerate the
+objective into independent spatial segmentation, failing to optimize
+longitudinal mask propagation. We therefore optimize via backpropagation
+through time across 16-frame sequences, with each conditioned purely on its
+initial frame.
+
+Frames are resized to $1024\times1024$ (nearest-neighbor for masks). During
+inference, the entire sequence is propagated continuously without
+supplementary prompting, manual correction, or re-initialization. Output
+logits are strictly zero-thresholded and rescaled to the native spatial
+resolution.
+
+\subsection{Parameter-efficient adaptation}
+\label{sec:lora}
+
+We employ LoRA \cite{hu2022lora} with the LoRA+ \cite{hayou2024loraplus} optimal learning rate ratio ($\lambda=16$; $10^{-4}$ and $1.6\times10^{-3}$ for the two low-rank factors), maintaining a scaling constant of $\alpha/r=2$ across all sites. Adapters are injected at 76 projections (Fig.~\ref{fig:method}b): 40 in memory attention and 28 in the mask decoder ($r=16$, $\alpha=32$), alongside 8 in Hiera blocks 10--11 ($r=8$, $\alpha=16$); the encoder's 27.2\,M pretrained weights stay frozen. The prompt encoder, memory encoder, object-pointer embeddings, and decoder MLP heads are trained directly without a low-rank constraint at a learning rate of $10^{-5}$. In total, $5{,}557{,}250$ of $39{,}876{,}930$ parameters are trainable: $0.91$\,M in the adapters and $4.64$\,M in these full-rank modules.
+
+\subsection{Topology-preserving loss}
+\label{sec:loss}
+
+The predicted mask is supervised by
+\begin{equation}
+\mathcal{L} = 3\,\mathcal{L}_{\text{focal}} + 2\,\mathcal{L}_{\text{Dice}}
+ + 0.3\,\mathcal{L}_{\text{cbDice}} + 0.3\,\mathcal{L}_{\text{sv}} .
+\label{eq:loss}
+\end{equation}
+
+Focal \cite{lin2017focal} ($\gamma=2$, $\alpha=0.25$) and Dice \cite{milletari2016vnet} terms comprise the original SAM\,2 mask supervision, with Focal loss preventing the overwhelming background from dominating. Because severed or fused branches alter negligible pixel volumes, both terms remain insensitive to topological fractures. Therefore, cbDice \cite{shi2024cbdice} extends clDice \cite{shit2021cldice} by comparing prediction and target skeletons, down-weighting thick regions by their local radius so the soma cannot dominate thin branches.
+
+The supervoxel loss \cite{grim2025supervoxel} locates the pixels responsible
+for a topological error. The prediction is thresholded at $0.5$, and its
+false-negative and false-positive masks are decomposed into 4-connected
+components, ensuring that diagonal adjacencies do not confer structural continuity. A
+false-negative component adjoining two or more predicted components is a bridge the model failed to predict, thereby inducing a topological \emph{split}; conversely, a false-positive component whose removal disconnects the prediction is a bridge it invented and causes a \emph{merge}. Defining
+$\mathcal{N}$ and $\mathcal{P}$ as the unions of split- and merge-causing components, $\Omega$ as the spatial domain of the frame, and $\bar{\mathcal{L}}_0$ as a spatially averaged binary cross-entropy,
+\begin{equation}
+\mathcal{L}_{\text{sv}} =
+ \tfrac12\,\bar{\mathcal{L}}_0\big(\Omega\setminus(\mathcal{N}\cup\mathcal{P})\big)
+ + \tfrac14\,\bar{\mathcal{L}}_0(\mathcal{N})
+ + \tfrac14\,\bar{\mathcal{L}}_0(\mathcal{P}).
+\label{eq:sv}
+\end{equation}
+Each term is averaged over its own pixels, so a two-pixel bridge carries a quarter of the term. Both topology terms are evaluated at $512 \times 512$, with the supervoxel term's critical masks upsampled so it is computed at full resolution; resampling below the native dimensions would obliterate the 1--2-pixel processes these terms explicitly protect.
+
+\subsection{Training and model selection}
+\label{sec:train}
+
+We optimize using AdamW \cite{loshchilov2019adamw} (weight decay $0.05$) for 110 epochs on 16-frame sequences with temporal stride 4. We employ a batch size of two clips, a two-epoch warmup, cosine decay to $5\,\%$ of the peak learning rate, and gradient-norm clipping at $1.0$. Training runs in bfloat16 on one NVIDIA B200 (${\approx}23$\,h). Spatial and photometric augmentations---flips, rotation ($\pm25^{\circ}$), shear ($\pm20^{\circ}$), and brightness/contrast ($\pm15\,\%$)---are applied identically across all frames within a sequence. Model selection uses the validation split: among checkpoints within $0.005$ validation IoU of the maximum, we select the epoch minimizing raw validation Betti-0 error (absolute difference between predicted and ground-truth connected components). No temporal smoothing is applied.
+% =====================================================================
+\section{Experiments and Results}
+\label{sec:results}
+
+% Fig. 2 -- an ordinary [t] figure*, declared at the start of Sec. 3, which is
+% typeset on page 3, so it opens page 4.
+\begin{figure*}[t]
+\centering
+% Drawn by make_fig_qual.py (benchmark/make_proof_panel.py, relabeled for a
+% two-column page); predictions from benchmark/predictions/ours_fold2_topo.
+\includegraphics[width=\textwidth]{proof_B12_C1_100k_isbi}
+\caption{\textbf{Qualitative comparison} on held-out recording
+\texttt{B12\_C1\_100k} at frames 10 and 79; per-panel IoU inset. SAM\,2 is
+zero-shot.}
+\label{fig:qual}
+\end{figure*}
+
+\subsection{Protocol and baselines}
+\label{sec:protocol}
+
+Since frame~0 is the prompt, it is not scored, leaving 328 evaluated test frames. Metrics are computed per frame on native-resolution hard masks, averaged per recording, and then across recordings with equal weight. We report IoU, Dice, cbDice and clDice; because clDice is never optimized during training, it independently validates cbDice. Zero-shot SAM\,2 and SAM\,3 \cite{carion2025sam3} receive the frame\nobreakdash-0 mask; $\mu$SAM \cite{archit2025microsam} receives a ground-truth box, padded by 6\,px, on every frame. Automatic baselines---Cellpose-SAM \cite{pachitariu2025cellposesam}, Omnipose \cite{cutler2022omnipose}, and NeuroQuantify \cite{dang2024neuroquantify}---operate at $\times2$, $\times3$, and $\times4$ input scales, respectively. SAM\,3.1 uses the text prompt \emph{cells}. Finally, automatic methods receive an oracle reduction to the target: the union of all predicted regions overlapping it.
+Hyperparameters and backbones were tuned solely on the validation split.
+% Model variants, dropped from the text 2026-10-05 (all in the repository's
+% benchmark scripts): muSAM vit_l_lm (vit_b_lm 0.42 vs 0.56 validation IoU);
+% Omnipose bact_phase_omni (cyto2_omni detects nothing on validation).
+
+\subsection{Benchmarking against existing methods}
+\label{sec:res:benchmark}
+
+NeuroVestigo outperforms every baseline across all metrics (Table~\ref{tab:main}) and consistently across the four test recordings. Because zero-shot SAM\,2 shares the same backbone and prompt, the resulting gains ($0.129$ IoU, $0.102$ cbDice) stem from our fine-tuning. On clDice, our independent topological check, the improvement reaches $0.116$. A larger backbone fails to close this gap: identically prompted zero-shot SAM\,3 performs within the noise of zero-shot SAM\,2 ($0.628$ vs.\ $0.640$ IoU).
+
+% Table 1 -- [!h], between the two paragraphs of Sec. 3.2: printed here, or
+% at the top of the next column if it does not fit there.
+\begin{table}[!h]
+\centering
+\caption{\textbf{Test set results.} Evaluated on 328 frames across four recordings, excluding frame~0; $t$ denotes frame index.}
+\label{tab:main}
+\vspace{2pt}
+\footnotesize
+\setlength{\tabcolsep}{2.6pt}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Method & Prompt & IoU & Dice & \textbf{cbDice} & clDice \\
+\midrule
+\textbf{NeuroVestigo}  & mask, $t{=}0$      & \textbf{0.768} & \textbf{0.867} & \textbf{0.860} & \textbf{0.947} \\
+SAM\,2 (zero-shot)     & mask, $t{=}0$      & 0.640 & 0.771 & 0.758 & 0.831 \\
+SAM\,3 (mask)          & mask, $t{=}0$      & 0.628 & 0.746 & 0.753 & 0.808 \\
+$\mu$SAM (box)         & GT box, all $t$    & 0.575 & 0.721 & 0.791 & 0.843 \\
+Cellpose-SAM           & none               & 0.562 & 0.707 & 0.724 & 0.797 \\
+NeuroQuantify          & none               & 0.446 & 0.594 & 0.601 & 0.680 \\
+Omnipose               & none               & 0.279 & 0.428 & 0.559 & 0.648 \\
+SAM\,3.1 (text)        & none               & 0.200 & 0.278 & 0.260 & 0.290 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A single frame\nobreakdash-0 mask is more informative than a ground-truth box on every frame: NeuroVestigo leads $\mu$SAM, the strongest baseline on cbDice, by $0.069$. A bounding box is a weak prompt for a branched cell, which fills only $21\,\%$ of its bounding area on average. Masks stay nearly whole, as the supervoxel term and Betti-0 selection intend: predictions average $1.36$ connected components per frame against $1.03$ in the ground truth. Achieving peak clDice simultaneously confirms this low count does not stem from dropped branches. As the arbor grows (Fig.~\ref{fig:qual}), NeuroVestigo successfully tracks the thin distal branches that baselines partially miss (green).
+% Sources (all test set, Table 1 protocol). clDice gain over SAM 2: 0.9466 -
+% 0.8305 = 0.116 (summary.csv). SAM 3 vs SAM 2 zero-shot, IoU per recording
+% (A71, A81, A12_C3, A12_C1): .760/.760, .736/.644, .347/.593, .668/.561 ->
+% sign changes, hence "within noise". Box fill and worst frame re-checked
+% 2026-10-03 on the stored predictions: target fills 21.2% of its bounding box
+% (recording-weighted; 29.3% in Q1, 14.1% in Q4); lowest per-frame IoU ours
+% 0.581, SAM 2 0.277 (6 frames < 0.3), every other baseline lower.
+% "Nearly whole ... intend", not "validating": no run without the supervoxel
+% term exists (every checkpoint config has use_supervoxel=True, weight 0.3), and
+% the Betti-0 tie-break barely moves the count on test. Released vs IoU-best
+% epoch of the same run (ours_23rec), checked 2026-10-03: 1.36 vs 1.39
+% pieces/frame, Betti-0 error 0.365 vs 0.390, one piece in 79% vs 78% of
+% frames; per recording .10/.19, 1.07/1.12, .10/.08, .20/.16 -> sign changes,
+% within noise. Zero-shot SAM 2: 1.44 pieces, 76% one piece. A81_C1 averages
+% 2.08 pieces/frame for the released model.
+% Components per frame, other methods (kept out of the text by decision):
+% Cellpose-SAM 3.25, NeuroQuantify 4.29, Omnipose 8.18, muSAM 11.22,
+% SAM 2 1.44, SAM 3 1.44; Betti-0 error ours 0.37 vs SAM 2 0.45 (one
+% recording drives the gap). SAM 3 = 1.00 on A12_C3_100k by keeping ~the soma.
+% Components: src/evaluate.py compute_betti_numbers (8-connected foreground),
+% same protocol as Table 1 (t >= 1, native resolution, per-recording mean,
+% recordings weighted equally). Computed 2026-09-30 from benchmark/predictions
+% {ours_23rec_topo, sam2_zeroshot, sam3_maskfirst, usam_single, cellpose_sam,
+% neuroquantify, omnipose}; the IoU re-score matched Table 1 for all seven.
+% Betti-0 error per recording (A71, A81, A12_C3, A12_C1): ours .10 1.07 .10 .20;
+% SAM 2 .63 .99 .14 .04 -> sign changes, hence "within noise". SAM 3.1 (text)
+% is left out: its exact prediction stacks are not in benchmark/predictions.
+
+\subsection{Temporal consistency}
+\label{sec:res:temporal}
+
+Growth and retraction are derived from consecutive mask differences; thus, segmentation drift confounds biological measurements. Table~\ref{tab:drift} tracks performance across recording quartiles. While all methods degrade, NeuroVestigo drops just $0.059$ cbDice from Q1 to Q4---$2.1\times$ less than the most stable baseline. Despite receiving per-frame ground-truth boxes, $\mu$SAM decays $3.2\times$ faster. SAM\,3 starts within $0.007$ cbDice of NeuroVestigo in Q1 but decays $4.2\times$ faster.
+
+% Table 2 -- [!h], between the two paragraphs of Sec. 3.3 (see Table 1).
+\begin{table}[!h]
+\centering
+\caption{\textbf{Temporal consistency.} Mean cbDice across recording quartiles; decay denotes $\mathrm{Q4}-\mathrm{Q1}$.}
+\label{tab:drift}
+\vspace{2pt}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Method & Q1 & Q2 & Q3 & Q4 & Decay \\
+\midrule
+\textbf{NeuroVestigo}  & \textbf{0.878} & \textbf{0.895} & \textbf{0.848} & \textbf{0.819} & $\mathbf{-0.059}$ \\
+Cellpose-SAM           & 0.763 & 0.785 & 0.710 & 0.637 & $-0.126$ \\
+Omnipose               & 0.609 & 0.617 & 0.553 & 0.458 & $-0.151$ \\
+$\mu$SAM (box)         & 0.860 & 0.859 & 0.777 & 0.668 & $-0.191$ \\
+SAM\,2 (zero-shot)     & 0.846 & 0.805 & 0.732 & 0.649 & $-0.197$ \\
+SAM\,3 (mask)          & 0.871 & 0.802 & 0.714 & 0.625 & $-0.246$ \\
+NeuroQuantify          & 0.694 & 0.710 & 0.566 & 0.436 & $-0.258$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This decay partially stems from the evolving target: from Q1 to Q4, its centerline lengthens $3.3$-fold while mean thickness drops from $8.7$ to $7.2$\,px. Indeed, stateless automatic methods---which accumulate no temporal drift---still degrade by at least $0.126$. Q2 often exceeds Q1 because early neurites are short, so each error weighs more.
+% Q2 > Q1 for NeuroVestigo, Cellpose-SAM, Omnipose and NeuroQuantify (4 of 7),
+% hence "often": cbDice is a ratio over centerline length, shortest in Q1, so
+% a fixed error weighs most there (long paper, Sec. Temporal consistency).
+
+\subsection{Ablations}
+\label{sec:ablation}
+
+\emph{Memory horizon.} Doubling the training clip from 8 to 16 frames reduces
+the decay by $0.014$ cbDice across all test recordings, keeping the training split fixed. This gain concentrates entirely in Q4 ($+0.013$; Q1--Q3 fluctuate by ${\le}0.002$), aligning with truncated backpropagation through time
+\cite{williams1990truncated}: because each mask conditions the next
+(Eq.~\ref{eq:recurrence}), errors compound. A $K$-frame clip penalizes
+only the error accumulated within $K-1$ steps. Consequently, longer horizons improve long-term retention rather than single-frame accuracy, pointing to the memory pathway, not the decoder, as the bottleneck.
+
+\emph{Backbone.} Adapting SAM\,3 with our methodology yields no significant advantage over NeuroVestigo, matching it within noise (differences fall below between-recording variance and change sign) despite a ${\approx}20\times$ larger frozen encoder; thus, we retain the smaller SAM\,2. However, this confirms our approach generalizes: adaptation lifts SAM\,3 by a similar margin over its zero-shot baseline in half the epochs. Furthermore, SAM\,3 strictly benefits from our Betti-0 checkpoint selection, outperforming its IoU-best checkpoint across all test recordings (a difference that remains within noise for SAM\,2).
+
+\emph{Topology weights.} Increasing the supervoxel weight from $0.3$ to $2.0$
+degrades validation IoU by $0.017$ without reducing the supervoxel loss. Raising
+cbDice to $1.0$ shifts validation metrics by at most $0.0035$,
+likely because few-pixel branches approach the resampling limit of the
+$512\times512$ skeletons. However, removing cbDice entirely exacerbates decay from $0.077$ to $0.114$ across all test recordings (8-frame schedule). Consequently, both weights remain at $0.3$.
+
+% =====================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+Initialized from a single frame~0 mask, NeuroVestigo tracks neurons across multi-day recordings, achieving state-of-the-art accuracy with less than half the temporal decay of the most stable baseline. These gains stem from adaptation rather than model capacity: the same recipe applied to a $20\times$ larger encoder yields no measurable benefit. Two limitations remain. First, our modest 32-recording dataset means minor metric differences fall within noise; further improvements will require larger, more diverse cohorts. Second, dense multi-neuron fields with intersecting processes remain untested. Beyond segmentation and tracking, our framework could enable direct measurement of neurite growth, branching, and retraction rates from its masks, allowing growth phases and substrate responses to be compared across large neuronal populations. By replacing frame-by-frame tracing with a single annotation---and providing a plug-in for laboratories to curate data for bespoke culture systems, magnifications, or cell types---NeuroVestigo scales single-neuron analysis to meet the statistical demands of cell-to-cell variability.
+% "Further gains will likely need a larger, more varied dataset": growing the
+% training split from 20 to 23 recordings of the same kind moved test IoU by
+% 0.006 (0.7593 -> 0.7655), within noise (long paper, Training-set size).
+
+% ---------------------------------------------------------------------
+% Page 5 may hold ONLY the next two sections and the references.
+\section{Compliance with ethical standards}
+\label{sec:ethics}
+
+All animal procedures were approved by the Bar-Ilan University Ethics
+Committee for Animal Research and the Israeli Ministry of Health (approval
+no.~43-07-2020).
+
+\section{Acknowledgments}
+\label{sec:ack}
+
+This work was supported by the Israel Science Foundation (grant No.~3122/25).
+We thank the Shefi laboratory for the primary cultures and the live-imaging
+system.
+Use of generative AI: Claude (Anthropic) was used to write code, to assist with the literature search,
+and to draft and edit text in all sections.
+The authors reviewed and verified all AI-generated content and take full
+responsibility for the paper. The authors declare no competing interests.
+% IEEE/ISBI 2027 rule (biomedicalimaging.org/2027/papers): AI-generated
+% content (text, figures, images, code) is disclosed in the Acknowledgments,
+% naming the AI system, the sections, and the level of use.
+
+{\small
+\bibliographystyle{IEEEbib}
+\bibliography{refs}}
+
+\end{document}
