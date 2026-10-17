@@ -130,7 +130,7 @@ Primary cortical neurons from P0--P1 BALB/c mice
 (Sartorius) with a $10\times$ objective, one frame per hour. Each of the 32 recordings is a crop
 centered on one target neuron, 148--615 by 146--498\,px, with 57--97 frames (most often 73); 2{,}490 masks were
 annotated in total. The target covers $2.485\,\%$ of a frame on
-average and as little as $0.217\,\%$. We train three models on 23/5/4 train/val/test splits with a shared validation set and disjoint test sets. Masks were drawn in \texttt{neurons-labeling}, a napari
+average and as little as $0.217\,\%$. Training is repeated on three 23/5/4 train/val/test splits with a shared validation set and disjoint test sets. Masks were drawn in \texttt{neurons-labeling}, a napari
 plug-in built for this work: a neuron is painted on frame~0 and propagated,
 any frame can be corrected, and propagation is re-run from there. Every mask was hand-edited.
 
