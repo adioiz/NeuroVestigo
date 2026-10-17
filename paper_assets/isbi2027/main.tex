@@ -240,20 +240,21 @@ NeuroVestigo outperforms every baseline across all metrics (Table~\ref{tab:main}
 \vspace{2pt}
 \scriptsize
 \setlength{\tabcolsep}{2pt}
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}llcccc@{}}
 \toprule
 Method & Prompt & IoU & Dice & \textbf{cbDice} & clDice \\
 \midrule
-\textbf{NeuroVestigo}  & mask, $t{=}0$      & \textbf{.751}$\pm$.024 & \textbf{.856}$\pm$.016 & \textbf{.847}$\pm$.019 & \textbf{.941}$\pm$.019 \\
-SAM\,2 (zero-shot)     & mask, $t{=}0$      & .609$\pm$.050 & .743$\pm$.046 & .720$\pm$.063 & .805$\pm$.066 \\
-SAM\,3 (mask)          & mask, $t{=}0$      & .620$\pm$.010 & .745$\pm$.002 & .747$\pm$.014 & .797$\pm$.013 \\
-$\mu$SAM (box)         & GT box, all $t$    & .623$\pm$.049 & .761$\pm$.039 & .822$\pm$.041 & .885$\pm$.046 \\
-Cellpose-SAM           & none               & .519$\pm$.072 & .648$\pm$.083 & .658$\pm$.088 & .715$\pm$.098 \\
-NeuroQuantify          & none               & .358$\pm$.137 & .475$\pm$.167 & .497$\pm$.174 & .547$\pm$.201 \\
-Omnipose               & none               & .289$\pm$.026 & .440$\pm$.031 & .571$\pm$.035 & .648$\pm$.040 \\
-SAM\,3.1 (text)        & text   & .176$\pm$.038 & .239$\pm$.058 & .246$\pm$.059 & .263$\pm$.062 \\
+\textbf{NeuroVestigo}  & mask, $t{=}0$      & \textbf{0.751}$\pm$0.024 & \textbf{0.856}$\pm$0.016 & \textbf{0.847}$\pm$0.019 & \textbf{0.941}$\pm$0.019 \\
+SAM\,2 (zero-shot)     & mask, $t{=}0$      & 0.609$\pm$0.050 & 0.743$\pm$0.046 & 0.720$\pm$0.063 & 0.805$\pm$0.066 \\
+SAM\,3 (mask)          & mask, $t{=}0$      & 0.620$\pm$0.010 & 0.745$\pm$0.002 & 0.747$\pm$0.014 & 0.797$\pm$0.013 \\
+$\mu$SAM (box)         & GT box, all $t$    & 0.623$\pm$0.049 & 0.761$\pm$0.039 & 0.822$\pm$0.041 & 0.885$\pm$0.046 \\
+Cellpose-SAM           & none               & 0.519$\pm$0.072 & 0.648$\pm$0.083 & 0.658$\pm$0.088 & 0.715$\pm$0.098 \\
+NeuroQuantify          & none               & 0.358$\pm$0.137 & 0.475$\pm$0.167 & 0.497$\pm$0.174 & 0.547$\pm$0.201 \\
+Omnipose               & none               & 0.289$\pm$0.026 & 0.440$\pm$0.031 & 0.571$\pm$0.035 & 0.648$\pm$0.040 \\
+SAM\,3.1 (text)        & text   & 0.176$\pm$0.038 & 0.239$\pm$0.058 & 0.246$\pm$0.059 & 0.263$\pm$0.062 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 A single frame\nobreakdash-0 mask is more informative than a ground-truth box on every frame: NeuroVestigo leads $\mu$SAM, the strongest baseline on cbDice, by $0.128$ IoU and $0.025$ cbDice, the latter within noise. A bounding box is a weak prompt for a branched cell, which fills only $19\,\%$ of its bounding area on average. Masks stay nearly whole, as the supervoxel term and Betti-0 selection intend: predictions average $1.42$ connected components per frame against $1.04$ in the ground truth. Achieving peak clDice simultaneously confirms this low count does not stem from dropped branches. As the arbor grows (Fig.~\ref{fig:qual}), NeuroVestigo successfully tracks the thin distal branches that baselines partially miss (green).
@@ -302,13 +303,13 @@ Growth and retraction are derived from consecutive mask differences; thus, segme
 \toprule
 Method & Q1 & Q2 & Q3 & Q4 & Drift \\
 \midrule
-\textbf{NeuroVestigo}  & .863 & \textbf{.875} & \textbf{.844} & \textbf{.806} & \textbf{.065}$\pm$.005 \\
-Cellpose-SAM           & .656 & .708 & .691 & .578 & .144$\pm$.018 \\
-$\mu$SAM (box)         & \textbf{.871} & .868 & .821 & .727 & .144$\pm$.040 \\
-NeuroQuantify          & .551 & .537 & .489 & .409 & .160$\pm$.086 \\
-Omnipose               & .624 & .621 & .556 & .482 & .170$\pm$.045 \\
-SAM\,2 (zero-shot)     & .810 & .764 & .693 & .613 & .197$\pm$.081 \\
-SAM\,3 (mask)          & .864 & .775 & .702 & .648 & .215$\pm$.092 \\
+\textbf{NeuroVestigo}  & 0.863 & \textbf{0.875} & \textbf{0.844} & \textbf{0.806} & \textbf{0.065}$\pm$0.005 \\
+Cellpose-SAM           & 0.656 & 0.708 & 0.691 & 0.578 & 0.144$\pm$0.018 \\
+$\mu$SAM (box)         & \textbf{0.871} & 0.868 & 0.821 & 0.727 & 0.144$\pm$0.040 \\
+NeuroQuantify          & 0.551 & 0.537 & 0.489 & 0.409 & 0.160$\pm$0.086 \\
+Omnipose               & 0.624 & 0.621 & 0.556 & 0.482 & 0.170$\pm$0.045 \\
+SAM\,2 (zero-shot)     & 0.810 & 0.764 & 0.693 & 0.613 & 0.197$\pm$0.081 \\
+SAM\,3 (mask)          & 0.864 & 0.775 & 0.702 & 0.648 & 0.215$\pm$0.092 \\
 \bottomrule
 \end{tabular}
 \end{table}
