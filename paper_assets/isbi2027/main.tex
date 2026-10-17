@@ -318,7 +318,7 @@ This drift partially stems from the evolving target: from Q1 to Q4, its centerli
 % hence "often": cbDice is a ratio over centerline length, shortest in Q1, so
 % a fixed error weighs most there (long paper, Sec. Temporal consistency).
 
-\subsection{Ablations on the first split}
+\subsection{Ablations}
 \label{sec:ablation}
 
 \emph{Memory horizon.} Doubling the training clip from 8 to 16 frames reduces the signed decay by $0.014$ cbDice across all four test recordings, keeping the training split fixed. This gain concentrates entirely in Q4 ($+0.013$; Q1--Q3 fluctuate by ${\le}0.002$), aligning with truncated backpropagation through time
