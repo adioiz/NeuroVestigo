@@ -17,25 +17,27 @@ itself, and the napari plug-in that runs it, are in the companion repository
 
 This repository fine-tunes SAM2 (Segment Anything Model 2) for neuron segmentation using **LoRA+** (Low-Rank Adaptation with asymmetric A/B learning rates) plus topology-preserving losses tailored to tree-like neurite structures.
 
-**The current model is `checkpoints/lora_weights.pt`** — 32 labeled
-recordings, of which the model sees 28 (23 train / 5 val) and never sees the 4
-held-out test, dual-rank LoRA (rank 16 on the
+**The released model is `checkpoints-23rec/lora_weights_topo.pt`** — run 1 of
+the paper's three-split repeated hold-out (`src/folds.py`), at its topology
+tie-break checkpoint. The same file ships in
+[neurons-labeling](https://github.com/adioiz/neurons-labeling) as
+`checkpoints-16-frames/lora_weights.pt` (the directory name is historical).
+32 labeled recordings, of which the model sees 28 (23 train / 5 val) and never
+sees the 4 held-out test, dual-rank LoRA (rank 16 on the
 decoder and memory_attention, rank 8 on the last 2 Hiera trunk blocks), the
 full memory_attention forward pass with the memory bank left attached to the
 graph, and a 4-term loss — focal 3.0, Dice 2.0, cbDice 0.3, supervoxel 0.3 — at
-`topology_resolution` 512, over clips of **16** frames. It ran the full 110
-epochs; the best checkpoint is epoch 90, at val IoU 0.8399.
+`topology_resolution` 512, over clips of **16** frames, for the full 110
+epochs. `checkpoints/lora_weights.pt` is an earlier run on the same split (best
+epoch 90, val IoU 0.8399), not the released model.
 
-> **The numbers in [Results](#results) were measured with the previous run**,
-> `checkpoints-16-frames/lora_weights.pt` (bundled in
-> [neurons-labeling](https://github.com/adioiz/neurons-labeling)) — the same
-> configuration over 25 seen recordings (20 train / 5 val, plus 4 held-out
-> test), best epoch 100
-> at val IoU 0.8377. `checkpoints/` adds two recordings (B11, B12) and gains
-> +0.0022 val IoU, which is inside this dataset's noise band; its Betti error
-> at the selected epoch is *worse* (b0 0.812 vs 0.660, lower is better). Until
-> the held-out test benchmark is re-run against it, the reported model is the
-> sixteen-frame run and the table below stands.
+> **The table in [Results](#results) predates the paper's evaluation.** It
+> scores an earlier run — the same configuration over 20 train / 5 val
+> recordings, local `checkpoints-16-frames/lora_weights.pt`, best epoch 100 at
+> val IoU 0.8377 — on run 1's four test recordings. The paper reports mean ±
+> SD over the three splits: those numbers are in `benchmark/results/folds/`
+> (regenerate with `benchmark/aggregate_folds.py`), and the released model's
+> own run-1 test scores are in `benchmark/results/test/ours_23rec_topo.csv`.
 
 > **Training now distils the prompt pathway.** Frame 0 receives the GT
 > mask as a dense prompt and later frames do not, which costs 12% IoU and ~9×
@@ -152,8 +154,9 @@ labeled_coordinates/  -> ../neurons-labeling/labeled_coordinates/
 **No manual copying needed** — label in one repo, train in the other.
 
 Training writes its adapters to `checkpoints/lora_weights.pt` (~22 MB: the
-LoRA matrices only, not a full SAM 2 checkpoint). The released adapters are in
-[neurons-labeling](https://github.com/adioiz/neurons-labeling) at
+LoRA matrices only, not a full SAM 2 checkpoint). The released adapters are run 1's
+`checkpoints-23rec/lora_weights_topo.pt`, shipped in
+[neurons-labeling](https://github.com/adioiz/neurons-labeling) as
 `checkpoints-16-frames/lora_weights.pt`. Loading them requires the base SAM 2 weights, which are
 downloaded separately — see
 [Step 4](#step-4-use-the-fine-tuned-weights).
@@ -210,7 +213,10 @@ The five videos above are the Run 7 default val split.
 
 ### Step 4: Use the fine-tuned weights
 
-The `lora_weights.pt` checkpoint is automatically available in `neurons-labeling` via symlink. Open the labeling app, check **"Use fine-tuned model"**, click **"SAM2: Propagate from frame 0"**.
+`neurons-labeling` ships the released model and loads it by default — unless
+`../NeuroVestigo/checkpoints/lora_weights.pt` exists, which it prefers as the
+most recent training run. To use the released model from this repository, set
+`SAM2_LORA_WEIGHTS` to `checkpoints-23rec/lora_weights_topo.pt`. Open the labeling app, check **"Use fine-tuned model"**, click **"SAM2: Propagate from frame 0"**.
 
 ## Config — `src/config.py` is the source of truth
 
@@ -501,9 +507,10 @@ NeuroVestigo/
 │   ├── lora_weights.pt      #   best-epoch adapters, 22 MB
 │   ├── training_config.json #   read by benchmark/data.py for the splits
 │   └── training_log.json    #   per-epoch metrics (LAST resume chunk only)
-│                            # The weights the Results table was measured with
-│                            # are in neurons-labeling, at
-│                            # checkpoints-16-frames/lora_weights.pt
+├── checkpoints-23rec/       # run 1 of the three splits, gitignored
+│   └── lora_weights_topo.pt #   THE RELEASED MODEL (Betti-0 tie-break); ships
+│                            #   in neurons-labeling as
+│                            #   checkpoints-16-frames/lora_weights.pt
 │
 ├── paper_assets/            # manuscript, figures, and their generators
 │   ├── paper/main.tex
