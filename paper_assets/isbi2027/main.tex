@@ -88,7 +88,7 @@ neurons in time-lapse microscopy}
 % ---------------------------------------------------------------------
 \begin{abstract}
 Understanding neuronal growth and regeneration requires accurately quantifying single-cell morphology across multi-day, label-free recordings---a task still bottlenecked by labor-intensive manual tracing. Existing automated segmenters reliably resolve the soma but struggle with neurites and fail to preserve longitudinal instance identity. To address these limitations, we introduce NeuroVestigo, a parameter-efficient adaptation of the promptable video foundation model
-SAM\,2 for time-lapse microscopy. Conditioned on a single annotated mask at frame~0, the model segments entire multi-day sequences. Utilizing dual-rank LoRA+, we train merely $13.9\,\%$ of the weights. The architecture is optimized via a connectivity-preserving objective that penalizes topological fractures. By backpropagating through an undetached temporal memory bank, we minimize longitudinal drift rather than merely measuring it. Evaluated on 12 held-out recordings from three splits, NeuroVestigo achieves state-of-the-art performance (cbDice $0.847 \pm 0.019$, IoU $0.751 \pm 0.024$), outperforming seven baselines across all metrics. Furthermore, it demonstrates markedly better temporal stability, exhibiting a minimal cbDice drift of $0.065$ between the first and final quartiles of the sequence, compared to $0.144$ for the most stable baselines. Code, weights, and a napari plug-in are available at \url{github.com/adioiz/NeuroVestigo} and \url{github.com/adioiz/neurons-labeling}.
+SAM\,2 for time-lapse microscopy. Conditioned on a single annotated mask at frame~0, the model segments entire multi-day sequences. Utilizing dual-rank LoRA+, we train merely $13.9\,\%$ of the weights. The architecture is optimized via a connectivity-preserving objective that penalizes topological fractures. By backpropagating through an undetached temporal memory bank, we minimize longitudinal drift rather than merely measuring it. Evaluated on three held-out test sets, NeuroVestigo achieves state-of-the-art performance (cbDice $0.847 \pm 0.019$, IoU $0.751 \pm 0.024$), outperforming seven baselines across all metrics. Furthermore, it demonstrates better temporal stability, exhibiting a minimal cbDice drift of $0.065$ between the first and final quartiles of the sequence, compared to $0.144$ for the most stable baselines. Code, weights, and a napari plug-in are available at \url{github.com/adioiz/NeuroVestigo} and \url{github.com/adioiz/neurons-labeling}.
 \end{abstract}
 
 \begin{keywords}
@@ -116,7 +116,7 @@ Three intrinsic properties render this task uniquely challenging. First, neurite
 
 Current computational frameworks address this challenge only partially. Standard cell segmenters (e.g., Cellpose-SAM \cite{pachitariu2025cellposesam} and Omnipose \cite{cutler2022omnipose}) and domain-specific models such as NeuroQuantify \cite{dang2024neuroquantify} process frames independently, failing to preserve longitudinal instance identity. Post hoc temporal linking \cite{maska2023ctc,gallusser2024trackastra} cannot repair topological fractures introduced during segmentation, while tracking pipelines such as NeuriteTracker \cite{fusco2016neuritetracker} require fluorescent labels. Promptable models, by contrast, let the user select a single target: SAM\,2 \cite{ravi2025sam2} and SAM\,3 \cite{carion2025sam3} propagate a spatial prompt through a memory bank, and $\mu$SAM \cite{archit2025microsam} adapts SAM \cite{kirillov2023sam} specifically for microscopy. Crucially, none of these architectures are optimized to maintain the structural connectivity of ultra-fine, pixel-scale branches. Although topology-aware loss formulations \cite{shit2021cldice,shi2024cbdice,grim2025supervoxel} are explicitly designed to penalize such disconnections, they remain, to our knowledge, unintegrated within the optimization of promptable video models.
 
-To address this, we introduce \textbf{NeuroVestigo}, a SAM\,2.1 adaptation employing dual-rank LoRA+, optimized via backpropagation through an undetached memory bank to prioritize longitudinal propagation over per-frame segmentation. Furthermore, we propose a topology-preserving objective that integrates cbDice and supervoxel loss with conventional Focal and Dice terms, and rigorously select checkpoints via Betti-0 error minimization. Finally, we provide comprehensive benchmarking, including temporal degradation analysis---and publicly release our code, weights, and annotation plug-in.
+To address this, we introduce \textbf{NeuroVestigo}, a SAM\,2.1 \cite{ravi2025sam2} adaptation employing dual-rank LoRA+ \cite{hayou2024loraplus}, optimized via backpropagation through an undetached memory bank to prioritize longitudinal propagation over per-frame segmentation. Furthermore, we propose a topology-preserving objective that integrates centerline boundary Dice (cbDice) \cite{shi2024cbdice} and supervoxel loss \cite{grim2025supervoxel} with conventional Focal and Dice terms, and select checkpoints via Betti-0 error minimization.
 
 % =====================================================================
 \section{Methodology}
@@ -138,8 +138,7 @@ any frame can be corrected, and propagation is re-run from there. Every mask was
 \label{sec:prop}
 
 We adapt SAM\,2.1 with the Hiera-tiny image encoder
-\cite{ravi2025sam2,ryali2023hiera}. SAM\,2 is prompted geometrically on one
-frame, and a memory bank carries the prompt forward. With $I_t$ the frame at
+\cite{ravi2025sam2,ryali2023hiera}. SAM\,2.1 is prompted geometrically on one frame, and a memory bank of encoded past frames and their masks carries the prompt forward. With $I_t$ the frame at
 time $t$, $E$ the encoder and $M_t$ the bank after frame $t$ (frame~0 plus the six most recent frames),
 \begin{equation}
 \begin{split}
@@ -154,9 +153,7 @@ ensuring each prediction is recursively conditioned on all preceding outputs.
 Consequently, the frame-level loss propagates gradients to the adapters
 through every prior memory write back to the clip's origin---strictly
 requiring that the memory bank remains undetached from the computation graph
-(Fig.~\ref{fig:method}c). The memory-attention adapters and memory encoder,
-which dictate cross-frame dynamics, receive optimization signals exclusively
-along these temporal trajectories. Detaching the graph would degenerate the
+(Fig.~\ref{fig:method}c). Detaching the graph would degenerate the
 objective into independent spatial segmentation, failing to optimize
 longitudinal mask propagation. We therefore optimize via backpropagation
 through time across 16-frame sequences, with each conditioned purely on its
@@ -171,7 +168,7 @@ resolution.
 \subsection{Parameter-efficient adaptation}
 \label{sec:lora}
 
-We employ LoRA \cite{hu2022lora} with the LoRA+ \cite{hayou2024loraplus} optimal learning rate ratio ($\lambda=16$; $10^{-4}$ and $1.6\times10^{-3}$ for the two low-rank factors), maintaining a scaling constant of $\alpha/r=2$ across all sites. Adapters are injected at 76 projections (Fig.~\ref{fig:method}b): 40 in memory attention and 28 in the mask decoder ($r=16$, $\alpha=32$), alongside 8 in Hiera blocks 10--11 ($r=8$, $\alpha=16$); the encoder's 27.2\,M pretrained weights stay frozen. The prompt encoder, memory encoder, object-pointer embeddings, and decoder MLP heads are trained directly without a low-rank constraint at a learning rate of $10^{-5}$. In total, $5{,}557{,}250$ of $39{,}876{,}930$ parameters are trainable: $0.91$\,M in the adapters and $4.64$\,M in these full-rank modules.
+We employ LoRA \cite{hu2022lora} with the LoRA+ \cite{hayou2024loraplus} optimal learning rate ratio ($\lambda=16$; $10^{-4}$ and $1.6\times10^{-3}$ for the two low-rank factors). Adapters are injected at 76 projections (Fig.~\ref{fig:method}b): 40 in memory attention and 28 in the mask decoder ($r=16$, $\alpha=32$), alongside 8 in Hiera blocks 10--11 ($r=8$, $\alpha=16$); the encoder's 27.2\,M pretrained weights stay frozen. The prompt encoder, memory encoder, object-pointer embeddings, and decoder MLP heads are trained directly without a low-rank constraint at a learning rate of $10^{-5}$. In total, $5{,}557{,}250$ of $39{,}876{,}930$ parameters are trainable: $0.91$\,M in the adapters and $4.64$\,M in these full-rank modules.
 
 \subsection{Topology-preserving loss}
 \label{sec:loss}
@@ -188,7 +185,7 @@ Focal \cite{lin2017focal} ($\gamma=2$, $\alpha=0.25$) and Dice \cite{milletari20
 The supervoxel loss \cite{grim2025supervoxel} locates the pixels responsible
 for a topological error. The prediction is thresholded at $0.5$, and its
 false-negative and false-positive masks are decomposed into 4-connected
-components, ensuring that diagonal adjacencies do not confer structural continuity. A
+components. A
 false-negative component adjoining two or more predicted components is a bridge the model failed to predict, thereby inducing a topological \emph{split}; conversely, a false-positive component whose removal disconnects the prediction is a bridge it invented and causes a \emph{merge}. Defining
 $\mathcal{N}$ and $\mathcal{P}$ as the unions of split- and merge-causing components, $\Omega$ as the spatial domain of the frame, and $\bar{\mathcal{L}}_0$ as a spatially averaged binary cross-entropy,
 \begin{equation}
@@ -223,7 +220,7 @@ We optimize using AdamW \cite{loshchilov2019adamw} (weight decay $0.05$) for 110
 \subsection{Protocol and baselines}
 \label{sec:protocol}
 
-Since frame~0 is the prompt, it is not scored, leaving 328 evaluated test frames per split. Metrics are computed per frame on native-resolution hard masks, averaged per recording, and then across recordings with equal weight. We report IoU, Dice, cbDice and clDice; because clDice is never optimized during training, it independently validates cbDice. Zero-shot SAM\,2 and SAM\,3 \cite{carion2025sam3} receive the frame\nobreakdash-0 mask; $\mu$SAM \cite{archit2025microsam} receives a ground-truth box, padded by 6\,px, on every frame. Automatic baselines---Cellpose-SAM \cite{pachitariu2025cellposesam}, Omnipose \cite{cutler2022omnipose}, and NeuroQuantify \cite{dang2024neuroquantify}---operate at $\times2$, $\times3$, and $\times4$ input scales, respectively. SAM\,3.1 uses the text prompt \emph{cells}. Finally, automatic methods receive an oracle reduction to the target: the union of all predicted regions overlapping it.
+Since frame~0 is the prompt, it is not scored, leaving 328 evaluated test frames per split. Metrics are computed per frame on native-resolution hard masks, averaged per recording, and then across recordings with equal weight. For prediction $P$ and ground truth $G$ we report IoU $=|P\cap G|/|P\cup G|$, Dice $=2|P\cap G|/(|P|+|G|)$, clDice, the harmonic mean of $|S_P\cap G|/|S_P|$ and $|S_G\cap P|/|S_G|$ with $S$ the skeleton, and cbDice, which weights these sums by local radius; because clDice is never optimized during training, it independently validates cbDice. Zero-shot SAM\,2 and SAM\,3 receive the frame\nobreakdash-0 mask; $\mu$SAM receives a ground-truth box, padded by 6\,px, on every frame. SAM\,3.1 uses the text prompt \emph{cells}. Finally, automatic methods receive an oracle reduction to the target: the union of all predicted regions overlapping it.
 Hyperparameters and backbones were tuned solely on the validation split.
 % Model variants, dropped from the text 2026-10-05 (all in the repository's
 % benchmark scripts): muSAM vit_l_lm (vit_b_lm 0.42 vs 0.56 validation IoU);
@@ -254,7 +251,7 @@ $\mu$SAM (box)         & GT box, all $t$    & .623$\pm$.049 & .761$\pm$.039 & .8
 Cellpose-SAM           & none               & .519$\pm$.072 & .648$\pm$.083 & .658$\pm$.088 & .715$\pm$.098 \\
 NeuroQuantify          & none               & .358$\pm$.137 & .475$\pm$.167 & .497$\pm$.174 & .547$\pm$.201 \\
 Omnipose               & none               & .289$\pm$.026 & .440$\pm$.031 & .571$\pm$.035 & .648$\pm$.040 \\
-SAM\,3.1 (text)        & none               & .176$\pm$.038 & .239$\pm$.058 & .246$\pm$.059 & .263$\pm$.062 \\
+SAM\,3.1 (text)        & text   & .176$\pm$.038 & .239$\pm$.058 & .246$\pm$.059 & .263$\pm$.062 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -341,7 +338,7 @@ $512\times512$ skeletons. However, removing cbDice entirely exacerbates the sign
 \section{Conclusion}
 \label{sec:conclusion}
 
-Initialized from a single frame~0 mask, NeuroVestigo tracks neurons across multi-day recordings, achieving state-of-the-art accuracy with less than half the temporal drift of the most stable baselines. These gains stem from adaptation rather than model capacity: the same recipe applied to a $20\times$ larger encoder yields no measurable benefit. Two limitations remain. First, our modest 32-recording dataset means minor metric differences fall within noise; further improvements will require larger, more diverse cohorts. Second, dense multi-neuron fields with intersecting processes remain untested. Beyond segmentation and tracking, our framework could enable direct measurement of neurite growth, branching, and retraction rates from its masks, allowing growth phases and substrate responses to be compared across large neuronal populations. By replacing frame-by-frame tracing with a single annotation---and providing a plug-in for laboratories to curate data for bespoke culture systems, magnifications, or cell types---NeuroVestigo scales single-neuron analysis to meet the statistical demands of cell-to-cell variability.
+Initialized from a single frame~0 mask, NeuroVestigo tracks neurons across multi-day recordings, achieving state-of-the-art accuracy with less than half the temporal drift of the most stable baselines. These gains stem from adaptation rather than model capacity: the same recipe applied to a $20\times$ larger encoder yields no measurable benefit. Two limitations remain. First, our modest 32-recording dataset means minor metric differences fall within noise; further improvements will require larger, more diverse cohorts. Second, dense multi-neuron fields with intersecting processes remain untested. Text prompts, as in SAM\,3.1, could remove the frame-0 annotation in future work, but currently reach only $0.176$ IoU. Beyond segmentation and tracking, our framework could enable direct measurement of neurite growth, branching, and retraction rates from its masks, allowing growth phases and substrate responses to be compared across large neuronal populations. By replacing frame-by-frame tracing with a single annotation---and providing a plug-in for laboratories to curate data for bespoke culture systems, magnifications, or cell types---NeuroVestigo scales single-neuron analysis to meet the statistical demands of cell-to-cell variability.
 % "Further gains will likely need a larger, more varied dataset": growing the
 % training split from 20 to 23 recordings of the same kind moved test IoU by
 % 0.006 (0.7593 -> 0.7655), within noise (long paper, Training-set size).
