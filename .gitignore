@@ -61,3 +61,6 @@ sam3/
 # figure-tracing scratch
 paper_assets/paper/*.aux
 paper_assets/paper/*.log
+
+# TeX package cache (tectonic)
+paper_assets/paper/tcache/
