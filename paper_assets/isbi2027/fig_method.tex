@@ -77,8 +77,9 @@
 \node[sm, anchor=west] at (15.45,5.64) {h};
 \node[sm, text=navy, anchor=north] at (1.15,5.26) {given};
 \node[sm, anchor=north east] at (16.20,5.26) {scale bar $50\,\mu$m};
-\node[sm, anchor=north] at (9.20,5.26)
-     {propagated with no further prompt, correction or re-initialization};
+% ISBI-EDIT: the long paper's line under the axis ("propagated with no further
+% prompt, correction or re-initialization") is dropped; the caption says
+% "without subsequent prompting".
 
 \draw[rule] (0,4.88) -- (16.20,4.88);
 
@@ -129,8 +130,9 @@
 
 \node[plab] at (9.35,4.68) {(c)};
 \node[ptit] at (9.97,4.68) {Objective};
+% ISBI-EDIT: "undetached" (long paper: "not detached"), the word the text uses.
 \node[note, anchor=north west] at (9.97,4.32)
-     {16-frame clips, bank not detached};
+     {16-frame clips, bank undetached};
 
 \node[sm, anchor=south] at (12.40,3.58) {memory writes};
 \node[nd] (n0) at (10.15,3.42) {};
@@ -180,6 +182,6 @@
 \node[sm, anchor=west, align=left] at (10.30,-0.06)
      {held-out target, skeleton in blue:\\
       cbDice weights thin branches; the supervoxel\\
-      term catches cuts and bridges};
+      term catches splits and bridges};
 
 \end{tikzpicture}
