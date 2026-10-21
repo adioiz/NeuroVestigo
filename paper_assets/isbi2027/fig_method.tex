@@ -86,8 +86,11 @@
 % ==================  (b)  where the model is adapted  ============
 \node[plab] at (0.00,4.68) {(b)};
 \node[ptit] at (0.62,4.68) {Adaptation sites};
+% Updated = differs from pretrained SAM 2.1 in checkpoints-23rec/lora_weights_topo.pt.
+% 5,557,250 are trainable; 405,814 of them (IoU head, object-score head,
+% single-mask hypernetwork, ...) get no gradient and stay bit-identical.
 \node[note, anchor=north west] at (0.62,4.32)
-     {$5{,}557{,}250$ of $39{,}876{,}930$ parameters trainable ($13.9\,\%$)};
+     {$5{,}151{,}436$ of $39{,}876{,}930$ parameters updated ($12.9\,\%$)};
 
 \node[frz, minimum width=2.30cm, minimum height=0.74cm, anchor=west] (enc)
      at (0.10,3.35) {Image encoder\\{\fontsize{6}{7}\selectfont Hiera-tiny}};
@@ -122,7 +125,7 @@
   \node[lra, minimum width=0.26cm, minimum height=0.17cm, anchor=west] at (1.25,0) {};
   \node[sm, anchor=west, text=black] at (1.57,0) {LoRA-adapted, $0.91$\,M};
   \node[trn, minimum width=0.26cm, minimum height=0.17cm, anchor=west] at (4.45,0) {};
-  \node[sm, anchor=west, text=black] at (4.77,0) {trained directly, $4.64$\,M};
+  \node[sm, anchor=west, text=black] at (4.77,0) {trained directly, $4.24$\,M};
 \end{scope}
 
 % ==================  (c)  the objective  =========================
