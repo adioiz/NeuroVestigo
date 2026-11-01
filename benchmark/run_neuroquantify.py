@@ -30,6 +30,8 @@ import numpy as np
 import tifffile
 from PIL import Image
 
+from native_res import labels_to_native, target_at_native   # benchmark/ is sys.path[0]
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "training_data")
 OUT = os.path.join(REPO, "benchmark", "predictions", "neuroquantify")
@@ -118,13 +120,14 @@ def main():
                     x = x / 255.0
                 x = torch.from_numpy(x)[None, None].float()
                 seg = model(x).argmax(dim=1)[0].cpu().numpy()[:h, :w]         # 0/1/2/3 at upscaled res
-                seg = cv2.resize(seg.astype(np.int32), (fr.shape[1], fr.shape[0]),
-                                 interpolation=cv2.INTER_NEAREST)             # back to native
+                # Components and target where the model worked (upscaled), then the
+                # target shrinks by area: centred for any scale (native_res.py). The
+                # old INTER_NEAREST sampled each block's top-left pixel instead.
                 fg = np.isin(seg, (1, 2))                                     # soma + neurite
                 lab = ndi.label(fg)[0].astype(np.int32)
                 ninst.append(int(lab.max()))
-                raw.append(seg.astype(np.int32))
-                target.append(match_to_target(lab, g).astype(np.uint8))
+                raw.append(labels_to_native(seg, *fr.shape[:2]))              # figures only
+                target.append(target_at_native(lab, g, match_to_target).astype(np.uint8))
         target = np.stack(target)
         out_path = os.path.join(args.out_dir, f"{v}.tif")
         tifffile.imwrite(out_path, target)

@@ -26,6 +26,8 @@ import numpy as np
 import tifffile
 from PIL import Image
 
+from native_res import labels_to_native, target_at_native   # benchmark/ is sys.path[0]
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "training_data")
 OUT = os.path.join(REPO, "benchmark", "predictions", "omnipose")
@@ -102,11 +104,12 @@ def main():
             up, channels=[0, 0], omni=True,
             diameter=(args.diameter or None),
             mask_threshold=-1.0, flow_threshold=0.0, resample=True, verbose=False)
-        # downscale instance maps back to native resolution for matching/scoring
-        raw = [cv2.resize(np.asarray(m).astype(np.int32), (f.shape[1], f.shape[0]),
-                          interpolation=cv2.INTER_NEAREST) for m, f in zip(masks, frames)]
-        target = np.stack([match_to_target(m, g).astype(np.uint8)
-                           for m, g in zip(raw, gts)])
+        # Choose the target where the model worked (upscaled), then shrink it by
+        # area: centred for any scale (benchmark/native_res.py). The old
+        # INTER_NEAREST sampled each block's top-left pixel instead.
+        target = np.stack([target_at_native(np.asarray(m).astype(np.int32), g, match_to_target)
+                           .astype(np.uint8) for m, g in zip(masks, gts)])
+        raw = [labels_to_native(m, *f.shape[:2]) for m, f in zip(masks, frames)]    # raw stack: figures
         out_path = os.path.join(out_dir, f"{v}.tif")
         tifffile.imwrite(out_path, target)
         raw_dir = out_dir + "_raw"; os.makedirs(raw_dir, exist_ok=True)

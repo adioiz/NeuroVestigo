@@ -64,8 +64,6 @@ METHODS = [
     ("NeuroQuantify", "neuroquantify"),
     ("Omnipose", "omnipose"),
     ("SAM 3.1 (text)", "sam3_text_final"),
-    # Not in Table 1: the IoU-best checkpoint, for the checkpoint-selection note.
-    ("NeuroVestigo (IoU-best ckpt)", {1: "ours_23rec", 2: "ours_fold2", 3: "ours_fold3"}),
 ]
 TABLE2_SKIP = {"SAM 3.1 (text)"}            # not in the paper's Table 2 either
 METRICS = ["iou", "dice", "cbdice", "cldice"]
