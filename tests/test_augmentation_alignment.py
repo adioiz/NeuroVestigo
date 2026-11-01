@@ -91,6 +91,7 @@ def test_clip_stays_aligned_and_temporally_consistent():
         gaussian_blur_p=0.0, gaussian_noise_p=0.0,
         elastic_transform_p=1.0,          # always fire
         normalize_mean=[0.0, 0.0, 0.0], normalize_std=[1.0, 1.0, 1.0],
+        mask_resize="nearest-exact",
     )
     out_frames, out_masks = aug(frames, masks)
 

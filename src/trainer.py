@@ -1111,8 +1111,11 @@ def train(config: TrainingConfig = None):
     if config is None:
         config = TrainingConfig()
     # Resolution and normalization follow the backbone (no-op for sam2).
-    from src.config import apply_backbone_defaults
+    from src.config import apply_backbone_defaults, run_mask_resize
     apply_backbone_defaults(config)
+    config.data.mask_resize = run_mask_resize(config)
+    print(f"Masks enlarged with mask_resize={config.data.mask_resize}"
+          + (" (kept from the run being resumed)" if config.resume_from else ""))
 
     device = detect_device()
     print(f"Using device: {device}")
@@ -1196,6 +1199,7 @@ def train(config: TrainingConfig = None):
             image_size=config.data.image_size,
             normalize_mean=norm_mean,
             normalize_std=norm_std,
+            mask_resize=config.data.mask_resize,
         )
         print("  Using precomputed features → train augmentation at feature level (flips only)")
     else:
@@ -1219,12 +1223,14 @@ def train(config: TrainingConfig = None):
             elastic_sigma=config.augmentation.elastic_sigma,
             normalize_mean=norm_mean,
             normalize_std=norm_std,
+            mask_resize=config.data.mask_resize,
         )
 
     val_transform = VideoValidationTransform(
         image_size=config.data.image_size,
         normalize_mean=norm_mean,
         normalize_std=norm_std,
+        mask_resize=config.data.mask_resize,
     )
 
     # Datasets with performance options

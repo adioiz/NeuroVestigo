@@ -4,12 +4,19 @@
 #
 #   sbatch slurm/train_fold.sbatch 2
 #   sbatch slurm/train_fold.sbatch 3
+#   sbatch slurm/train_fold.sbatch 1 checkpoints-fold1-centred    # again, from scratch
+#
+# A second argument trains the fold again, from scratch, into that NEW
+# directory: the run claims it, and refuses one that already exists, so no run
+# is resumed or overwritten by mistake. Fold 1 is the paper's run (its weights
+# are checkpoints-23rec/), so it always needs one.
 #
 # The paper's 23-recording recipe, unchanged except for the held-out test set:
 # --fold swaps in that fold's four test recordings and pins the shared
 # validation set, and the rest of these flags are the ones the paper run used
 # (its resolved config was diffed against checkpoints-23rec/training_config.json:
-# only test_videos and checkpoint_dir differ).
+# only test_videos and checkpoint_dir differ -- and, for runs started after
+# 2026-11-02, data.mask_resize: labels are now enlarged centred, src/config.py).
 #
 # Folds 2 and 3 write to different directories, so both arrays can be queued
 # at once. Within one array, %1 keeps exactly one task running: two tasks
@@ -32,8 +39,14 @@
 #SBATCH --no-requeue
 
 FOLD="$1"
-if [ "$FOLD" != "2" ] && [ "$FOLD" != "3" ]; then
-    echo "usage: sbatch slurm/train_fold.sbatch <2|3>   (fold 1 is the paper's run, already trained)"
+NEW_DIR="$2"
+case "$FOLD" in
+    1|2|3) ;;
+    *) FOLD="" ;;
+esac
+if [ -z "$FOLD" ] || { [ "$FOLD" = "1" ] && [ -z "$NEW_DIR" ]; }; then
+    echo "usage: sbatch slurm/train_fold.sbatch <2|3> [new-dir]  |  sbatch slurm/train_fold.sbatch 1 <new-dir>"
+    echo "       (fold 1 is the paper's run, already trained into checkpoints-23rec/)"
     scancel --state=PENDING "${SLURM_ARRAY_JOB_ID}" 2>/dev/null
     exit 2
 fi
@@ -50,14 +63,28 @@ mkdir -p logs
 echo "Code: $(git log -1 --format='%h %s')"
 
 EPOCHS=110
-CKPT_DIR=checkpoints-fold${FOLD}
+CKPT_DIR=${NEW_DIR:-checkpoints-fold${FOLD}}
 COMMON_ARGS="--fold $FOLD --epochs $EPOCHS --batch-size 2 --num-frames 16 --val-num-frames 16 --patience 90 --checkpoint-dir $CKPT_DIR"
+echo "Checkpoints: $CKPT_DIR"
 
 echo "--- Preflight ---"
 if ! python -m src.folds --check-data; then
     echo "[preflight] training_data/ does not match the laptop's -- not training."
     scancel --state=PENDING "${SLURM_ARRAY_JOB_ID}"
     exit 1
+fi
+if [ -n "$NEW_DIR" ]; then
+    # A fresh run claims its directory. mkdir is atomic, so of two arrays given
+    # the same name only one gets it; this array's later tasks find their own
+    # job ID there and resume. Any other directory is refused.
+    if mkdir "$CKPT_DIR" 2>/dev/null; then
+        echo "$SLURM_ARRAY_JOB_ID" > "$CKPT_DIR/.array_job_id"
+        echo "[preflight] claimed $CKPT_DIR for array $SLURM_ARRAY_JOB_ID"
+    elif [ "$(cat "$CKPT_DIR/.array_job_id" 2>/dev/null)" != "$SLURM_ARRAY_JOB_ID" ]; then
+        echo "[preflight] cannot claim $CKPT_DIR: it already exists (or its parent does not) -- a fresh run needs a new directory; not training."
+        scancel --state=PENDING "${SLURM_ARRAY_JOB_ID}"
+        exit 1
+    fi
 fi
 if [ -f "$CKPT_DIR/training_config.json" ]; then
     # A directory left by another split would be resumed as if it were this one.

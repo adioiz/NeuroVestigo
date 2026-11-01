@@ -52,6 +52,15 @@ class DataConfig:
     # 0.8529 baseline while training on longer clips.
     val_num_frames: Optional[int] = None
     image_size: int = 1024 # Image size for SAM 2 (must match pretrained config)
+    # How masks -- the labels and the frame-0 prompt -- are enlarged to
+    # image_size. "nearest-exact" takes each output pixel from the input pixel
+    # under its centre, the same geometry as the bilinear image resize. Runs
+    # trained before 2026-11-02 used torch's legacy "nearest", which takes the
+    # pixel under the top-left corner: their labels sat half an output pixel
+    # (0.07-0.3 of a native pixel, by recording size) off the image. Their
+    # training_config.json has no mask_resize key, read as "nearest" by
+    # saved_mask_resize below; a resumed run keeps the mode it started with.
+    mask_resize: str = "nearest-exact"
     max_objects: int = 3 # Maximum objects per clip
     val_fraction: float = 0.25 # Validation split (fraction of videos held out → 5 of 20)
     # Optional: explicitly pin which videos go in val. When set, overrides val_fraction
@@ -516,3 +525,26 @@ def apply_backbone_defaults(config: "TrainingConfig") -> "TrainingConfig":
         config.augmentation.normalize_mean = (0.5, 0.5, 0.5)
         config.augmentation.normalize_std = (0.5, 0.5, 0.5)
     return config
+
+
+def saved_mask_resize(cfg_path) -> str:
+    """DataConfig.mask_resize of the run whose training_config.json is at
+    cfg_path. Runs from before 2026-11-02 have no such key (or no file at all):
+    they enlarged their masks with torch's legacy "nearest"."""
+    import json
+    import os
+    if not os.path.exists(cfg_path):
+        return "nearest"
+    with open(cfg_path) as f:
+        return json.load(f).get("data", {}).get("mask_resize", "nearest")
+
+
+def run_mask_resize(config: "TrainingConfig") -> str:
+    """The mask_resize a training run uses: its configured one, except that a
+    resumed run keeps the one it started with, so a run begun before the key
+    existed does not switch to centred labels half way through."""
+    import os
+    if not config.resume_from:
+        return config.data.mask_resize
+    run_dir = os.path.dirname(os.path.abspath(config.resume_from))
+    return saved_mask_resize(os.path.join(run_dir, "training_config.json"))

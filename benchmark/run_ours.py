@@ -46,6 +46,19 @@ def _seq_len(name: str) -> int:
     return len(glob.glob(os.path.join(DATA_DIR, "images", name, "*.png")))
 
 
+def prompt_mask_resize(ckpt: str, load_lora: bool) -> str:
+    """How to enlarge the frame-0 prompt: the way the checkpoint's own training
+    enlarged its labels (DataConfig.mask_resize; runs from before 2026-11-02
+    used "nearest"). Stock SAM 2 (--no-lora) belongs to no run and keeps
+    "nearest", the mode the benchmark tables were made with, whatever sits
+    beside the default --ckpt."""
+    from src.config import saved_mask_resize
+    if not load_lora:
+        return "nearest"
+    return saved_mask_resize(os.path.join(os.path.dirname(os.path.abspath(ckpt)),
+                                          "training_config.json"))
+
+
 def build_model(ckpt: str, device: str, load_lora: bool = True,
                 backbone: str = None):
     """Build SAM 2 + dual-rank LoRA. When `load_lora` is False the adapters stay
@@ -76,7 +89,9 @@ def build_model(ckpt: str, device: str, load_lora: bool = True,
         print(f"  [ours] no training_config.json beside {ckpt}; assuming sam2 "
               f"(pass --backbone sam3 for a SAM 3 checkpoint)")
     apply_backbone_defaults(config)
-    print(f"  [ours] backbone={config.backbone} image_size={config.data.image_size}")
+    config.data.mask_resize = prompt_mask_resize(ckpt, load_lora)
+    print(f"  [ours] backbone={config.backbone} image_size={config.data.image_size} "
+          f"mask_resize={config.data.mask_resize}")
     model, _ = build_training_model(config, device)
     # FAIR PROTOCOL (identical across models): frame 0 is the GIVEN prompt, so
     # seed it by passing the GT mask straight through to output + memory. This
@@ -156,7 +171,8 @@ def infer_sequence(model, config, norm_mean, norm_std, name: str,
     if limit_frames:
         n = min(n, limit_frames)
     transform = VideoValidationTransform(image_size=config.data.image_size,
-                                         normalize_mean=norm_mean, normalize_std=norm_std)
+                                         normalize_mean=norm_mean, normalize_std=norm_std,
+                                         mask_resize=config.data.mask_resize)
     ds = NeuronVideoDataset(DATA_DIR, [name], num_frames=n,
                             max_objects=config.data.max_objects, transform=transform,
                             clip_stride=n, cache_in_memory=False)

@@ -17,7 +17,7 @@ sys.path.insert(0, REPO)
 
 import numpy as np
 import torch
-from src.config import TrainingConfig
+from src.config import TrainingConfig, saved_mask_resize
 from src.trainer import build_training_model, detect_device, _load_normalization_stats
 from src.lora import load_lora_weights
 from src.neuron_dataset import NeuronVideoDataset, neuron_collate_fn
@@ -42,7 +42,8 @@ def main():
           f"clip_stride={config.data.clip_stride} (TRAINING val protocol)")
 
     nm, ns = _load_normalization_stats(config)
-    tf = VideoValidationTransform(config.data.image_size, nm, ns)
+    tf = VideoValidationTransform(config.data.image_size, nm, ns, mask_resize=saved_mask_resize(
+        os.path.join(os.path.dirname(CKPT), "training_config.json")))
     model, _ = build_training_model(config, device)     # wrapper training-time flags (unchanged)
     load_lora_weights(model.model, CKPT, device=device)
     model.eval()

@@ -109,3 +109,87 @@ def test_baseline_target_comes_back_centred(s):
         assert max(nudges, key=nudges.get) == (0, 0)
     assert np.mean(new_iou) > np.mean(old_iou) + 0.05
     assert np.mean(new_iou) > 0.85
+
+
+# --- training labels and the frame-0 prompt (src/augmentations.py) -----------
+
+NO_AUGMENTATION = dict(horizontal_flip_p=0, vertical_flip_p=0, rotation_degrees=0, shear=0,
+                       brightness=0, contrast=0, scale_limit=(1.0, 1.0), gaussian_blur_p=0,
+                       gaussian_noise_p=0, elastic_transform_p=0)
+
+
+@pytest.mark.parametrize("H,W", SIZES)
+@pytest.mark.parametrize("transform", ["train", "val"])
+def test_labels_are_enlarged_onto_the_image(H, W, transform):
+    """A label enlarged to 1024 must cover what the image enlarged to 1024
+    shows. Legacy "nearest" (every run before 2026-11-02) shifts it half an
+    output pixel, which on these thin lines leaves only 70-87% overlap;
+    "nearest-exact" puts it on the image."""
+    from src.augmentations import VideoAugmentation, VideoValidationTransform
+    m = thin_mask(H, W)
+    frame = torch.from_numpy(m.astype(np.float32))[None].repeat(3, 1, 1)   # image == label
+    plain = dict(normalize_mean=[0.0] * 3, normalize_std=[1.0] * 3)
+
+    def overlap(mask_resize):
+        if transform == "train":
+            tf = VideoAugmentation(1024, mask_resize=mask_resize, **NO_AUGMENTATION, **plain)
+        else:
+            tf = VideoValidationTransform(1024, mask_resize=mask_resize, **plain)
+        frames, masks = tf([frame], [torch.from_numpy(m).long()])
+        image, label = frames[0][0].numpy() > 0.5, masks[0].numpy() > 0
+        return (image & label).sum() / (image | label).sum()
+
+    assert overlap("nearest-exact") > 0.99
+    assert overlap("nearest") < 0.9
+
+
+def _run_dirs(tmp_path):
+    """A run from before 2026-11-02 and one from after, as the trainer leaves them."""
+    import dataclasses
+    import json
+    from src.config import TrainingConfig
+    old, new = tmp_path / "old_run", tmp_path / "new_run"
+    old.mkdir()
+    new.mkdir()
+    (old / "training_config.json").write_text(json.dumps({"backbone": "sam2", "data": {"image_size": 1024}}))
+    (new / "training_config.json").write_text(json.dumps(dataclasses.asdict(TrainingConfig())))
+    return old, new
+
+
+def test_inference_prompts_each_checkpoint_as_it_was_trained(tmp_path):
+    """run_ours.py enlarges the frame-0 prompt the way the checkpoint's labels
+    were enlarged: legacy for every run before 2026-11-02 (so the paper's
+    numbers cannot move), centred for new runs; stock SAM 2 stays legacy
+    whatever sits beside the default --ckpt."""
+    from run_ours import prompt_mask_resize
+    old, new = _run_dirs(tmp_path)
+    assert prompt_mask_resize(str(old / "lora_weights_topo.pt"), load_lora=True) == "nearest"
+    assert prompt_mask_resize(str(new / "lora_weights_topo.pt"), load_lora=True) == "nearest-exact"
+    assert prompt_mask_resize(str(new / "lora_weights_topo.pt"), load_lora=False) == "nearest"
+    assert prompt_mask_resize(str(tmp_path / "none" / "lora_weights.pt"), load_lora=True) == "nearest"
+
+
+def test_training_mode_new_runs_centred_resumed_runs_unchanged(tmp_path):
+    """A fresh run trains on centred labels; a resumed run keeps the mode it
+    started with, so a run begun before 2026-11-02 never switches mid-way."""
+    from src.config import TrainingConfig, run_mask_resize
+    old, new = _run_dirs(tmp_path)
+    fresh = TrainingConfig()
+    assert run_mask_resize(fresh) == "nearest-exact"
+    resumed_old = TrainingConfig()
+    resumed_old.resume_from = str(old / "train_state.pt")
+    assert run_mask_resize(resumed_old) == "nearest"
+    resumed_new = TrainingConfig()
+    resumed_new.resume_from = str(new / "train_state.pt")
+    assert run_mask_resize(resumed_new) == "nearest-exact"
+
+
+def test_transforms_refuse_to_guess_the_mask_mode():
+    """No default: a caller that forgets mask_resize fails at once instead of
+    silently enlarging labels or prompts the wrong way."""
+    from src.augmentations import VideoAugmentation, VideoValidationTransform
+    for make in (VideoAugmentation, VideoValidationTransform):
+        with pytest.raises(TypeError):
+            make(1024)
+        with pytest.raises(ValueError):
+            make(1024, mask_resize="bilinear")

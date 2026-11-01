@@ -13,6 +13,20 @@ import torch
 import torchvision.transforms.functional as TF
 from scipy.ndimage import gaussian_filter, map_coordinates
 
+# How masks are enlarged to image_size (DataConfig.mask_resize). There is no
+# default: every caller must say which, so a forgotten argument fails at once
+# instead of silently training on, or prompting with, the wrong geometry.
+MASK_RESIZE_MODES = {
+    "nearest": TF.InterpolationMode.NEAREST,              # top-left corner
+    "nearest-exact": TF.InterpolationMode.NEAREST_EXACT,  # centre, like bilinear
+}
+
+
+def _mask_resize_mode(name: str) -> TF.InterpolationMode:
+    if name not in MASK_RESIZE_MODES:
+        raise ValueError(f"mask_resize must be one of {sorted(MASK_RESIZE_MODES)}, not {name!r}")
+    return MASK_RESIZE_MODES[name]
+
 
 def make_elastic_field(
     shape: Tuple[int, int], alpha: float, sigma: float
@@ -120,8 +134,11 @@ class VideoAugmentation:
         elastic_sigma: float = 5.0,  # Deformation smoothness
         normalize_mean: List[float] = None,
         normalize_std: List[float] = None,
+        *,
+        mask_resize: str,
     ):
         self.image_size = image_size
+        self.mask_interpolation = _mask_resize_mode(mask_resize)
         self.horizontal_flip_p = horizontal_flip_p
         self.vertical_flip_p = vertical_flip_p
         self.rotation_degrees = rotation_degrees
@@ -248,7 +265,7 @@ class VideoAugmentation:
             mask_3d = TF.resize(
                 mask_3d,
                 [self.image_size, self.image_size],
-                interpolation=TF.InterpolationMode.NEAREST,
+                interpolation=self.mask_interpolation,
             )
 
             # --- Intensity transforms (consistent across frames) ---
@@ -286,8 +303,11 @@ class VideoValidationTransform:
         image_size: int = 1024,
         normalize_mean: List[float] = None,
         normalize_std: List[float] = None,
+        *,
+        mask_resize: str,
     ):
         self.image_size = image_size
+        self.mask_interpolation = _mask_resize_mode(mask_resize)
         # Use dataset-specific stats if provided, else fall back to ImageNet
         self.normalize_mean = normalize_mean or [0.485, 0.456, 0.406]
         self.normalize_std = normalize_std or [0.229, 0.224, 0.225]
@@ -312,7 +332,7 @@ class VideoValidationTransform:
             mask_3d = TF.resize(
                 mask_3d,
                 [self.image_size, self.image_size],
-                interpolation=TF.InterpolationMode.NEAREST,
+                interpolation=self.mask_interpolation,
             )
 
             frame = TF.normalize(frame, self.normalize_mean, self.normalize_std)
