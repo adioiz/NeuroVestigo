@@ -280,7 +280,7 @@ A single frame\nobreakdash-0 mask is more informative than a ground-truth box on
 \subsection{Temporal consistency}
 \label{sec:res:temporal}
 
-Growth and retraction are derived from consecutive mask differences; thus, segmentation drift confounds biological measurements. Table~\ref{tab:drift} tracks performance across recording quartiles. While all methods degrade, NeuroVestigo drifts just $0.080$ cbDice from Q1 to Q4---$1.7\times$ less than the most stable baseline. Despite receiving per-frame ground-truth boxes, $\mu$SAM drifts $1.8\times$ more; SAM\,3, $2.7\times$. Per recording, it drifts less than each baseline in 10--11 of 12 recordings, except NeuroQuantify (7 of 12), which never finds the neuron in three dense ones, so its score has nowhere to fall.
+Growth and retraction are derived from consecutive mask differences; thus, segmentation drift confounds biological measurements. Table~\ref{tab:drift} tracks performance across recording quartiles. While all methods degrade, NeuroVestigo drifts just $0.080$ cbDice from Q1 to Q4---$1.7\times$ less than the most stable baseline. Despite receiving per-frame ground-truth boxes, $\mu$SAM drifts $1.8\times$ more.
 
 % Table 2 -- [!h], between the two paragraphs of Sec. 3.3 (see Table 1).
 \begin{table}[!h]
