@@ -165,8 +165,8 @@ initial frame.
 Frames are resized to $1024\times1024$. During
 inference, the entire sequence is propagated continuously without
 supplementary prompting, manual correction, or re-initialization. Output
-logits are bilinearly resampled to the native resolution, then thresholded
-at zero (reversed in the ablations).
+logits are strictly zero-thresholded and rescaled to the native spatial
+resolution.
 
 \subsection{Parameter-efficient adaptation}
 \label{sec:lora}
