@@ -64,3 +64,16 @@ paper_assets/paper/*.log
 
 # TeX package cache (tectonic)
 paper_assets/paper/tcache/
+
+# Kept privately, outside the public code
+/benchmark/
+/paper_assets/
+/presentation/
+/slurm/
+/CODE_EXPLAINED.md
+/METHODS_CHEAT_SHEET.md
+/PIPELINE_AUDIT.md
+/REPORT.tex
+/tests/test_alignment.py
+/tests/test_folds.py
+/tests/test_sam3_tracker_walk.py
