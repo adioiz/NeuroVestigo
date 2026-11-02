@@ -1,6 +1,6 @@
 %=======================================================================
 %  Transformer-based, topology-preserving, temporally consistent segmentation
-%  and tracking of individual neurons in phase-contrast time-lapse microscopy
+%  and tracking of individual neurons in time-lapse microscopy
 %
 %  Target: Cell Reports Methods
 %  Structure: 1 Intro · 2 Related Work · 3 Methods · 4 Results · 5 Discussion
@@ -112,7 +112,7 @@
 
 %------------------------- title -------------------------------------
 \title{\textbf{NeuroVestigo: topology-preserving segmentation and tracking
-of single neurons in phase-contrast time-lapse microscopy}}
+of single neurons in time-lapse microscopy}}
 
 % Author order to be confirmed with Prof. Shefi.
 % E. N. Berkovich acquired and hand-annotated the time-lapse dataset
@@ -129,6 +129,12 @@ of single neurons in phase-contrast time-lapse microscopy}}
 %=====================================================================
 %  NUMBERS TO REFRESH AFTER THE FINAL TRAINING RUN
 %  ------------------------------------------------------------------
+%  2026-11-02: every test number in the text, Tables 1-2 and the figures made
+%  from predictions now comes from benchmark/results/folds/ (three splits, 12
+%  recordings, predictions shrunk to native size centred -- commit 70a3472;
+%  regenerate with benchmark/aggregate_folds.py). The single-split test
+%  numbers in the notes below are historical; Sec. 4.3's ablations still use
+%  them, as differences.
 %  CHECKPOINT DIRECTORIES (2026-09). Only two exist and both are live:
 %    checkpoints/            SHIPPED -- 22 training recordings
 %    checkpoints-16-frames/  PREVIOUS -- 20 training recordings
@@ -314,7 +320,7 @@ of single neurons in phase-contrast time-lapse microscopy}}
 Neurite outgrowth analysis necessitates label-free time-lapse microscopy, as
 phototoxicity precludes the use of continuous fluorescent reporters.
 Extracting cellular morphology from phase-contrast data, however, remains
-highly reliant on labor-intensive manual tracing. Existing automated
+highly reliant on labor manual tracing. Existing automated
 segmenters successfully resolve the high-contrast soma but frequently
 fragment or delete the ultra-fine, pixel-scale neurites that encode critical
 biological signals. Furthermore, current methods fail to preserve
@@ -323,23 +329,24 @@ paradoxically obscure these failures---a severed branch incurs a negligible
 pixel penalty while catastrophically invalidating the underlying biological
 morphology. To address this, we introduce NeuroVestigo, a
 parameter-efficient adaptation of the promptable video foundation model
-SAM\,2 \cite{ravi2025sam2} for phase-contrast microscopy. Utilizing
+SAM\,2 for phase-contrast time lapse microscopy. Utilizing
 dual-rank LoRA+ to update merely $13.9\,\%$ ($5.56$\,M of $39.9$\,M) of the
 network weights, the architecture is optimized via a connectivity-preserving
 objective that explicitly penalizes topological fractures. By
 backpropagating through an undetached temporal memory bank, longitudinal
 drift is explicitly optimized rather than merely measured. Conditioned on a
 single annotated mask at frame~0, the model robustly segments entire
-multi-day sequences. Evaluated on four strictly held-out recordings
-(spanning 72 to 92 consecutive hourly frames, yielding $328$ total frames),
-NeuroVestigo achieves state-of-the-art performance (cbDice $0.855$, clDice
-$0.946$, Dice $0.864$, IoU $0.763$), outperforming six competitive baselines
-across all metrics. Furthermore, it demonstrates markedly better temporal
-stability, exhibiting a minimal cbDice degradation of $0.070$ between the
-first and final quartiles, compared to $0.126$ for the most stable baseline.
+multi-day sequences. Evaluated on three training splits with disjoint test
+sets (12 held-out recordings of 72 to 92 consecutive hourly frames, yielding
+$984$ scored frames), NeuroVestigo achieves state-of-the-art performance
+(cbDice $0.893 \pm 0.028$, clDice $0.940 \pm 0.024$, Dice $0.880 \pm 0.019$,
+IoU $0.789 \pm 0.028$; mean $\pm$ SD over three runs), outperforming six
+competitive baselines across all metrics. Furthermore, it demonstrates
+markedly better temporal stability: its cbDice changes by $0.080$ between the
+first and last quartiles of a recording, against $0.136$ for the most stable
+baseline ($1.7\times$ less).
 The inference model is publicly released within \texttt{neurons-labeling}, a
-napari plug-in designed for interactive curation, alongside our complete
-dataset of thirty-two annotated recordings.
+napari plug-in designed for interactive curation.
 \end{abstract}
 
 \noindent\textbf{Keywords:} neuron segmentation; cell tracking;
@@ -397,14 +404,10 @@ The computational challenge is fundamentally tied to the unique
 morphological properties of the target. Because neurites are often only a
 few pixels wide, a single false-negative prediction can sever a branch,
 inducing a catastrophic topological fracture that invalidates downstream
-morphological analysis. Crucially, this structural failure incurs a
-negligible penalty under standard area-based metrics. This is exacerbated by
-severe spatial imbalance: the target occupies an average of just $2.5\,\%$
-of the frame, and as little as $0.2\,\%$, rendering standard pixel-wise
-objectives highly ineffective. Furthermore, phase-contrast microscopy is
+morphological analysis. This structural failure incurs a
+negligible penalty under standard area-based metrics. Furthermore, phase-contrast microscopy is
 characterized by inherently low signal-to-noise ratios and non-uniform
-illumination. Longitudinally, the target neuron undergoes severe non-rigid
-deformation, frequently tripling its spatial extent across a recording.
+illumination. Longitudinally, the target neuron undergoes severe deformation, frequently tripling its spatial extent across a recording.
 Finally, because the field of view contains multiple neighboring cells of
 identical morphology, the task transcends semantic segmentation; it strictly
 requires instance-level disambiguation and the continuous preservation of
@@ -419,8 +422,8 @@ update merely $13.9\,\%$ of the network weights. Furthermore, our training
 objective explicitly integrates topology-preserving losses to penalize
 structural fragmentation alongside standard pixel-level errors. Conditioned
 on a single initial mask at frame~0, the model autonomously segments the
-entire time-lapse sequence. Evaluated on four strictly held-out recordings
-propagated in full ($72$--$92$ frames), NeuroVestigo outperforms six
+entire time-lapse sequence. Evaluated on 12 held-out recordings from three
+training splits, each propagated in full ($72$--$92$ frames), NeuroVestigo outperforms six
 competing baselines across all reported metrics
 (Section~\ref{sec:res:benchmark}) and exhibits the lowest longitudinal
 degradation over time (Section~\ref{sec:res:temporal}). The inference model
@@ -430,18 +433,8 @@ human-in-the-loop pipeline: a neuron is annotated once, temporally
 propagated, interactively corrected, and exported
 (Figure~\ref{fig:pipeline}). Because user corrections directly yield
 training data in the model's native consumption format, the tool
-fundamentally enables a continuous self-improvement cycle. Alongside the
-software, we release all thirty-two annotated recordings---including four
-sequences explicitly annotated post-development to serve as a strict blind
-test set---establishing the first public benchmark for single-target
-longitudinal neurite tracking in this modality.
+fundamentally enables a continuous self-improvement cycle.
 
-% Novelty phrasing (locked): claim the COMBINATION, "to our knowledge, based
-% on a systematic search". Credit LoRA/PEFT, the individual topology losses,
-% and foundation-models-for-microscopy to prior art.
-
-% NOTE: avoid TikZ-reserved style names here - "in", "out", "at", "to" are
-% path keywords and silently break node styling if reused.
 \begin{figure}[!htb]
 \centering
 \begin{tikzpicture}[
@@ -525,7 +518,7 @@ longitudinal neurite tracking in this modality.
   {corrections $\rightarrow$ new training data};
 \end{tikzpicture}
 \caption{\textbf{End-to-end pipeline for single neuron tracking.}
-\textbf{(a)}~A continuous label-free phase-contrast time-lapse sequence comprising $T$ frames. \textbf{(b)}~A single target neuron is manually annotated on the initial frame utilizing the integrated \texttt{neurons-labeling} napari plug-in. \textbf{(c)}~The fine-tuned model propagates this spatial prior across the sequence, explicitly maintaining instance identity by conditioning on past predictions via its temporal memory bank. \textbf{(d)}~The target is robustly segmented in every subsequent frame (visualization: true positive in yellow, false negative in green, false positive in red). Interactive corrections made within the plug-in natively generate formatted data for continuous model refinement.}
+\textbf{(a)}~A continuous label-free phase-contrast time-lapse sequence comprising $T$ frames. \textbf{(b)}~A single target neuron is manually annotated on the initial frame utilizing the integrated \texttt{neurons-labeling} napari plug-in. \textbf{(c)}~The fine-tuned model propagates this spatial prior across the sequence. \textbf{(d)}~The target is robustly segmented in every subsequent frame (visualization: true positive in yellow, false negative in green, false positive in red).}
 \label{fig:pipeline}
 \end{figure}
 
@@ -569,7 +562,7 @@ markers rather than learned from data, it cannot be trivially adapted to
 label-free phase-contrast imagery.
 
 Consequently, when precise, per-neuron morphology is required, the gold
-standard remains labor-intensive manual tracing
+standard remains labor manual tracing
 \cite{meijering2004neuronj,longair2011snt}, as fully automated instance
 tracking in this domain remains an open challenge
 \cite{liu2022neurontracing}.
@@ -604,11 +597,11 @@ utilize two additional methodologies as foundational components rather than
 baselines for comparison. It is well established that area-overlap losses
 are insensitive to topological connectivity. Several objectives address this
 limitation, including persistent homology \cite{hu2019topology}, clDice
-\cite{shit2021cldice} (which penalizes breaks proportionally using soft
-skeletons), cbDice \cite{shi2024cbdice} (which applies radius weighting to
-prioritize thin branches), and the supervoxel loss \cite{grim2025supervoxel}
-(which focuses gradients specifically on structural splits or merges). We
-adopt the latter two directly rather than proposing a novel topological
+\cite{shit2021cldice} which penalizes breaks proportionally using soft
+skeletons, cbDice \cite{shi2024cbdice} which applies radius weighting to
+prioritize thin branches, and the supervoxel loss \cite{grim2025supervoxel}
+which focuses gradients specifically on structural splits or merges. We
+adopt the latter two directly as our topological
 loss. Similarly, we employ established low-rank adaptation techniques (LoRA
 \cite{hu2022lora} and LoRA+ \cite{hayou2024loraplus}) without architectural
 modification.
@@ -652,57 +645,34 @@ one target neuron, so that a single cell and its processes are followed
 throughout (Figure~\ref{fig:culture}). Thirty-two recordings were prepared,
 spanning 148--615 pixels in width and 146--498 pixels in height
 (99--411\,$\mu$m and 98--333\,$\mu$m respectively), and comprising 57--97
-frames, most commonly 73. All but one were seeded at the lower of the two
-plating densities; \texttt{B28\_C4\_200k} is the single recording at the
-higher density, and is included so that the released set is not confined to
-one seeding condition. Because a neuron is a thin, branched object within
-a much larger field, the target occupies on average 2.5\,\% of the frame,
-and as little as 0.2\,\% in the sparsest frames --- the imbalance that
-motivates both the loss design (Section~\ref{sec:met:loss}) and the choice
-of evaluation metric (Section~\ref{sec:met:metrics}). The fraction is not
-constant: it varies by an order of magnitude between recordings (0.9--8.1\,\%
-of the frame on average) as neurons of different sizes are followed through
-different stages of outgrowth.
+frames, most commonly 73.
 
 \paragraph{Splits.}
-Twenty-three recordings were used for training and five for validation and
-model selection; \texttt{B28\_C4\_200k} was annotated after the reported
-training run had finished, so the released model was fitted on twenty-two of
-the twenty-three (Section~\ref{sec:res:ablation}). Four further recordings
---- \texttt{A71\_C1}, \texttt{A81\_C1},
-\texttt{A12\_C3\_100k} and \texttt{A12\_C1\_100k\_2} --- were annotated only
-after model development was complete and used exclusively as a held-out test
-set; the model's weights were never exposed to them. They were selected
-simply as the most recently annotated recordings absent from training,
-without reference to image quality or segmentation difficulty.
+Training was repeated on three splits that share the same five validation
+recordings, used for model selection, and have disjoint four-recording test
+sets, so that 12 recordings are held out in all; each split trains on the
+remaining twenty-three. The first split, which produced the released model,
+tests on \texttt{A71\_C1}, \texttt{A81\_C1}, \texttt{A12\_C3\_100k} and
+\texttt{A12\_C1\_100k\_2},\footnote{\texttt{A12\_C1\_100k\_2} is cut from the
+same image stack as the training recording \texttt{A12\_C1\_100k\_1}, centered
+on a different neuron. The second and third splits exclude such pairs.} the
+second on \texttt{A51\_C1}, \texttt{A61\_C1}, \texttt{B11\_C1\_100k} and
+\texttt{B12\_C1\_100k}, and the third on \texttt{A11\_C1},
+\texttt{A52\_C1\_right}, \texttt{A11\_C1\_100k} and \texttt{A11\_C5\_100k}.
+% The first split's four test recordings were annotated only after model
+% development was complete; its model's weights were never exposed to them.
+% Splits: src/folds.py. Every test number in the paper is the mean over the
+% three splits from benchmark/results/folds/ unless it says otherwise.
 
 \paragraph{Annotation.}
 Ground-truth masks were drawn in \texttt{neurons-labeling}, a napari plug-in
-developed for this work and released alongside it
-(Figure~\ref{fig:pipeline}b). Annotation followed a human-in-the-loop
-protocol: an initial mask was propagated across frames and then corrected
-manually. Every mask in the dataset was hand-edited; no propagated output
-was accepted unmodified. To confirm that this did not bias evaluation in
-favor of the model, we verified that no test-set ground truth coincides
-with the model's own prediction: across the 328 scored test frames the
-highest agreement is IoU~0.903, with none exceeding 0.95, indicating that
-every frame was substantively edited.
-
-\paragraph{The annotation and inference tool.}
-\texttt{neurons-labeling} is a napari plug-in, released with this work, that
-is both how the dataset was produced and how the model is meant to be used. A
-recording is opened as a stack, one neuron is painted on the first frame with
-the standard labels brush, and a single action propagates that annotation
-through every remaining frame using the weights of
-Section~\ref{sec:met:model}; the base SAM\,2 weights can be selected instead,
-which is how the zero-shot baseline of Section~\ref{sec:res:benchmark} is
-reproduced. Any frame can then be corrected with brush and eraser and the
-propagation re-run from that frame. Output is written either as a mask stack
-or as a per-pixel coordinate table indexed by frame and object, the form the
-downstream morphometric analysis consumes. Because a corrected frame is a
-mask in exactly the format the model was trained on, routine use of the tool
-produces training data without a separate annotation effort --- the loop drawn
-in Figure~\ref{fig:pipeline}.
+developed for this work and released alongside it (Figure~\ref{fig:pipeline}b):
+one neuron is painted on the first frame, a single action propagates that
+annotation through the remaining frames using the weights of
+Section~\ref{sec:met:model}, and any frame can be corrected and the propagation
+re-run from there. Annotation followed this human-in-the-loop protocol
+throughout; every mask in the dataset was hand-edited, and no propagated output
+was accepted unmodified.
 
 %---------------------------------------------------------------------
 \subsection{Parameter-efficient adaptation of SAM\,2}
@@ -719,34 +689,24 @@ use a mask prompt on frame~0. Pretrained on SA-V and natural images, SAM\,2
 has never encountered phase-contrast microscopy, and its zero-shot behavior
 on our recordings is characteristic: it segments the high-contrast soma
 reliably and loses the low-contrast processes
-(Section~\ref{sec:res:benchmark}). We use the smallest encoder variant, as
-with 28 annotated recordings performance is limited by the quantity of
-supervision rather than by model capacity.
+(Section~\ref{sec:res:benchmark}). We use the smallest encoder variant; a
+twenty-times larger encoder does not improve the result
+(Section~\ref{sec:res:ablation}), so model capacity is not what limits
+performance.
 
 \paragraph{Input representation.}
 Frames are single-channel; each is replicated to three channels, scaled to
 $[0,1]$ and resampled to the fixed $1024\times1024$ resolution SAM\,2
-expects, with bilinear interpolation for frames and nearest-neighbor
-interpolation for masks, preserving hard label boundaries.
+expects, with bilinear interpolation for frames.
 
-As recordings span 148--615 pixels in width and 146--498 in height, this
-resampling is an upsampling by a factor of 1.7--7.0 per axis. The Hiera
-encoder emits its coarsest features at a $16\times$ stride, but the
-mask decoder also receives the stride-$4$ and stride-$8$ feature maps through
-skip connections, and it is these that carry thin structure: a neurite one to
-two pixels wide at acquisition spans four to ten pixels after upsampling, so
-it occupies more than one position on the stride-$4$ and stride-$8$ grids even
-though it falls below one on the stride-$16$ grid. Upsampling is what places it
-there; at native resolution the same neurite would fall below one position on
-every grid. The same consideration governs the input scale chosen for each
-competing method (Appendix~\ref{sec:supp:protocol}).
-
-Upsampling introduces no new information and carries two costs. Computation
-and memory scale with the resampled area, 5--36 times the native frame. And
-because non-square recordings are resampled to a square input rather than
-padded, their aspect ratio is altered; we accept this in preference to
-padding, which would consume encoder capacity on constant borders, and apply
-it identically at training and inference so that the model is never
+This is an upsampling by a factor of 1.7--7.0 per axis, which is what places a
+neurite only few pixels wide at acquisition onto more than one position of the
+stride-$4$ and stride-$8$ feature maps the mask decoder receives through skip
+connections; at native resolution it would fall below one position on every
+grid. The same consideration governs the input scale chosen for each competing
+method (Appendix~\ref{sec:supp:protocol}). Because non-square recordings are
+resampled to a square input rather than padded, their aspect ratio is altered;
+we apply this identically at training and inference so that the model is never
 evaluated under a geometry it did not see.
 
 \paragraph{Adapted and frozen components.}
@@ -755,7 +715,8 @@ on a single GPU. The
 image encoder's 27{,}219{,}136 pretrained parameters are frozen in full:
 its representations of edges, texture and contrast are generic and were
 estimated from a corpus several orders of magnitude larger than ours, and
-fine-tuning them on 28 recordings would degrade rather than specialize them.
+fine-tuning them on twenty-three training recordings would degrade rather
+than specialize them.
 What must change is not how features are computed but how they are selected,
 and that selection happens in attention, where the model determines which
 spatial locations and which stored memories bear on the current prediction.
@@ -815,8 +776,9 @@ Figure~\ref{fig:architecture} summarizes the placement.
 %  Panel (a) is a raster strip of the real phase-contrast frames of A71_C1
 %  (292x292 px, 1.497 px/um) with the frame-0 ground-truth prompt and the
 %  shipped model's own propagated masks overlaid -- built by
-%  make_filmstrip.py, which re-scores the prediction stack and refuses to
-%  draw unless it matches benchmark/results/test/ours_16f.csv.  The
+%  make_filmstrip.py from run 1's ours_23rec_topo, which re-scores the
+%  prediction stack and refuses to draw unless it matches
+%  benchmark/results/folds/per_recording.csv.  The
 %  acquisition software's burnt-in scale bar and caption are erased from the
 %  background there; no pixel of any drawn mask is touched.
 %
@@ -881,13 +843,12 @@ Figure~\ref{fig:architecture} summarizes the placement.
 \node[plab] at (0.00,7.55) {(a)};
 \node[ptit] at (0.62,7.55)
      {One annotation at $t=0$ propagates through the whole recording};
-\node[note, anchor=north east] at (16.20,7.55)
-     {target area $1.5\,\% \rightarrow 5.8\,\%$ of the frame};
 
 % Real phase contrast: the frame-0 ground-truth prompt (navy) and the model's
 % own propagated masks (teal).  Seven 1.24 cm cells on a 2.30 cm pitch, 50 um
 % scale bar burnt into the last cell.  Built by make_filmstrip.py, which
-% refuses to draw unless the stack re-scores to the IoU in ours_16f.csv.
+% refuses to draw unless the stack re-scores to the IoU in
+% results/folds/per_recording.csv.
 \node[anchor=south west, inner sep=0] at (0.53,5.80)
      {\includegraphics[width=15.04cm]{fig2_filmstrip}};
 
@@ -996,13 +957,14 @@ Figure~\ref{fig:architecture} summarizes the placement.
 \colorlet{mk}{black!45}\colorlet{mk2}{ourblue}
 \maskpanel{9.78}{-0.06}{0.36}{\neuronTight\neuronTightSkel}
 \node[sm, anchor=west, align=left] at (10.30,-0.06)
-     {the centerline is $513$ of the mask's $4977$ pixels:\\
-      a severed branch barely moves an area term};
+     {the skeleton is $10\,\%$ of the mask's pixels:\\
+      a severed branch is invisible to an area term\\
+      and costly to a centerline term};
 
 \end{tikzpicture}
 \caption{\textbf{Methodology and architectural adaptation.}
-\textbf{(a) The task:} Conditioned exclusively on a single ground-truth mask at $t=0$ (navy), the model autonomously propagates predictions (teal) longitudinally without secondary prompting.
-\textbf{(b) Parameter-efficient adaptation:} The Hiera-tiny image encoder is frozen except for low-rank adapters ($r{=}8$) in its final two blocks, while rank-16 adapters are integrated into the memory-attention and mask decoders alongside fully fine-tuned prompt and memory encoders (the amber pathway illustrates temporal recurrence, Eq.~\ref{eq:recurrence}).
+\textbf{(a) The task:} Conditioned exclusively on a single ground-truth mask at $t=0$ (navy), the model autonomously propagates predictions longitudinally without secondary prompting.
+\textbf{(b) Parameter-efficient adaptation:} The Hiera-tiny image encoder is frozen except for low-rank adapters ($r{=}8$) in its final two blocks, while rank-16 adapters are integrated into the memory-attention and mask decoders alongside fully fine-tuned prompt and memory encoders (Eq.~\ref{eq:recurrence}).
 \textbf{(c) Optimization and temporal backpropagation:} By maintaining the memory bank within the computation graph across unrolled 16-frame training clips, gradients continuously optimize cross-frame parameters, while topology-aware loss terms explicitly penalize structural fractures.}
 \label{fig:architecture}
 \end{figure}
@@ -1065,27 +1027,23 @@ The consequence for training is that the gradient of the loss at a given
 frame reaches the adapters along paths of increasing length --- one through
 the current frame, one through the previous frame's memory write, and so on
 to the beginning of the clip --- and retaining these paths requires that the
-bank not be detached from the computation graph between frames. Many
-implementations do detach it, which reduces training memory and simplifies
-the backward pass; we do not. The distinction is consequential because the
-parameters that govern cross-frame behavior --- the 40 memory-attention
+bank not be detached from the computation graph between frames. The distinction is consequential because the parameters that govern cross-frame behavior --- the 40 memory-attention
 adapters and the memory encoder --- receive gradient only along the paths
 that detachment removes. Under detachment they would be optimized as though
 the frames were independent, yielding a model that segments frames rather
 than one that propagates a mask. Training accordingly proceeds by
 backpropagation through time over clips of 16 frames, each with a single
-conditioning frame, which bounds the length of the retained paths and hence
-the memory cost.
+conditioning frame; the clip length sets the memory cost.
 
 \paragraph{Inference.}
 The same recurrence runs at test time without gradients. The ground-truth
 mask of frame~0 is passed directly to the output and into the memory bank,
-and the recording is then propagated in full --- 57 to 93 frames --- rather
+and the recording is then propagated in full rather
 than in the sixteen-frame clips used for training and validation, with no
 further prompt, correction or re-initialization. Preprocessing is the validation transform
-above, without augmentation; output logits are thresholded at zero and
-resampled to the native resolution of the recording by nearest-neighbor
-interpolation.
+above, without augmentation; output logits are resampled bilinearly to the
+native resolution of the recording and then thresholded at zero, as in
+SAM\,2's own video predictor.
 
 
 
@@ -1301,13 +1259,16 @@ trained against the motion actually present in the recording rather than
 against apparent motion introduced by the augmentation. Validation runs
 every second epoch, on clips of the same sixteen-frame length, so that the
 validation score is measured over the propagation chain the model is trained
-for; the full budget of 110 epochs was used and the best checkpoint,
-epoch~90, is taken for all reported results. Training was performed on a
-single NVIDIA B200 GPU under PyTorch~2.9, in bfloat16 with channels-last
-memory format; no loss scaling is required, as bfloat16 retains the exponent
-range of single precision. The full schedule takes approximately seventeen
-hours at $3.1$\,s per optimization step.
-
+for; the full budget of 110 epochs was used. Model selection used the
+validation split only. Validation IoU alone cannot separate late-training
+epochs --- the leading candidates lie within $0.005$ of one another --- so
+among the epochs within that margin of the best validation IoU we take the one
+with the lowest validation Betti-0 error, the absolute difference between the
+number of connected components in prediction and ground truth, averaged over
+validation frames. This selected epoch~80 (validation IoU $0.8381$, Betti-0 $0.609$) over the
+IoU-maximizing epoch~86. Training was performed on a single NVIDIA
+B200 GPU under PyTorch~2.9, in bfloat16 with channels-last memory format. The full schedule takes approximately eighteen hours at $3.2$\,s
+per optimization step.
 
 
 \subsection{Evaluation metrics}
@@ -1329,8 +1290,7 @@ also incorporated into the training loss (Eq.~\ref{eq:loss}), improvements in
 this metric cannot inherently distinguish a superior segmentation from a
 model that has simply overfitted the loss function. In contrast, clDice is
 not optimized during training and does not rely on the differentiable
-skeletonization used in the loss, thereby serving as an independent
-validation metric that corroborates the performance rankings.
+skeletonization used in the loss, thereby serving as an independent validation metric.
 
 \begin{figure}[!htb]
 \centering
@@ -1391,17 +1351,12 @@ validation metric that corroborates the performance rankings.
 measured on exactly the shapes drawn. The middle mask is topologically
 perfect but one pixel too thin everywhere; the right-hand mask keeps its
 thickness but has lost two of its three branches. IoU cannot separate them,
-and in fact prefers the mask that has lost the branches ($0.820$ against
-$0.805$), because at this rasterization the branches are only about four
-pixels wide and thinning the whole shape costs more area than deleting them.
-cbDice orders the two correctly and by a wide margin ($0.986$ against
-$0.800$; clDice $0.998$ against $0.674$). For neurite outgrowth it is the
-right-hand failure that destroys the measurement, and it is the one an area
-metric is blind to.}
+and in fact prefers the mask that has lost the branches.
+cbDice orders the two correctly and by a wide margin.}
 \label{fig:whytopology}
 \end{figure}
 
-Frame 0 contains the initial annotations used to prompt both NeuroVestigo and the baseline SAM\,2; hence it is excluded from all quantitative evaluations. Consequently, all methods are assessed exclusively on the subsequent propagated frames ($t \ge 1$) across the four held-out recordings, comprising a total of 328 evaluation frames. Metrics are calculated on a per-frame basis using hard masks at the native resolution of each recording. For methods that require upsampled inputs, predictions are rescaled back to the native resolution prior to evaluation, ensuring a standardized spatial domain for all comparisons. To prevent longer sequences from disproportionately influencing the aggregate results, frame-level metrics are first averaged within each recording, and these recording-level scores are then weighted equally. Table~\ref{tab:main} reports the resulting means and standard deviations across the four test recordings. 
+Frame 0 contains the initial annotation used to prompt NeuroVestigo, SAM\,2 and SAM\,3; hence it is excluded from all quantitative evaluations. Consequently, all methods are assessed exclusively on the subsequent propagated frames ($t \ge 1$) of the held-out recordings of Section~\ref{sec:met:data}: four per split, comprising 328 evaluation frames per split and 984 over the three splits. Each split's model is scored only on that split's test recordings; the baselines, which are not trained on our data, are scored on all 12. Metrics are calculated on a per-frame basis using hard masks at the native resolution of each recording. For methods that require upsampled inputs, predictions are rescaled back to the native resolution prior to evaluation, ensuring a standardized spatial domain for all comparisons. To prevent longer sequences from disproportionately influencing the aggregate results, frame-level metrics are first averaged within each recording, and these recording-level scores are then weighted equally within each split. Table~\ref{tab:main} reports the mean and standard deviation of the three split-level scores ($n = 3$ runs).
 
 %=====================================================================
 \section{Results}
@@ -1410,18 +1365,20 @@ Frame 0 contains the initial annotations used to prompt both NeuroVestigo and th
 \subsection{Comparison with existing methods}
 \label{sec:res:benchmark}
 
-Table~\ref{tab:main} compares NeuroVestigo against six methods, spanning four
-distinct algorithmic families, on the four held-out recordings; SAM\,3.1
-appears twice, once per prompting mode, giving seven baseline rows.
-Notably, our proposed approach outperforms all methods across every metric.
+Table~\ref{tab:main} compares NeuroVestigo against seven baseline
+configurations, spanning four distinct algorithmic families, on the 12
+held-out recordings of the three splits.
+Notably, our proposed approach outperforms all methods across every metric,
+and against every baseline it does so in at least 11 of the 12 recordings.
 The evaluated methods differ significantly in both their per-frame input
-requirements and output representations. Both NeuroVestigo and the baseline
-SAM\,2 are initialized identically with a single ground-truth mask at
+requirements and output representations. NeuroVestigo, the baseline SAM\,2 and
+SAM\,3 are initialized identically with a single ground-truth mask at
 frame~0, which is then propagated across the sequence to maintain consistent
 object identity temporally. In contrast, $\mu$SAM requires a ground-truth
 bounding box prompt on every frame --- representing the highest degree of
 per-frame supervision among the compared methods --- yet still yields
-inferior performance across all metrics. Finally, the four fully automatic
+inferior performance across all metrics; on cbDice it trails NeuroVestigo by
+$0.071$, in 11 of the 12 recordings. Finally, the four fully automatic
 configurations require no prompting but process each frame independently,
 segmenting all objects in the field of view without establishing temporal
 correspondence. Consequently, isolating a single target and preserving its
@@ -1430,35 +1387,32 @@ matching heuristic, as detailed below.
 
 \begin{table}[!htb]
 \centering
-\caption{\textbf{Held-out test-set performance.} Evaluated on four strictly
-held-out recordings (excluding the frame-0 prompt), with required per-frame
-supervision noted to contextualize the comparisons. Our proposed model
-significantly outperforms all methods across both topological metrics by a
-substantial margin. Furthermore, these results expose the limitations of
-area-based evaluation: $\mu$SAM and Cellpose-SAM sit within $0.012$ IoU of
-one another ($0.575$ vs. $0.563$) yet differ by $0.067$ in structural
-connectivity ($0.792$ vs. $0.725$ cbDice). SAM\,3.1 is reported in
-the two modes we drove through its video-session interface, which takes text,
-points and boxes but no mask; its tracking component additionally exposes a
-mask entry point that we did not benchmark (Section~\ref{sec:res:benchmark}). Its
-concept mode is not target-aware, so its predictions are reduced to the target
-exactly as for the other automatic methods.}
+\caption{\textbf{Held-out test-set performance.} Mean\,$\pm$\,SD over three
+training splits (12 held-out recordings, excluding the frame-0 prompt);
+NeuroVestigo significantly outperforms all methods across both topological metrics by a
+substantial margin.}
 \label{tab:main}
 \small
+\setlength{\tabcolsep}{3.5pt}
+% \pm SD set smaller so four "mean +- SD" columns fit the text width.
+\newcommand{\sd}[1]{\,{\scriptsize$\pm$#1}}
 \begin{tabular}{lcccc l}
 \toprule
 Method & IoU & Dice & \textbf{cbDice} & clDice & Per-frame supervision \\
 \midrule
-\textbf{NeuroVestigo}            & \textbf{0.763} & \textbf{0.864} & \textbf{0.855} & \textbf{0.946} & 1 annotation (frame 0) \\
-SAM\,2 (zero-shot)       & 0.639 & 0.771 & 0.758 & 0.830 & 1 annotation (frame 0) \\
-$\mu$SAM (box-prompt)    & 0.575 & 0.721 & 0.792 & 0.843 & GT box, \emph{every} frame \\
-SAM\,3.1 (point-prompt)  & 0.471 & 0.595 & 0.602 & 0.592 & 10 GT points, \emph{every} frame \\
-Cellpose-SAM             & 0.563 & 0.708 & 0.725 & 0.798 & none (automatic) \\
-NeuroQuantify            & 0.446 & 0.594 & 0.602 & 0.680 & none (automatic) \\
-Omnipose                 & 0.279 & 0.428 & 0.560 & 0.649 & none (automatic) \\
-SAM\,3.1 (text-prompt)   & 0.200 & 0.278 & 0.260 & 0.290 & none (automatic) \\
-\midrule
-\multicolumn{2}{l}{\emph{our margin over best method}} & & $0.064$ & $0.103$ & \\
+\textbf{NeuroVestigo}            & \textbf{0.789}\sd{0.028} & \textbf{0.880}\sd{0.019} & \textbf{0.893}\sd{0.028} & \textbf{0.940}\sd{0.024} & 1 annotation (frame 0) \\
+SAM\,2 (zero-shot)       & 0.629\sd{0.043} & 0.758\sd{0.038} & 0.748\sd{0.053} & 0.811\sd{0.061} & 1 annotation (frame 0) \\
+SAM\,3 (mask-prompt)     & 0.620\sd{0.010} & 0.745\sd{0.002} & 0.747\sd{0.014} & 0.797\sd{0.013} & 1 annotation (frame 0) \\
+$\mu$SAM (box-prompt)    & 0.623\sd{0.049} & 0.761\sd{0.039} & 0.822\sd{0.041} & 0.885\sd{0.046} & GT box, \emph{every} frame \\
+Cellpose-SAM             & 0.533\sd{0.075} & 0.660\sd{0.086} & 0.671\sd{0.090} & 0.721\sd{0.099} & none (automatic) \\
+NeuroQuantify            & 0.359\sd{0.137} & 0.475\sd{0.167} & 0.497\sd{0.173} & 0.550\sd{0.200} & none (automatic) \\
+Omnipose                 & 0.282\sd{0.024} & 0.432\sd{0.029} & 0.578\sd{0.045} & 0.656\sd{0.044} & none (automatic) \\
+SAM\,3.1 (text-prompt)   & 0.176\sd{0.038} & 0.239\sd{0.058} & 0.246\sd{0.059} & 0.263\sd{0.062} & none (automatic) \\
+% INTERNAL (not in the paper by decision, 2026-09-15): the identical adaptation
+% on the SAM 3 tracker, topology-tie-break checkpoint, scored locally on the
+% corrected A71_C1 mask: IoU 0.7731 / Dice 0.8706 / cbDice 0.8639 / clDice 0.9553
+% (SAM 2 released model: 0.7685 / 0.8672 / 0.8602 / 0.9466; paired t=0.45, p=0.68).
+% Stacks: benchmark/predictions/ours_sam3_topo; rows ours_sam3* in summary.csv.
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1467,47 +1421,30 @@ SAM\,3.1 (text-prompt)   & 0.200 & 0.278 & 0.260 & 0.290 & none (automatic) \\
 The empirical performance of each method closely aligns with its underlying
 design priorities (Figure~\ref{fig:benchmark}). The baseline SAM\,2 reliably
 segments the main soma but fails to delineate fine, low-contrast processes,
-attaining an IoU of $0.639$ and a cbDice of $0.758$. Despite benefiting from
-a per-frame bounding box prompt, $\mu$SAM achieves only $0.575$ IoU and
-$0.792$ cbDice. Notably, Cellpose-SAM nearly matches $\mu$SAM in regional
-overlap ($0.563$ IoU) but underperforms significantly in preserving
-topological connectivity ($0.725$ cbDice). This discrepancy perfectly
-illustrates the divergence between the two metric families discussed in
-Section~\ref{sec:met:metrics}. Finally, the domain-specific methods trail
-further behind: NeuroQuantify attains an IoU of $0.446$, while Omnipose
-reaches just $0.279$. The latter severely fragments the target into a median
-of eighteen distinct instances per frame, necessitating extensive reassembly
+attaining an IoU of $0.629$ and a cbDice of $0.748$. Despite benefiting from
+a per-frame bounding box prompt, $\mu$SAM is level with it on IoU ($0.623$
+against $0.629$; each is ahead on about half the recordings, 7 against 5) but
+far ahead on cbDice ($0.822$ against $0.748$; ahead on 10 of the 12). This
+discrepancy perfectly illustrates the divergence between the two metric
+families discussed in Section~\ref{sec:met:metrics}. Cellpose-SAM attains
+$0.533$ IoU and $0.671$ cbDice. Finally, the domain-specific methods trail
+further behind: NeuroQuantify attains an IoU of $0.359$, while Omnipose
+reaches just $0.282$. The latter severely fragments the target into a median
+of twenty-two distinct instances per frame, necessitating extensive reassembly
 by the external matching heuristic.
 
-SAM\,3.1 \cite{carion2025sam3} was not initialized the way our architecture
-and SAM\,2 are. We drove it through its video-session interface
-(\texttt{start\_session}/\texttt{add\_prompt}), which accepts text, points and
-bounding boxes but no mask, so the frame-0 mask could not be supplied on that
-path. Its tracking predictor does expose a mask entry point
-(\texttt{add\_new\_mask}), and a mask-prompted SAM\,3.1 would be the closest
-possible match to our supervision budget; we report the prompt modes we were
-able to run, and note the omission as a limitation rather than a property of
-the model. Even when provided with dense
-supervision of ten ground-truth points per frame, SAM\,3.1 achieves an
-IoU of just $0.471$, which further plummets to $0.200$ in its native
-text-based prompt mode. Consequently, an architecture an order of
-magnitude larger than our selected backbone substantially underperforms
-zero-shot SAM\,2, despite requiring significantly heavier per-frame
-supervision. On the \texttt{A12\_C1\_100k\_2} recording, the text-based
-prompt failed to generate any prediction overlapping the target
-(yielding a raw foreground of $0.0004$ and $0.1$ instances per frame),
-whereas the point-prompted configuration reached $0.544$ IoU on the
-identical sequence. This massive discrepancy confirms that the semantic
-language interface is the primary point of failure. Crucially, this
-deficit originates in target specification rather than temporal
-propagation. Because SAM\,3.1 also integrates robust inter-frame memory,
-its underperformance relative to SAM\,2 stems entirely from how the
-object is defined, not how it is tracked. A segmentation mask inherently
-encapsulates the complete topological complexity of the target.
-Conversely, sparse visual priors (points and boxes) or purely semantic
-text descriptions cannot capture this structural nuance --- an omission
-that is trivial for compact cells but highly detrimental for arborized
-geometries like a neuron.
+SAM\,3 \cite{carion2025sam3} was given the same frame-0 mask as our model
+and zero-shot SAM\,2, through the mask entry point of its tracking predictor. With an
+identical prompt and protocol SAM\,3 lands essentially level with zero-shot
+SAM\,2 on IoU and cbDice ($0.620$ vs.\ $0.629$; $0.747$ vs.\ $0.748$) and
+slightly below it on clDice ($0.797$ vs.\ $0.811$), so a larger
+and more recent backbone
+does not by itself transfer better to pixel-scale filamentous structure. Its
+spread across recordings is also $1.5$ times that of SAM\,2 (per-recording IoU
+SD $0.156$ vs.\ $0.104$ over the 12 recordings).
+SAM\,3's text-based prompt performs far worse ($0.176$
+IoU).\footnote{SAM\,3.1 crashed inside its own tracker on \texttt{A11\_C1}
+after frame 31 of 72; the remaining frames count as empty.}
 
 \begin{figure}[!htb]
   \centering
@@ -1515,29 +1452,28 @@ geometries like a neuron.
   \caption{\textbf{Segmentation accuracy on the held-out test set.} Bars give
   IoU, Dice and cbDice, scored on propagated frames ($t\ge1$); competing
   methods are ordered by cbDice. Each recording is averaged over its own
-  frames first, so the bar is the mean of four recording-level scores and the
-  error bar is their standard deviation.}
+  frames first and each split over its four recordings, so the bar is the
+  mean of three split-level scores and the downward whisker is one standard
+  deviation across them, as in Table~\ref{tab:main}.}
   \label{fig:benchmark}
 \end{figure}
 
 
-Our proposed model attains $0.763$ IoU and $0.855$ cbDice. The comparison
+Our proposed model attains $0.789$ IoU and $0.893$ cbDice. The comparison
 against the baseline SAM\,2 is the most strictly controlled evaluation
 available, as both models share identical backbones, prompting mechanisms,
 and inference procedures, differing solely in the inclusion of the low-rank
 adapters detailed in Section~\ref{sec:met:model}. Consequently, this
-adaptation yields an absolute improvement of $+0.124$ IoU and $+0.097$
-cbDice, achieved by fine-tuning only $13.9\,\%$ of the network parameters. A
+adaptation yields an absolute improvement of $+0.160$ IoU and $+0.145$
+cbDice ($+0.130$ clDice), achieved by fine-tuning only $13.9\,\%$ of the
+network parameters, and it holds on every metric in all 12 recordings. A
 margin of this magnitude is highly significant for targets as diminutive and
 intricately branched as these; because the object occupies only a minimal
 percentage of the frame, a single pixel of boundary error along a neurite
 disproportionately degrades the overall score. Furthermore, the
 propagation never fails outright: the lowest per-frame IoU NeuroVestigo records
-across the 328 evaluated frames is $0.575$, and no frame falls below $0.3$,
-which is not true of any competing method
-(Figure~\ref{fig:qualitative}).
-
-
+across the 984 evaluated frames is $0.380$, whereas every competing method has
+frames below $0.3$.
 
 All competing methods were evaluated according to their respective authors'
 recommended protocols. Any hyperparameters that significantly influence the
@@ -1565,11 +1501,18 @@ Although object identity is successfully maintained throughout the sequences,
 the topological quality of the predicted masks degrades over time. All
 evaluated methods exhibit temporal decay as a recording progresses, and the
 rate of this degradation distinguishes the methods more sharply than their
-overall average accuracy. By partitioning each recording into temporal
-quartiles and averaging the cbDice scores within each, we observe that our
-model experiences a minimal degradation of just $0.070$ between the first and
-final quartiles, compared to drops ranging from $0.126$ to $0.418$ for all
-baseline methods (Table~\ref{tab:drift}, Figure~\ref{fig:temporal}). This
+overall average accuracy. We split each recording's per-frame cbDice into
+four contiguous temporal quartiles and define its drift as $|Q_4 - Q_1|$, the
+absolute difference between the mean cbDice of the first and final quartiles,
+averaged over recordings; the absolute value is taken because growth is read
+from mask differences, so quality that rises over a recording distorts it as
+much as quality that falls. Our model experiences a minimal drift of just
+$0.080$, compared to $0.136$ to $0.221$ for all baseline methods
+(Table~\ref{tab:drift}, Figure~\ref{fig:temporal}). Recording by recording,
+it drifts less than SAM\,2, SAM\,3, $\mu$SAM, Cellpose-SAM and Omnipose in 10
+or 11 of the 12 recordings. Against NeuroQuantify it does so in only 7 of the
+12, a difference within noise: on three dense recordings NeuroQuantify never
+finds the neuron (IoU $0.02$--$0.04$), so its score has nowhere to fall. This
 stability is critical for downstream biological analysis. Because phenomena
 such as neurite elongation and retraction are quantified by computing the
 differences between consecutive masks, algorithmic drift risks confounding
@@ -1578,25 +1521,29 @@ true morphological evolution with segmentation artifacts.
 \begin{table}[!htb]
 \centering
 \caption{\textbf{Temporal consistency across quartiles.} Mean cbDice is
-evaluated across temporal quartiles ($Q_1$--$Q_4$). All methods degrade
-(`Decay' $= Q_4 - Q_1$), but our single-prompt model is $1.8\times$ more
-stable than the most stable baseline. $\mu$SAM degrades $2.7\times$
-faster and SAM\,3.1 $6.0\times$ faster despite exhaustive per-frame
-supervision, demonstrating that frame-wise prompting does not confer
-inherent temporal consistency.}
+evaluated across temporal quartiles ($Q_1$--$Q_4$) of each recording and
+averaged over the 12 held-out recordings. Drift is $|Q_4 - Q_1|$ per
+recording, given as its mean $\pm$ SD over the three splits and as its median
+over the recordings, because one dense recording (\texttt{B11\_C1\_100k})
+dominates the spread. All methods degrade, but our single-prompt model drifts
+$1.7\times$ less than the most stable baseline. $\mu$SAM drifts $1.8\times$
+as much despite a ground-truth box on every frame, demonstrating that
+frame-wise prompting does not confer inherent temporal consistency;
+NeuroQuantify drifts $2.0\times$ as much, Omnipose $2.2\times$, SAM\,3, given
+the identical frame-0 mask, $2.7\times$, and zero-shot SAM\,2 $2.8\times$.}
 \label{tab:drift}
 \small
-\begin{tabular}{lccccc}
+\begin{tabular}{lcccccc}
 \toprule
-Method & Q1 & Q2 & Q3 & Q4 & Decay \\
+Method & Q1 & Q2 & Q3 & Q4 & Drift & Median \\
 \midrule
-\textbf{NeuroVestigo}            & \textbf{0.878} & \textbf{0.890} & \textbf{0.846} & \textbf{0.807} & $\mathbf{-0.070}$ \\
-Cellpose-SAM             & 0.763 & 0.785 & 0.712 & 0.637 & $-0.126$ \\
-Omnipose                 & 0.609 & 0.617 & 0.556 & 0.458 & $-0.150$ \\
-$\mu$SAM (box-prompt)    & 0.860 & 0.859 & 0.780 & 0.669 & $-0.191$ \\
-SAM\,2 (zero-shot)       & 0.846 & 0.805 & 0.730 & 0.649 & $-0.197$ \\
-NeuroQuantify            & 0.694 & 0.710 & 0.568 & 0.436 & $-0.258$ \\
-SAM\,3.1 (point-prompt)  & 0.777 & 0.730 & 0.539 & 0.360 & $-0.417$ \\
+\textbf{NeuroVestigo}            & \textbf{0.912} & \textbf{0.918} & \textbf{0.893} & \textbf{0.847} & $\mathbf{0.080}\pm0.040$ & \textbf{0.059} \\
+Cellpose-SAM             & 0.666 & 0.718 & 0.704 & 0.596 & $0.136\pm0.028$ & 0.144 \\
+$\mu$SAM (box-prompt)    & 0.871 & 0.868 & 0.821 & 0.727 & $0.144\pm0.040$ & 0.158 \\
+NeuroQuantify            & 0.551 & 0.538 & 0.489 & 0.410 & $0.159\pm0.082$ & 0.097 \\
+Omnipose                 & 0.636 & 0.627 & 0.563 & 0.485 & $0.174\pm0.040$ & 0.096 \\
+SAM\,3 (mask-prompt)     & 0.864 & 0.775 & 0.702 & 0.648 & $0.215\pm0.092$ & 0.168 \\
+SAM\,2 (zero-shot)       & 0.844 & 0.807 & 0.717 & 0.623 & $0.221\pm0.085$ & 0.130 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1605,12 +1552,12 @@ SAM\,3.1 (point-prompt)  & 0.777 & 0.730 & 0.539 & 0.360 & $-0.417$ \\
 A portion of this performance degradation is attributable to the increasing
 complexity of the segmentation task. The target neuron undergoes continuous
 growth throughout the recording: between the initial and final quartiles, its
-centerline lengthens by a factor of $3.3$, while its mean thickness decreases
-from $8.7$ to $7.2$ pixels. Consequently, the target structure becomes
+centerline lengthens by a factor of $3.0$ over the 12 recordings, while its
+mean thickness decreases from $8.3$ to $6.6$ pixels. Consequently, the target structure becomes
 simultaneously more spatially extensive and topologically finer. This
 morphological evolution also elucidates why performance in the second
-quartile ($Q_2$) generally exceeds that of the first ($Q_1$) across most
-methods in Table~\ref{tab:drift}. Because cbDice is normalized by the total
+quartile ($Q_2$) exceeds that of the first ($Q_1$) for NeuroVestigo and
+Cellpose-SAM ($0.912 \rightarrow 0.918$ and $0.666 \rightarrow 0.718$) in Table~\ref{tab:drift}. Because cbDice is normalized by the total
 centerline length, and $Q_1$ features the shortest centerlines of the
 sequence, any absolute pixel error incurs a disproportionately severe penalty
 during these early frames.
@@ -1619,57 +1566,53 @@ during these early frames.
   \centering
   \includegraphics[width=0.92\textwidth,height=0.548\textwidth,keepaspectratio]{fig_temporal_consistency}
   \caption{\textbf{Segmentation quality across the propagated sequence.} Mean
-  cbDice at each frame index, averaged over the four held-out recordings,
+  cbDice at each of the first 72 propagated frames, averaged within each
+  split over its four held-out recordings and then over the three splits
+  (whiskers, every twelfth frame: one standard deviation across the splits),
   with every method prompted or run as described in
   Table~\ref{tab:protocol}. Frame~0 is the given annotation and is excluded.
   NeuroVestigo is prompted once and remains close to its initial quality
   throughout, while the single-frame methods decline steadily; the widening
-  separation to the right of the plot is the decay quantified in
+  separation to the right of the plot is the drift quantified in
   Table~\ref{tab:drift}.}
   \label{fig:temporal}
 \end{figure}
 
-
-That the two methods given ground-truth prompts on \emph{every} frame drift
-fastest of all is not the paradox it first appears. A sparse prompt describes a
-growing arbor progressively worse: the target fills $29\,\%$ of its own
-bounding box in the first quarter of a recording and $14\,\%$ in the last.
-Methods that re-derive the object from a box or a handful of points on each
-frame therefore work from a description that degrades exactly as the target
-becomes harder, whereas a mask-seeded memory carries the full shape forward
-from the frames in which it was simplest. Per-frame supervision is not the same
-as per-frame information.
-
 Because the memoryless baselines process frames independently, their minimum
-decay of $0.126$ strictly isolates the escalating difficulty of the task
+drift of $0.136$ strictly isolates the escalating difficulty of the task
 itself, independent of accumulated drift. In contrast, our stateful model
-restricts this decay to just $0.070$, demonstrating that temporal propagation
+restricts this drift to just $0.080$, demonstrating that temporal propagation
 actively offsets this rising difficulty by leveraging structural priors from
-earlier, simpler frames.
-
-
-
-
+earlier, simpler frames. Even a ground-truth box on every frame leaves
+$\mu$SAM drifting $1.8\times$ more than NeuroVestigo, because a box describes
+a growing arbor progressively worse; per-frame supervision is not per-frame
+information.
 
 \subsection{Ablations}
 \label{sec:res:ablation}
 
-We conducted an ablation study to isolate the impact of four components.
+We conducted an ablation study to isolate the impact of five components.
 Each configuration was trained following the schedule detailed in
 Section~\ref{sec:met:model} and evaluated using the established protocol.
+The ablations compare variants on the first split and predate a correction
+to the final resize of Section~\ref{sec:met:model}: their logits were
+thresholded before, rather than after, being resampled to native resolution.
+Both arms of each comparison went through the same resize, so the comparisons
+stand, but their absolute values are not those of Table~\ref{tab:main}.
 
 \emph{Adaptation.} Base SAM\,2 and NeuroVestigo share a backbone, prompt
 formulation, and inference procedure, differing exclusively in the learned
 adapters. As shown in Table~\ref{tab:main}, this parameter-efficient
-adaptation yields an absolute performance gain of $+0.124$ IoU and $+0.097$ cbDice.
+adaptation yields an absolute performance gain of $+0.160$ IoU and $+0.145$ cbDice.
 
 \emph{Temporal horizon.} Expanding the training clip length from eight to
 sixteen frames doubles the temporal receptive field over which gradients
 backpropagate through the memory-attention adapters. This extension actively
 mitigates the temporal drift discussed in Section~\ref{sec:res:temporal},
-reducing the decay from $0.084$ to $0.070$. Notably, this improvement is
+reducing the decay (the signed fall $Q_1 - Q_4$ on the first split) from
+$0.083$ to $0.069$ with the training split held fixed. Notably, this improvement is
 strictly localized to the tail end of the sequence: performance across the
-first three quartiles fluctuates by no more than $0.002$, whereas the final
+first three quartiles fluctuates by no more than $0.003$, whereas the final
 quartile exhibits a $+0.013$ increase. Thus, the extended horizon does not
 inherently improve single-frame segmentation fidelity, but rather enhances
 long-term target retention. This strongly suggests that the primary
@@ -1677,66 +1620,55 @@ bottleneck for processing lengthy sequences resides within the memory pathway
 rather than the mask decoder.
 
 \emph{Training-set size.} We tested directly whether more recordings of the
-same kind help. Adding two recordings to the training split --- twenty to
-twenty-two, same culture protocol, same modality --- moves the held-out mean
-IoU from $0.7599$ to $0.7633$, a difference of $+0.0035$. The direction is
-not consistent across recordings: two improve ($+0.0209$, $+0.0076$) and two
-degrade ($-0.0080$, $-0.0067$), giving a paired $t = 0.51$ on three degrees
-of freedom, $p = 0.65$. Validation moved by a comparable amount, $0.8377$ to
-$0.8399$. The temporal decay is unchanged at $0.070$.
+same kind help, holding the selection rule fixed at best validation IoU.
+Growing the training split from twenty to twenty-two to twenty-three
+recordings --- same culture protocol, same modality --- moves the first
+split's held-out mean IoU by about $+0.003$ per step, gains that are within
+the noise of a four-recording benchmark. Adding
+recordings of the same kind therefore yields no resolvable improvement; only
+a substantially larger dataset --- or one that adds variation in culture
+conditions, magnification or cell type --- would produce a measurable change.
+The released checkpoint applies the topology tie-break of
+Section~\ref{sec:met:model} to the twenty-three-recording run; it is shipped
+because the selection rule favors structural integrity.
 
-The relevant question is not whether this difference is significant --- it
-plainly is not --- but what size of effect this benchmark could resolve. The
-standard deviation of the paired per-recording difference is $0.0136$, so
-with four test recordings a two-sided paired test at $\alpha = 0.05$ requires
-$|\Delta\mathrm{IoU}| > 0.0217$. The observed rate is $+0.0017$ IoU per added
-recording, so reaching that threshold at this rate would take on the order of
-thirteen recordings in total --- roughly eleven beyond the two already
-added. We therefore read the model as saturated with respect to recordings of
-this kind at this scale: a further recording of the same cell type under the
-same protocol contributes samples rather than information, and the benchmark
-would not detect its effect even if one existed. This is a weaker claim than
-``more data would help'', and a more defensible one; what the evidence
-supports is that additional variation --- other culture conditions,
-magnifications or cell types --- is the direction likely to matter, not more
-of the same.
+\emph{Backbone.} To test whether the recipe depends on SAM\,2 in particular,
+we applied the identical adaptation --- the same 76 LoRA layers at ranks 16
+and 8, the same loss, data, schedule and checkpoint-selection rule --- to the
+tracker of SAM\,3 \cite{carion2025sam3}, whose frozen vision encoder is
+roughly twenty times larger. The adapted SAM\,3 matches the SAM\,2 model on
+every test metric, with differences well inside the between-recording spread
+and inconsistent in direction across recordings; from the same frame-0 mask,
+adaptation lifts it by the same margin as SAM\,2. The larger encoder
+converges roughly twice as fast, and it reproduces the value of the topology
+tie-break of Section~\ref{sec:met:model}: its validation-IoU-best epoch
+trails the SAM\,2 model, whereas the epoch selected by the Betti-0 tie-break
+matches it. We retain SAM\,2: a difference within noise does not justify a
+backbone twenty times larger.
 
-\emph{Topology weighting.} The two topology terms exhibit markedly
-different optimization dynamics. At a coefficient of just $0.3$, the
-supervoxel term dominates the training signal, supplying approximately
-$75\,\%$ of the weighted gradient norm compared to a mere $4\,\%$ from
-the focal term (weighted at $3.0$). Furthermore, its response landscape
-is exclusively sensitive to topological integrity. When evaluating
-isolated defects, a massive $4096$-pixel volumetric hole in the soma
-yields a supervoxel penalty of only $0.016$, whereas a minute
-$280$-pixel fracture across a branch spikes the penalty to $1.86$.
-Area-based metrics strictly invert this hierarchy: focal and Dice losses
-heavily penalize the spatial cavity ($0.0078$ and $0.042$) while
-remaining virtually blind to the critical branch split ($0.0005$ and
-$0.0057$). Attempting to increase the supervoxel coefficient to $2.0$
-degraded validation IoU by $0.017$ while the supervoxel loss itself
-plateaued; because smaller increments fell within the margin of
-stochastic variance, we retain the $0.3$ weighting. Similarly, raising the
-cbDice coefficient in Eq.~\ref{eq:loss} from $0.3$ to
-$1.0$---a little over threefold in its share of the summed weights, from
-$5.4\,\%$ to $15.9\,\%$---produced no measurable effect. On the five
-validation recordings the paired mean difference is at most $0.0035$ across
-IoU, Dice, cbDice and clDice, and its direction is inconsistent: three
-recordings improve and two degrade on every metric. The test split was not
-consulted for this decision. Because the loss landscape is insensitive to
-this hyperparameter within the operational range, we retain the smaller
-weight.
+\emph{Topology weighting.} Raising the supervoxel coefficient from $0.3$ to
+$2.0$ lowered validation IoU by $0.017$ without lowering the supervoxel loss
+itself, so $0.3$ is retained. Raising the cbDice coefficient from $0.3$ to
+$1.0$ produced no measurable change on validation (every metric within
+$0.0035$, direction inconsistent across recordings). We attribute this to
+the resolution at which the term operates: its differentiable skeletons are
+computed on a $512\times512$ grid, where processes one to two pixels wide
+sit at the limit of what resampling preserves, so a larger weight amplifies
+resampling noise rather than a topological signal. The term is kept because
+it reduces drift: among the loss-weight candidates, all trained on the
+earlier eight-frame schedule, the run without cbDice decayed a third faster
+than its counterpart with it ($0.114$ against $0.077$, the signed fall
+$Q_1 - Q_4$ in cbDice on the first split) and scored slightly lower on the
+held-out recordings ($0.008$ lower IoU and $0.008$ lower cbDice).
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\textwidth,height=0.364\textwidth,keepaspectratio]{proof_A71_C1.png}
+  \includegraphics[width=\textwidth,height=0.357\textwidth,keepaspectratio]{proof_A71_C1.png}
   \caption{\textbf{Qualitative comparison on a held-out recording.} Every
   method at three time points of \texttt{A71\_C1}, each run as described in
   Table~\ref{tab:protocol}. Overlay semantics: yellow, correctly segmented;
   green, ground-truth neurite missed; red, predicted pixels outside the
-  ground truth; per-panel IoU inset. NeuroVestigo and SAM\,2 are prompted only
-  on frame~0 and every subsequent mask is produced by propagation, whereas
-  $\mu$SAM and SAM\,3.1 receive ground-truth prompts on the frame shown. The
+  ground truth. The
   progression down the column is the growth that makes the task harder: by
   frame~62 the arbor has roughly tripled in centerline length, and the
   competing methods lose the thin distal branches that NeuroVestigo retains.}
@@ -1766,16 +1698,18 @@ weight.
 %   MATCHED-IoU (Fig. whytopology) -- a 1 px uniform erosion and a two-branch
 %     deletion score IoU 0.805 vs 0.820, i.e. IoU ranks them BACKWARDS, while
 %     cbDice reads 0.986 vs 0.800 (clDice 0.998 vs 0.674).
-%   DISCRIMINATION (Tab. main) -- uSAM and Cellpose-SAM sit within 0.001 on
-%     IoU (0.562 / 0.563) yet 0.043 apart on cbDice (0.767 / 0.725).
+%   DISCRIMINATION (Tab. main) -- uSAM and zero-shot SAM 2 sit within 0.006
+%     on IoU (0.623 / 0.629) yet 0.074 apart on cbDice (0.822 / 0.748); three
+%     runs, centred resize (2026-11-02). The uSAM / Cellpose-SAM pair no
+%     longer holds (0.623 / 0.533 IoU).
 We introduced a parameter-efficient adaptation of SAM\,2 (via dual-rank
 LoRA+) for the longitudinal tracking of highly arborized neurons.
 Conditioned on a single initial mask, NeuroVestigo establishes
-state-of-the-art performance across all metrics on strictly held-out test
-sequences (Table~\ref{tab:main}). Ablations confirm these gains ($+0.124$
-IoU, $+0.097$ cbDice) stem entirely from the learned adapters, utilizing
+state-of-the-art performance across all metrics on held-out test
+sequences (Table~\ref{tab:main}). Ablations confirm these gains ($+0.160$
+IoU, $+0.145$ cbDice) stem entirely from the learned adapters, utilizing
 only $13.9\,\%$ of the parameter space. Crucially, our temporal memory
-mechanism restricts longitudinal degradation to a mere $0.070$ cbDice,
+mechanism restricts longitudinal drift to a mere $0.080$ cbDice,
 substantially outperforming memoryless baselines whose decay strictly
 reflects the escalating morphological complexity of the target
 (Table~\ref{tab:drift}). Competing baselines fundamentally struggle on this
@@ -1788,17 +1722,13 @@ Our analysis further highlights a critical dichotomy between spatial and
 topological optimization. Area-overlap metrics (e.g., IoU) paradoxically
 penalize minor boundary shifts more severely than catastrophic structural
 disconnections (Figure~\ref{fig:whytopology}). Consequently, methods
-within $0.012$ IoU of one another (e.g., $\mu$SAM and Cellpose-SAM) diverge
-significantly under topological evaluation (a $0.067$ cbDice gap).
-Within our training objective, connectivity constraints --- particularly the
-supervoxel term --- dictate the primary optimization dynamics. Despite a
-deliberately small nominal coefficient of $0.3$, the supervoxel loss
-normalizes each error partition by its constituent pixel count. This
-amplifies the gradient magnitude of topologically critical pixels by a
-factor of $10^{6}$, allowing the term to supply approximately $75\,\%$ of the
-total weighted gradient norm at convergence. By doing so, it selectively
-penalizes structural fractures (such as broken branches) that the focal and
-Dice losses barely register. Interestingly, varying the cbDice loss weight
+within $0.006$ IoU of one another (e.g., $\mu$SAM and zero-shot SAM\,2) diverge
+significantly under topological evaluation (a $0.074$ cbDice gap).
+Within our training objective the supervoxel term, despite its small
+nominal coefficient, normalizes each error partition by its own pixel
+count, which concentrates its gradient on the few pixels that decide whether
+the prediction splits or merges; it thereby penalizes structural fractures
+that the focal and Dice losses barely register. Interestingly, varying the cbDice loss weight
 yielded negligible performance shifts. We hypothesize this inertness occurs
 because the differentiable skeletonization is computed on a downsampled
 grid, diluting the topological gradient with resampling artifacts.
@@ -1809,35 +1739,34 @@ filamentous or branched cells report a connectivity metric alongside IoU
 rather than in place of it.
 
 We acknowledge several limitations. First, our evaluation is constrained to
-a small held-out test set (four recordings); thus, our conclusions rely on
+a small held-out test set (three splits of four recordings, 12 in all); thus, our conclusions rely on
 consistent metric trends rather than absolute margins. Second, the current
 evaluation avoids dense multi-neuron fields with intersecting processes,
 representing a likely failure mode in practice. Third, our framework
 necessitates a full mask for the initial prompt. While bounding boxes offer
 a lower annotation burden, our empirical data indicates that a branched
-target fills only $21\,\%$ of its own bounding box on average, falling from
-$29\,\%$ in the first quarter of a recording to $14\,\%$ in the last,
+target fills only $18\,\%$ of its own bounding box on average over the 12
+held-out recordings, falling from $25\,\%$ in the first quarter of a
+recording to $13\,\%$ in the last,
 suggesting that a box provides a highly ambiguous spatial prior. Finally,
 baseline comparisons rely on input scales optimized strictly on the
 validation split.
 
-To facilitate future research, we release our annotated sequences as a novel
-public benchmark for single-target, temporally propagated neurite
-segmentation. Future work will extend this framework to dense, multi-neuron
-environments by integrating collision-resolution protocols. Ultimately, once
-the derived quantities are validated against manual tracing
+Future work will extend this framework to dense, multi-neuron fields by
+training on recordings in which processes intersect. Ultimately, once the
+derived quantities are validated against manual tracing
 \cite{berkovich2025neurite}, the high spatiotemporal consistency achieved by
-NeuroVestigo enables the automated, high-throughput extraction of longitudinal
-biological metrics --- such as neurite elongation and branching rates ---
-directly from sequential masks.
+NeuroVestigo enables the automated, high-throughput extraction of biological
+metrics --- such as neurite elongation and branching rates --- directly from
+sequential masks. The model and the plug-in together let a laboratory
+annotate a neuron once and build a dataset for its own culture system,
+magnification or cell type at a fraction of the cost of tracing every frame.
 
 %=====================================================================
 \section*{Data and code availability}
 
-All data, code and model weights required to reproduce this work are
-publicly available.
-
-\emph{Dataset.} The thirty-two annotated phase-contrast recordings and masks are deposited at Zenodo, \todo{Zenodo DOI}.
+The code and model weights required to reproduce this work are publicly
+available.
 
 \emph{Training and evaluation code.} Adaptation, training and the full benchmark are at
 \url{https://github.com/adioiz/NeuroVestigo}.
@@ -1874,6 +1803,16 @@ approved the final manuscript.
 \section*{Declaration of interests}
 The authors declare no competing interests.
 
+%---------------------------------------------------------------------
+% \nocite{*} removed: every entry in refs.bib is now cited in the text.
+% Do not reinstate it -- it printed uncited entries in the bibliography.
+% (kept for context) with unsrtnat the
+% reference numbers then follow the order of first citation automatically.
+\bibliographystyle{unsrtnat}
+\bibliography{refs}
+
+
+\clearpage
 %=====================================================================
 \appendix
 \section{Supplementary figures}
@@ -1888,12 +1827,16 @@ our recordings are about $1.5$ px per micrometer, coarser than the
 magnifications these models were trained at. The second is detection
 sensitivity, where library defaults are calibrated for compact,
 well-contrasted cells rather than for processes one or two pixels wide.
-$\mu$SAM uses the \texttt{vit\_l\_lm} backbone (\texttt{vit\_b\_lm} scores
-$0.42$ against $0.56$ validation IoU); Cellpose-SAM uses
-\texttt{cellprob\_threshold}~$=-1.0$ ($0.38$ against $0.47$) with
-\texttt{flow\_threshold}~$=1.5$ ($0.44$ against $0.56$); Omnipose uses
-\texttt{bact\_phase\_omni}, the only one of its models that detects anything
-here. Every value was selected on validation and applied unchanged to test;
+$\mu$SAM (\texttt{micro-sam}~1.8.6) uses the \texttt{vit\_l\_lm} backbone
+(\texttt{vit\_b\_lm} scores $0.42$ against $0.56$ validation IoU) and receives
+the ground-truth box padded by six pixels; Cellpose-SAM (\texttt{cellpose}~4.2.1,
+\texttt{cpsam\_v2} weights) uses \texttt{cellprob\_threshold}~$=-1.0$ ($0.38$
+against $0.47$) with \texttt{flow\_threshold}~$=1.5$ ($0.44$ against $0.56$);
+Omnipose (1.1.4) uses \texttt{bact\_phase\_omni}, the only one of its models
+that detects anything here, with \texttt{mask\_threshold}~$=-1.0$ and the flow
+filter disabled, and its filament-specific options (\texttt{cluster},
+\texttt{niter}, \texttt{min\_size}) swept on validation without effect. Every
+value was selected on validation and applied unchanged to test;
 Table~\ref{tab:protocol} sets out the full configuration.
 \end{sloppypar}
 
@@ -1904,10 +1847,10 @@ for sparse prompts such as a lone click and recommends
 \texttt{multimask\_output=False} for a box, which is unambiguous. We
 therefore report $\mu$SAM in single-mask mode. Keeping $\mu$SAM's own
 highest-scoring candidate of three scores marginally higher on validation
-($0.595$ against $0.574$ IoU) but lower on the test recordings ($0.562$
-against $0.575$ IoU, $0.767$ against $0.792$ cbDice), and it produces the
+($0.595$ against $0.574$ IoU) but lower on the first split's test recordings
+($0.562$ against $0.575$ IoU, $0.767$ against $0.792$ cbDice), and it produces the
 box-filling selections audited in
-\texttt{benchmark/sweep\_usam\_multimask.py}: on $9\,\%$ of test frames,
+\texttt{benchmark/sweep\_usam\_multimask.py}: on $9\,\%$ of those test frames,
 none earlier than $71\,\%$ through a recording, $\mu$SAM's confidence ranks
 a mask more than three times the ground-truth area above a better one it
 produced at the same time. Both configurations are scored in the repository
@@ -1922,7 +1865,11 @@ reduction to the target.
 One asymmetry runs against our own model: its object-presence head receives
 no supervision under Eq.~\ref{eq:loss} and is disabled at inference, whereas
 stock SAM\,2 retains its pretrained head and can decline to segment a frame
-it judges empty.
+it judges empty. Zero-shot SAM\,2 is fed the same dataset-normalized input as
+our model so that the two differ only in the adapters; re-running it on the
+first split with the ImageNet normalization it was pretrained under lowers its
+IoU and cbDice by $0.006$ each (both runs before the resize correction of
+Section~\ref{sec:res:ablation}), so the shared normalization does not handicap it.
 
 \begin{table}[!htb]
 \centering
@@ -1949,7 +1896,7 @@ Method & Mode used & Prompt per frame & Scale & Reduction to target \\
 \textbf{NeuroVestigo}      & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 SAM\,2             & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 $\mu$SAM           & interactive box prompt       & GT box, every frame & $\times$1 & --- box selects target \\
-SAM\,3.1           & promptable video tracking    & 10 GT points, every frame & $\times$1 & --- points select target \\
+SAM\,3             & promptable video propagation & frame 0 only        & $\times$1 & --- single object \\
 SAM\,3.1 (text)    & promptable concept segmentation & \texttt{cells}, cap 64 & $\times$1 & union of overlapping instances \\
 NeuroQuantify      & automatic, semantic          & none                & $\times$4 & union of overlapping regions \\
 Omnipose           & automatic, instance          & none                & $\times$3 & union of overlapping instances \\
@@ -1976,7 +1923,7 @@ Cellpose-SAM       & automatic, instance          & none                & $\time
 
 \begin{figure}[!htb]
   \centering
-  \includegraphics[width=\textwidth,height=0.386\textwidth,keepaspectratio]{proof_A81_C1.png}
+  \includegraphics[width=\textwidth,height=0.496\textwidth,keepaspectratio]{proof_A81_C1.png}
   \caption{\textbf{Qualitative comparison on a second held-out recording.}
   As Figure~\ref{fig:qualitative}, for \texttt{A81\_C1}. Overlay semantics:
   yellow, correctly segmented; green, ground-truth neurite missed; red,
@@ -1995,13 +1942,5 @@ Cellpose-SAM       & automatic, instance          & none                & $\time
   promptable baselines are shown as target overlays with per-frame IoU.}
   \label{fig:rawoutput}
 \end{figure}
-
-%---------------------------------------------------------------------
-% \nocite{*} removed: every entry in refs.bib is now cited in the text.
-% Do not reinstate it -- it printed uncited entries in the bibliography.
-% (kept for context) with unsrtnat the
-% reference numbers then follow the order of first citation automatically.
-\bibliographystyle{unsrtnat}
-\bibliography{refs}
 
 \end{document}
