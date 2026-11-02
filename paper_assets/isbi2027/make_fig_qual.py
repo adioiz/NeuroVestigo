@@ -29,11 +29,12 @@ import make_proof_panel as mpp  # noqa: E402
 
 PRESETS = {
     # The paper's Fig. 2: run 1's test recording, drawn with run 1's model (the
-    # released one). Frame 8 as in the draft; frame 25 replaced 62 (2026-11-02),
+    # released one). Frame 8 as in the draft; frame 57 replaced 62 (2026-11-02),
     # where uSAM's box-filling failure (IoU 0.34) misrepresented its 0.62 mean.
-    # Of the frames with uSAM above 0.60, SAM 2 and SAM 3 second and third and
-    # NeuroVestigo first, 25 has the largest lead (0.89 vs 0.72 IoU).
-    "A71_C1": dict(frames=["8", "25"], ours="ours_23rec_topo", scale=0.55,
+    # Frames with uSAM above 0.60, NeuroVestigo first and SAM 2 and SAM 3 second
+    # and third: 57 has the largest lead among the late frames where the arbor
+    # has grown (0.81 vs 0.75 IoU); no frame after 62 qualifies (uSAM <= 0.54).
+    "A71_C1": dict(frames=["8", "57"], ours="ours_23rec_topo", scale=0.55,
                    min_aspect=0.0, sam2="SAM 2 (zero-shot)"),
     # Run 2's test recording whose NeuroVestigo IoU is closest to that fold's
     # mean (0.711 against 0.724), so the figure shows typical rather than
