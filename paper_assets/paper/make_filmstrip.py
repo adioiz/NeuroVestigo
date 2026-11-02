@@ -58,7 +58,7 @@ RECORDINGS = {
         erase_band=(200, 270, 0, None),
         shared_levels=False,                  # crop holds no padding: stretch per frame
         pred_dir="ours_23rec_topo",
-        scores=os.path.join(RESULTS, "test", "ours_23rec_topo.csv"),
+        scores=os.path.join(RESULTS, "folds", "per_recording.csv"),
         out=os.path.join(HERE, "fig2_filmstrip.png"),
     ),
     # Fold 2's test recording closest to that fold's mean IoU. The neuron grows

@@ -6,6 +6,9 @@
 %  Tables 1-2 and the numbers quoted in Sec. 3.1-3.3 and the abstract come from
 %  benchmark/results/folds/ (benchmark/aggregate_folds.py). The ablations
 %  (Sec. 3.4) are first-split results from benchmark/results/test/.
+%  2026-11-02: every test number and Figs. 1-2 refreshed after predictions were
+%  shrunk to native size centred (commit 70a3472). The ablations predate that;
+%  both arms of each comparison share the old shrink.
 %
 %  Layout follows a 2026 ISBI four-pager (Goel et al., TrackletGPT,
 %  arXiv:2601.13935): the data sit inside Methodology, followed by
@@ -88,7 +91,7 @@ neurons in time-lapse microscopy}
 % ---------------------------------------------------------------------
 \begin{abstract}
 Understanding neuronal growth and regeneration requires accurately quantifying neurite length, thickness, and branching in every frame of multi-day, label-free recordings---a task still bottlenecked by labor-intensive manual tracing. Existing automated segmenters reliably resolve the soma but struggle with neurites and fail to preserve longitudinal instance identity. In this work, we present NeuroVestigo, a parameter-efficient adaptation of the promptable video foundation model
-SAM\,2 for time-lapse microscopy. Conditioned on a single annotated mask at frame~0, the model segments entire multi-day sequences. Utilizing dual-rank LoRA+, we train merely $12.9\,\%$ of the weights. The architecture is optimized via a connectivity-preserving objective that penalizes topological fractures. By backpropagating through an undetached temporal memory bank, we minimize longitudinal drift rather than merely measuring it. Evaluated on three held-out test sets, NeuroVestigo achieves state-of-the-art performance (cbDice $0.847 \pm 0.019$, IoU $0.751 \pm 0.024$), outperforming seven baselines across all metrics. Furthermore, it demonstrates substantially better temporal stability, exhibiting a minimal cbDice drift of $0.065$ between the first and final quartiles of the sequence, compared to $0.144$ for the most stable baselines. Code, weights, and a napari plug-in are available at \url{github.com/adioiz/NeuroVestigo} and \url{github.com/adioiz/neurons-labeling}.
+SAM\,2 for time-lapse microscopy. Conditioned on a single annotated mask at frame~0, the model segments entire multi-day sequences. Utilizing dual-rank LoRA+, we train merely $12.9\,\%$ of the weights. The architecture is optimized via a connectivity-preserving objective that penalizes topological fractures. By backpropagating through an undetached temporal memory bank, we minimize longitudinal drift rather than merely measuring it. Evaluated on three held-out test sets, NeuroVestigo achieves state-of-the-art performance (cbDice $0.893 \pm 0.028$, IoU $0.789 \pm 0.028$), outperforming seven baselines across all metrics. Furthermore, it demonstrates substantially better temporal stability, exhibiting a minimal cbDice drift of $0.080$ between the first and final quartiles of the sequence, compared to $0.136$ for the most stable baseline. Code, weights, and a napari plug-in are available at \url{github.com/adioiz/NeuroVestigo} and \url{github.com/adioiz/neurons-labeling}.
 \end{abstract}
 
 \begin{keywords}
@@ -159,11 +162,11 @@ longitudinal mask propagation. We therefore optimize via backpropagation
 through time across 16-frame sequences, with each conditioned purely on its
 initial frame.
 
-Frames are resized to $1024\times1024$ (nearest-neighbor for masks). During
+Frames are resized to $1024\times1024$. During
 inference, the entire sequence is propagated continuously without
 supplementary prompting, manual correction, or re-initialization. Output
-logits are strictly zero-thresholded and rescaled to the native spatial
-resolution.
+logits are bilinearly resampled to the native resolution, then thresholded
+at zero (reversed in the ablations).
 
 \subsection{Parameter-efficient adaptation}
 \label{sec:lora}
@@ -229,7 +232,7 @@ Hyperparameters and backbones were tuned solely on the validation split.
 \subsection{Benchmarking against existing methods}
 \label{sec:res:benchmark}
 
-NeuroVestigo outperforms every baseline across all metrics (Table~\ref{tab:main}) and on IoU in at least 11 of the 12 test recordings. Because zero-shot SAM\,2 shares the same backbone and prompt, the resulting gains ($0.143$ IoU, $0.127$ cbDice) stem from our fine-tuning. On clDice, our independent topological check, the improvement reaches $0.136$. A larger backbone fails to close this gap: identically prompted zero-shot SAM\,3 performs within the noise of zero-shot SAM\,2 ($0.620$ vs.\ $0.609$ IoU).
+NeuroVestigo outperforms every baseline across all metrics (Table~\ref{tab:main}) and on IoU in at least 11 of the 12 test recordings. Because zero-shot SAM\,2 shares the same backbone and prompt, the resulting gains ($0.160$ IoU, $0.145$ cbDice) stem from our fine-tuning. On clDice, our independent topological check, the improvement reaches $0.130$. A larger backbone fails to close this gap: identically prompted zero-shot SAM\,3 performs within the noise of zero-shot SAM\,2 ($0.620$ vs.\ $0.629$ IoU).
 
 % Table 1 -- [!h], between the two paragraphs of Sec. 3.2: printed here, or
 % at the top of the next column if it does not fit there.
@@ -246,29 +249,29 @@ NeuroVestigo outperforms every baseline across all metrics (Table~\ref{tab:main}
 \toprule
 Method & Prompt & IoU & Dice & \textbf{cbDice} & clDice \\
 \midrule
-\textbf{NeuroVestigo}  & mask, $t{=}0$      & \textbf{0.751}$\pm$0.024 & \textbf{0.856}$\pm$0.016 & \textbf{0.847}$\pm$0.019 & \textbf{0.941}$\pm$0.019 \\
-SAM\,2 (zero-shot)     & mask, $t{=}0$      & 0.609$\pm$0.050 & 0.743$\pm$0.046 & 0.720$\pm$0.063 & 0.805$\pm$0.066 \\
+\textbf{NeuroVestigo}  & mask, $t{=}0$      & \textbf{0.789}$\pm$0.028 & \textbf{0.880}$\pm$0.019 & \textbf{0.893}$\pm$0.028 & \textbf{0.940}$\pm$0.024 \\
+SAM\,2 (zero-shot)     & mask, $t{=}0$      & 0.629$\pm$0.043 & 0.758$\pm$0.038 & 0.748$\pm$0.053 & 0.811$\pm$0.061 \\
 SAM\,3 (mask)          & mask, $t{=}0$      & 0.620$\pm$0.010 & 0.745$\pm$0.002 & 0.747$\pm$0.014 & 0.797$\pm$0.013 \\
 $\mu$SAM (box)         & GT box, all $t$    & 0.623$\pm$0.049 & 0.761$\pm$0.039 & 0.822$\pm$0.041 & 0.885$\pm$0.046 \\
-Cellpose-SAM           & none               & 0.519$\pm$0.072 & 0.648$\pm$0.083 & 0.658$\pm$0.088 & 0.715$\pm$0.098 \\
-NeuroQuantify          & none               & 0.358$\pm$0.137 & 0.475$\pm$0.167 & 0.497$\pm$0.174 & 0.547$\pm$0.201 \\
-Omnipose               & none               & 0.289$\pm$0.026 & 0.440$\pm$0.031 & 0.571$\pm$0.035 & 0.648$\pm$0.040 \\
+Cellpose-SAM           & none               & 0.533$\pm$0.075 & 0.660$\pm$0.086 & 0.671$\pm$0.090 & 0.721$\pm$0.099 \\
+NeuroQuantify          & none               & 0.359$\pm$0.137 & 0.475$\pm$0.167 & 0.497$\pm$0.173 & 0.550$\pm$0.200 \\
+Omnipose               & none               & 0.282$\pm$0.024 & 0.432$\pm$0.029 & 0.578$\pm$0.045 & 0.656$\pm$0.044 \\
 SAM\,3.1 (text)        & text   & 0.176$\pm$0.038 & 0.239$\pm$0.058 & 0.246$\pm$0.059 & 0.263$\pm$0.062 \\
 \bottomrule
 \end{tabular}}
 \end{table}
 
-A single frame\nobreakdash-0 mask is more informative than a ground-truth box on every frame: NeuroVestigo leads $\mu$SAM, the strongest baseline on cbDice, by $0.128$ IoU and $0.025$ cbDice, the latter within noise. A bounding box is a weak prompt for a branched cell, which fills only $18\,\%$ of its bounding area on average. Masks stay nearly whole, as the supervoxel term and Betti-0 selection intend: predictions average $1.42$ connected components per frame against $1.04$ in the ground truth. Achieving peak clDice simultaneously confirms this low count does not stem from dropped branches. As the arbor grows (Fig.~\ref{fig:qual}), NeuroVestigo successfully tracks the thin distal branches that baselines partially miss (green).
+A single frame\nobreakdash-0 mask is more informative than a ground-truth box on every frame: NeuroVestigo leads $\mu$SAM, the strongest baseline on cbDice, by $0.166$ IoU and $0.071$ cbDice, the latter in 11 of the 12 recordings. A bounding box is a weak prompt for a branched cell, which fills only $18\,\%$ of its bounding area on average. Masks stay nearly whole, as the supervoxel term and Betti-0 selection intend: predictions average $1.48$ connected components per frame against $1.04$ in the ground truth. Achieving peak clDice simultaneously confirms this low count does not stem from dropped branches. As the arbor grows (Fig.~\ref{fig:qual}), NeuroVestigo successfully tracks the thin distal branches that baselines partially miss (green).
 % Sources (three splits, 12 test recordings, Table 1 protocol): gains, leads
 % and per-recording wins from benchmark/results/folds/{table1,paired}.csv.
 % NeuroVestigo beats SAM 2 on every metric in 12/12 recordings and every
-% baseline on IoU in >= 11/12. SAM 3 vs SAM 2 zero-shot: SAM 3 has the higher
-% IoU in 9/12 recordings but the lower mean clDice -> "within noise". muSAM:
-% cbDice lead 0.025, NeuroVestigo ahead in 9/12 -> "within noise".
+% baseline on every metric in >= 11/12. SAM 3 vs SAM 2 zero-shot: SAM 3 has the
+% higher IoU in 7/12 recordings but the lower mean IoU and clDice -> "within
+% noise". muSAM: cbDice lead 0.071, NeuroVestigo ahead in 11/12.
 % Box fill = GT area / bounding-box area, frames 1+, per-recording mean over
 % the 12 recordings: 18.1% (pooled frames 18.7%; first split alone 21.2%). Components per frame:
-% 8-connected foreground, frames 1+, per-recording mean: ours 1.417 vs GT 1.042
-% (first split alone: 1.36 vs 1.03). Recomputed 2026-10-16 from
+% 8-connected foreground, frames 1+, per-recording mean: ours 1.482 vs GT 1.042
+% (first split alone: 1.37 vs 1.03). Recomputed 2026-11-02 from
 % benchmark/predictions/{ours_23rec_topo,ours_fold2_topo,ours_fold3_topo} and
 % the training_data masks.
 % "Nearly whole ... intend", not "validating": no run without the supervoxel
@@ -277,35 +280,36 @@ A single frame\nobreakdash-0 mask is more informative than a ground-truth box on
 \subsection{Temporal consistency}
 \label{sec:res:temporal}
 
-Growth and retraction are derived from consecutive mask differences; thus, segmentation drift confounds biological measurements. Table~\ref{tab:drift} tracks performance across recording quartiles. While all methods degrade, NeuroVestigo drifts just $0.065$ cbDice from Q1 to Q4---$2.2\times$ less than the most stable baselines. Despite receiving per-frame ground-truth boxes, $\mu$SAM drifts $2.2\times$ more. SAM\,3 starts within $0.001$ cbDice of NeuroVestigo in Q1 but drifts $3.3\times$ more.
+Growth and retraction are derived from consecutive mask differences; thus, segmentation drift confounds biological measurements. Table~\ref{tab:drift} tracks performance across recording quartiles. While all methods degrade, NeuroVestigo drifts just $0.080$ cbDice from Q1 to Q4---$1.7\times$ less than the most stable baseline. Despite receiving per-frame ground-truth boxes, $\mu$SAM drifts $1.8\times$ more; SAM\,3, $2.7\times$. Per recording, it drifts less than each baseline in 10--11 of 12 recordings, except NeuroQuantify (7 of 12), which never finds the neuron in three dense ones, so its score has nowhere to fall.
 
 % Table 2 -- [!h], between the two paragraphs of Sec. 3.3 (see Table 1).
 \begin{table}[!h]
 \centering
-\caption{\textbf{Temporal consistency.} Mean cbDice across recording quartiles; drift denotes $|\mathrm{Q4}-\mathrm{Q1}|$ per recording, averaged (mean\,$\pm$\,SD over three splits).}
+\caption{\textbf{Temporal consistency.} Mean cbDice across recording quartiles; drift denotes $|\mathrm{Q4}-\mathrm{Q1}|$ per recording, averaged (mean\,$\pm$\,SD over three splits), and its median.}
 \label{tab:drift}
 \vspace{2pt}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-Method & Q1 & Q2 & Q3 & Q4 & Drift \\
+Method & Q1 & Q2 & Q3 & Q4 & Drift & Median \\
 \midrule
-\textbf{NeuroVestigo}  & 0.863 & \textbf{0.875} & \textbf{0.844} & \textbf{0.806} & \textbf{0.065}$\pm$0.005 \\
-Cellpose-SAM           & 0.656 & 0.708 & 0.691 & 0.578 & 0.144$\pm$0.018 \\
-$\mu$SAM (box)         & \textbf{0.871} & 0.868 & 0.821 & 0.727 & 0.144$\pm$0.040 \\
-NeuroQuantify          & 0.551 & 0.537 & 0.489 & 0.409 & 0.160$\pm$0.086 \\
-Omnipose               & 0.624 & 0.621 & 0.556 & 0.482 & 0.170$\pm$0.045 \\
-SAM\,2 (zero-shot)     & 0.810 & 0.764 & 0.693 & 0.613 & 0.197$\pm$0.081 \\
-SAM\,3 (mask)          & 0.864 & 0.775 & 0.702 & 0.648 & 0.215$\pm$0.092 \\
+\textbf{NeuroVestigo}  & \textbf{0.912} & \textbf{0.918} & \textbf{0.893} & \textbf{0.847} & \textbf{0.080}$\pm$0.040 & \textbf{0.059} \\
+Cellpose-SAM           & 0.666 & 0.718 & 0.704 & 0.596 & 0.136$\pm$0.028 & 0.144 \\
+$\mu$SAM (box)         & 0.871 & 0.868 & 0.821 & 0.727 & 0.144$\pm$0.040 & 0.158 \\
+NeuroQuantify          & 0.551 & 0.538 & 0.489 & 0.410 & 0.159$\pm$0.082 & 0.097 \\
+Omnipose               & 0.636 & 0.627 & 0.563 & 0.485 & 0.174$\pm$0.040 & 0.096 \\
+SAM\,3 (mask)          & 0.864 & 0.775 & 0.702 & 0.648 & 0.215$\pm$0.092 & 0.168 \\
+SAM\,2 (zero-shot)     & 0.844 & 0.807 & 0.717 & 0.623 & 0.221$\pm$0.085 & 0.130 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-This drift partially stems from the evolving target: from Q1 to Q4, its centerline lengthens $3.0$-fold while mean thickness drops from $8.3$ to $6.6$\,px. Indeed, stateless automatic methods---which accumulate no temporal drift---still move by at least $0.144$. Q2 often exceeds Q1 because early neurites are short, so each error weighs more.
-% Q2 > Q1 on the three-split means for NeuroVestigo and Cellpose-SAM, and for
-% NeuroVestigo in 9 of 12 recordings, hence "often": cbDice is a ratio over
-% centerline length, shortest in Q1, so a fixed error weighs most there.
+This drift partially stems from the evolving target: from Q1 to Q4, its centerline lengthens $3.0$-fold while mean thickness drops from $8.3$ to $6.6$\,px. Indeed, stateless automatic methods---which accumulate no temporal drift---still move by at least $0.136$. Q2 often exceeds Q1 because early neurites are short, so each error weighs more.
+% Q2 > Q1 in 34 of the 84 method-recordings of Table 2 (NeuroVestigo and
+% Cellpose-SAM 6/12 each, and on their three-split means), hence "often":
+% cbDice is a ratio over centerline length, shortest in Q1, so a fixed error
+% weighs most there.
 % Drift and the target-growth figures (3.0-fold, 8.3 -> 6.6 px) are over the
 % 12 test recordings; target_growth.py reproduces 3.3-fold, 8.7 -> 7.2 px on
 % the first split alone.
@@ -330,7 +334,7 @@ $512\times512$ skeletons. However, removing cbDice entirely exacerbates the sign
 \section{Conclusion}
 \label{sec:conclusion}
 
-Initialized from a single frame~0 mask, NeuroVestigo tracks neurons across multi-day recordings, achieving state-of-the-art accuracy with less than half the temporal drift of the most stable baselines. These gains stem from adaptation rather than model capacity: the same recipe applied to a $20\times$ larger encoder yields no measurable benefit. Two limitations remain. First, our modest 32-recording dataset means minor metric differences fall within noise; further improvements will require larger, more diverse cohorts. Second, dense multi-neuron fields with intersecting processes remain untested. Text prompts, as in SAM\,3.1, could remove the frame-0 annotation in future work, but currently reach only $0.176$ IoU. Beyond segmentation and tracking, our framework could enable direct measurement of neurite growth, branching, and retraction rates from its masks, allowing growth phases and substrate responses to be compared across large neuronal populations. By replacing frame-by-frame tracing with a single annotation---and providing a plug-in for laboratories to curate data for bespoke culture systems, magnifications, or cell types---NeuroVestigo scales single-neuron analysis to meet the statistical demands of cell-to-cell variability.
+Initialized from a single frame~0 mask, NeuroVestigo tracks neurons across multi-day recordings, achieving state-of-the-art accuracy with $1.7\times$ less temporal drift than the most stable baseline. These gains stem from adaptation rather than model capacity: the same recipe applied to a $20\times$ larger encoder yields no measurable benefit. Two limitations remain. First, our modest 32-recording dataset means minor metric differences fall within noise; further improvements will require larger, more diverse cohorts. Second, dense multi-neuron fields with intersecting processes remain untested. Text prompts, as in SAM\,3.1, could remove the frame-0 annotation in future work, but currently reach only $0.176$ IoU. Beyond segmentation and tracking, our framework could enable direct measurement of neurite growth, branching, and retraction rates from its masks, allowing growth phases and substrate responses to be compared across large neuronal populations. By replacing frame-by-frame tracing with a single annotation---and providing a plug-in for laboratories to curate data for bespoke culture systems, magnifications, or cell types---NeuroVestigo scales single-neuron analysis to meet the statistical demands of cell-to-cell variability.
 % "Further gains will likely need a larger, more varied dataset": on the first
 % split, growing training from 20 to 23 recordings of the same kind moved test IoU by
 % 0.006 (0.7593 -> 0.7655), within noise (long paper, Training-set size).
