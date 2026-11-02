@@ -290,6 +290,8 @@ Growth and retraction are derived from consecutive mask differences; thus, segme
 \vspace{2pt}
 \scriptsize
 \setlength{\tabcolsep}{4pt}
+% Scaled to the column width, as Table 1 (a larger font does not fit page 4).
+\resizebox{\columnwidth}{!}{%
 \begin{tabular}{@{}lcccccc@{}}
 \toprule
 Method & Q1 & Q2 & Q3 & Q4 & Drift & Median \\
@@ -302,7 +304,7 @@ Omnipose               & 0.636 & 0.627 & 0.563 & 0.485 & 0.174$\pm$0.040 & 0.096
 SAM\,3 (mask)          & 0.864 & 0.775 & 0.702 & 0.648 & 0.215$\pm$0.092 & 0.168 \\
 SAM\,2 (zero-shot)     & 0.844 & 0.807 & 0.717 & 0.623 & 0.221$\pm$0.085 & 0.130 \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}
 
 This drift partially stems from the evolving target: from Q1 to Q4, its centerline lengthens $3.0$-fold while mean thickness drops from $8.3$ to $6.6$\,px. Indeed, stateless automatic methods---which accumulate no temporal drift---still move by at least $0.136$. Q2 often exceeds Q1 because early neurites are short, so each error weighs more.
